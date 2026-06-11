@@ -5,6 +5,7 @@ using Blackbird.Helpers;
 using Blackbird.Models;
 using Blackbird.Planning;
 using Blackbird.Guidance;
+using Blackbird.Enums;
 
 namespace Blackbird
 {
@@ -16,6 +17,13 @@ namespace Blackbird
         private string _insertionPeText = "";
         private bool _useTargetOrbitInsertion = true;
         private bool _showAdvancedDetails;
+
+        private readonly string[] _guidanceModeLabels =
+        {
+            "None",
+            "Manual Guidance",
+            "Autopilot"
+        };
 
         // launch plan and guidance
         private readonly LaunchHandler _launchHandler = new LaunchHandler();
@@ -257,6 +265,25 @@ namespace Blackbird
             }
         }
 
+        private void DrawAscentGuidanceMethod()
+        {
+            GUILayout.Space(10);
+            GUILayout.Label("Flight Mode");
+            GuidanceMode selected = _launchHandler.GuidanceMode; // currently active
+
+            int selectedIndex = selected == GuidanceMode.Guidance ? 1 : 
+                                selected == GuidanceMode.Autopilot ? 2 :
+                                0;
+
+            int newSelectedIndex = GUILayout.SelectionGrid(selectedIndex, _guidanceModeLabels, 1);
+
+            GuidanceMode newMode = newSelectedIndex == 1 ? GuidanceMode.Guidance :
+                                    newSelectedIndex == 2 ? GuidanceMode.Autopilot :
+                                    GuidanceMode.None;
+
+            if (newMode == selected) _launchHandler.SetGuidanceMode(newMode); // apply if different
+        }
+
         private void DrawAscentGuidance()
         {
             if (_launchHandler.State != LaunchGuidanceState.GuidingAscent)
@@ -265,6 +292,8 @@ namespace Blackbird
             }
 
             AscentGuidanceInfo guidanceInfo = _launchHandler.GuidanceInfo;
+
+            bool canAdjustGuidance = _launchHandler.GuidanceMode == GuidanceMode.Guidance;
 
             GUILayout.Space(10);
             GUILayout.Label("[Ascent Guidance]");
@@ -275,50 +304,53 @@ namespace Blackbird
                 return;
             }
 
+            // show guidance method dropdowns
+            DrawAscentGuidanceMethod();
+
+            // PITCH
+            GUILayout.Label($"Pitch Profile");
             GUILayout.Label($"Profile Pitch: {guidanceInfo.TargetPitchDeg:F1}°");
-            GUILayout.Label($"Pitch Offset: {guidanceInfo.PitchOffsetDeg:+0.0;-0.0;0.0}°");
-            GUILayout.Label($"Command Pitch: {guidanceInfo.CommandPitchDeg:F1}°");
+            //GUILayout.Label($"Pitch Offset: {guidanceInfo.PitchOffsetDeg:+0.0;-0.0;0.0}°");
+            GUILayout.Label($"Pitching Towards: {guidanceInfo.CommandPitchDeg:F1}°");
             GUILayout.Label($"Current Pitch: {guidanceInfo.CurrentPitchDeg:F1}°");
             GUILayout.Label($"Pitch Error: {guidanceInfo.PitchErrorDeg:F1}°");
+            GUILayout.Label(guidanceInfo.PitchInstruction);
 
-            // fine tuning pitch buttons
-            GUILayout.BeginHorizontal();
-
-            if (GUILayout.Button("- Pitch"))
+            // pitch inputs
+            if (canAdjustGuidance)
             {
-                _launchHandler.DecreasePitchOffset();
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("- Pitch")) _launchHandler.DecreasePitchOffset();
+                if (GUILayout.Button("+ Pitch")) _launchHandler.IncreasePitchOffset();
+                if (GUILayout.Button("Reset Pitch")) _launchHandler.ResetPitchOffset();
+                GUILayout.EndHorizontal();
             }
 
-            if (GUILayout.Button("+ Pitch"))
-            {
-                _launchHandler.IncreasePitchOffset();
-            }
-
-            if (GUILayout.Button("Reset"))
-            {
-                _launchHandler.ResetPitchOffset();
-            }
-
-            GUILayout.EndHorizontal();
-
-            _launchHandler.FollowGuidance =
-                GUILayout.Toggle(
-                    _launchHandler.FollowGuidance,
-                    "Follow Guidance");
-
+            // HEADING
+            GUILayout.Label($"Heading Profile");
             GUILayout.Label(
                 double.IsNaN(guidanceInfo.TargetAzimuthDeg)
                     ? "Target Heading: unavailable"
                     : $"Target Heading: {guidanceInfo.TargetAzimuthDeg:F1}°");
 
-            GUILayout.Label($"Target Pitch: {guidanceInfo.TargetPitchDeg:F1}°");
-            GUILayout.Label($"Current Pitch: {guidanceInfo.CurrentPitchDeg:F1}°");
-            GUILayout.Label($"Pitch Error: {guidanceInfo.PitchErrorDeg:F1}°");
+            GUILayout.Label(guidanceInfo.HeadingInstruction);
+            GUILayout.Label($"Heading Towards: {guidanceInfo.CommandHeadingDeg:F1}°");
+            GUILayout.Label($"Current Heading: {guidanceInfo.CurrentHeadingDeg:F1}°");
+            GUILayout.Label($"Heading Error: {guidanceInfo.HeadingErrorDeg:F1}°");
+
+            // heading inputs
+            if (canAdjustGuidance)
+            {
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("- Heading")) _launchHandler.DecreaseHeadingOffset();
+                if (GUILayout.Button("+ Heading")) _launchHandler.IncreaseHeadingOffset();
+                if (GUILayout.Button("Reset Heading")) _launchHandler.ResetHeadingOffset();
+                GUILayout.EndHorizontal();
+            }
+
             GUILayout.Label($"Target LAN: {guidanceInfo.TargetLanDeg:F2}°");
             GUILayout.Label($"Current LAN: {guidanceInfo.CurrentLanDeg:F2}°");
             GUILayout.Label($"LAN Error: {guidanceInfo.LanErrorDeg:F2}°");
-            GUILayout.Label(guidanceInfo.HeadingInstruction);
-            GUILayout.Label(guidanceInfo.PitchInstruction);
         }
 
         private void ShowPhasingRecommendation(

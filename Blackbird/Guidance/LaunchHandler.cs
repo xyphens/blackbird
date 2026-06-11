@@ -1,4 +1,5 @@
 ﻿using System;
+using Blackbird.Enums;
 using Blackbird.Models;
 using UnityEngine;
 
@@ -10,9 +11,12 @@ namespace Blackbird.Guidance
         private const double WarpStopLeadTimeSeconds = 300.0;
         private double _targetUt;
 
+        // pitch guidance
         public double PitchOffsetDeg { get; private set; }
-        public bool FollowGuidance { get; set; }
-
+        public double HeadingOffsetDeg { get; private set; }
+        // read inputs from Blackbird?
+        public GuidanceMode GuidanceMode { get; set; } = GuidanceMode.None;
+        public bool EnableAutopilot { get; set; }
         public LaunchGuidanceState State { get; private set; }
         public LaunchPlan CurrentPlan { get; private set; }
         public bool HasPlan => CurrentPlan != null;
@@ -96,6 +100,8 @@ namespace Blackbird.Guidance
                 rateIndex = 7;
             }
 
+            TimeWarp.SetRate(rateIndex, false);
+
             Debug.Log(
                 $"[BlackBird] Warp: T-{secondsRemaining:F1}s");
         }
@@ -110,6 +116,7 @@ namespace Blackbird.Guidance
 
         public void Update(Vessel vessel)
         {
+            // handle guidance
             if (State == LaunchGuidanceState.GuidingAscent)
             {
                 GuidanceInfo =
@@ -117,21 +124,22 @@ namespace Blackbird.Guidance
                         vessel,
                         CurrentPlan,
                         PitchOffsetDeg,
-                        FollowGuidance
+                        HeadingOffsetDeg,
+                        GuidanceMode
                         );
 
-                if (FollowGuidance && GuidanceInfo != null)
+                if ((GuidanceMode == GuidanceMode.Guidance ||
+                     GuidanceMode == GuidanceMode.Autopilot) &&
+                    GuidanceInfo != null)
                 {
-                    ApplyPitchGuidance(vessel, GuidanceInfo);
+                    ApplyAscentGuidance(vessel, GuidanceInfo);
                 }
                 return;
             }
 
-            if (State != LaunchGuidanceState.WarpingToLaunch)
-            {
-                return;
-            }
+            if (State != LaunchGuidanceState.WarpingToLaunch) return;
 
+            // monitor / adjust warp rate
             double nowUt = Planetarium.GetUniversalTime();
 
             double secondsRemaining = _targetUt - nowUt;
@@ -155,10 +163,19 @@ namespace Blackbird.Guidance
             SetSafeWarpRate(secondsRemaining);
         }
 
+        public void SetGuidanceMode(GuidanceMode mode)
+        {
+            GuidanceMode = mode;
+        }
+
+        // abort launch before liftoff
         public void Abort()
         {
             TimeWarp.SetRate(0, true);
             _targetUt = 0.0;
+
+            PitchOffsetDeg = 0;
+            HeadingOffsetDeg = 0;
 
             if (CurrentPlan != null)
             {
@@ -178,6 +195,7 @@ namespace Blackbird.Guidance
             State = LaunchGuidanceState.Idle;
         }
     
+        // pitch command
         public void IncreasePitchOffset()
         {
             PitchOffsetDeg += 1.0;
@@ -186,24 +204,43 @@ namespace Blackbird.Guidance
         {
             PitchOffsetDeg -= 1.0;
         }
+        public void SetPitchOffset(float pitchOffset) 
+        {
+            PitchOffsetDeg = pitchOffset;
+        }
         public void ResetPitchOffset()
         {
             PitchOffsetDeg = 0.0;
         }
-
-        public static void ApplyPitchGuidance(Vessel vessel, AscentGuidanceInfo gi)
+        public void IncreaseHeadingOffset()
         {
-            if (vessel == null || gi == null || double.IsNaN(gi.TargetAzimuthDeg)) return;
+            HeadingOffsetDeg += 1.0;
+        }
+        public void DecreaseHeadingOffset()
+        {
+            HeadingOffsetDeg -= 1.0;
+        }
+        public void SetHeadingOffset(float headingOffset)
+        {
+            HeadingOffsetDeg = headingOffset;
+        }
+        public void ResetHeadingOffset()
+        {
+            HeadingOffsetDeg = 0.0;
+        }
+        // apply either manual or autopilot pitch + heading inputs
+        public static void ApplyAscentGuidance(Vessel vessel, AscentGuidanceInfo gi)
+        {
+            if (vessel == null || gi == null || double.IsNaN(gi.CommandPitchDeg) || double.IsNaN(gi.CommandHeadingDeg)) return;
 
-            if (!vessel.Autopilot.Enabled)
-            {
-                vessel.Autopilot.Enable(VesselAutopilot.AutopilotMode.StabilityAssist);
-            }
+            if (!vessel.Autopilot.Enabled) vessel.Autopilot.Enable(VesselAutopilot.AutopilotMode.StabilityAssist);
 
             Vector3d up = (vessel.GetWorldPos3D() - vessel.mainBody.position).normalized;
             Vector3d north = Vector3d.Exclude(up, vessel.mainBody.transform.up).normalized;
             Vector3d east = Vector3d.Cross(up, north).normalized;
-            double headingRad = gi.TargetAzimuthDeg * Math.PI / 180.0;
+
+            double headingRad = gi.CommandHeadingDeg * Math.PI / 180.0;
+
             Vector3d horizontalDirection = (north * Math.Cos(headingRad)) + (east * Math.Sin(headingRad));
             double pitchRad = gi.CommandPitchDeg * Math.PI / 180.0;
 

@@ -1,8 +1,5 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using Blackbird.Enums;
 
 namespace Blackbird.Models
 {
@@ -19,7 +16,9 @@ namespace Blackbird.Models
         public double PitchErrorDeg { get; set; }
         public double PitchOffsetDeg { get; set; }
         public double CommandPitchDeg { get; set; }
-        public bool FollowGuidanceEnabled { get; set; }
+        public double HeadingOffsetDeg { get; set; }
+        public double CommandHeadingDeg { get; set; }
+        public GuidanceMode GuidanceMode { get; set; }
         public double CurrentHeadingDeg { get; set; }
         public double HeadingErrorDeg { get; set; }
     }

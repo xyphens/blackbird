@@ -11,4 +11,11 @@ namespace Blackbird.Enums
         AscentGuidance,
         OrbitTrim
     }
+
+    public enum GuidanceMode
+    {
+        None,
+        Guidance,
+        Autopilot
+    }
 }

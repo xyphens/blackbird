@@ -32,11 +32,17 @@ namespace Blackbird.Guidance
             new PitchProfilePoint { AltitudeMeters = 45000.0, PitchDegrees = 0.0 }
         };
 
-        public AscentGuidanceInfo GetGuidance(Vessel vessel, LaunchPlan plan, double pitchOffsetDeg, bool followGuidance)
+        public AscentGuidanceInfo GetGuidance(Vessel vessel, LaunchPlan plan, double pitchOffsetDeg, double headingOffsetDeg, GuidanceMode guidanceMode)
         {
             if (vessel == null || plan == null) return null;
 
             double targetAzimuth = double.IsNaN(plan.LaunchAzimuthDeg) ? GetFallbackLaunchHeading(vessel, plan) : plan.LaunchAzimuthDeg;
+            // heading guidance
+            double commandHeading = guidanceMode == GuidanceMode.Autopilot 
+                                    ? targetAzimuth 
+                                    : OrbitMath.NormalizeDegrees(targetAzimuth + headingOffsetDeg);
+            double currentHeading = GetCurrentHeadingDeg(vessel);
+            double headingError = OrbitMath.DeltaDegrees(currentHeading, commandHeading);
 
             double targetLan = plan.TargetOrbit.LanDeg;
 
@@ -44,31 +50,36 @@ namespace Blackbird.Guidance
 
             double lanError = OrbitMath.DeltaDegrees(currentLan, targetLan);
 
+            // pitch guidance
             double targetPitch = GetTargetPitchDeg(vessel.altitude, plan);
-            double commandPitch = Math.Max(0.0, Math.Min(90.0, targetPitch + pitchOffsetDeg));
+
+            double commandPitch = guidanceMode == GuidanceMode.Autopilot 
+                                    ? targetPitch 
+                                    : targetPitch + pitchOffsetDeg;
+            commandPitch = Math.Max(0.0, Math.Min(90.0, commandPitch)); // todo: we might want to allow negative pitch when out of atmosphere
+
             double currentPitch = GetCurrentPitchDeg(vessel);
             double pitchError = OrbitMath.DeltaDegrees(currentPitch, commandPitch);
 
             return new AscentGuidanceInfo
             {
                 TargetAzimuthDeg = targetAzimuth,
+                CurrentHeadingDeg = currentHeading,
+                HeadingOffsetDeg = headingOffsetDeg,
+                CommandHeadingDeg = commandHeading,
+                HeadingErrorDeg = headingError,
                 TargetLanDeg = targetLan,
                 CurrentLanDeg = currentLan,
                 LanErrorDeg = lanError,
-                HeadingInstruction = GetHeadingInstruction(targetAzimuth),
+                HeadingInstruction = "Heading to " + commandHeading.ToString("F1") + "°",
                 TargetPitchDeg = targetPitch,
                 PitchOffsetDeg = pitchOffsetDeg,
                 CommandPitchDeg = commandPitch,
                 CurrentPitchDeg = currentPitch,
                 PitchErrorDeg = pitchError,
-                FollowGuidanceEnabled = followGuidance,
+                GuidanceMode = guidanceMode,
                 PitchInstruction = "Pitch to " + commandPitch.ToString("F1") + "°",
             };
-        }
-        private static string GetHeadingInstruction(double targetAzimuthDeg)
-        {
-            if (double.IsNaN(targetAzimuthDeg)) return "Heading unavailable";
-            return "Fly heading: " + targetAzimuthDeg.ToString("F1") + "°";
         }
 
         // altitude is in meters
