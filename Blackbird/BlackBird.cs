@@ -8,7 +8,6 @@ using Blackbird.Guidance;
 
 namespace Blackbird
 {
-
     [KSPAddon(KSPAddon.Startup.Flight, false)]
     public sealed class RendezvousAssistant : MonoBehaviour
     {
@@ -16,6 +15,7 @@ namespace Blackbird
         private string _insertionApText = "";
         private string _insertionPeText = "";
         private bool _useTargetOrbitInsertion = true;
+        private bool _showAdvancedDetails;
 
         // launch plan and guidance
         private readonly LaunchHandler _launchHandler = new LaunchHandler();
@@ -29,8 +29,9 @@ namespace Blackbird
 
         public void Update()
         {
-            _launchHandler.Update();
+            _launchHandler.Update(FlightGlobals.ActiveVessel);
         }
+
         private void OnGUI()
         {
             _windowRect = GUILayout.Window(
@@ -42,145 +43,48 @@ namespace Blackbird
 
         private void DrawWindow(int windowId)
         {
-            // current vessel
             Vessel vessel = FlightGlobals.ActiveVessel;
-            if (vessel != null)
-            {
-                GUILayout.Label($"Active: {vessel.vesselName}");
-                GUILayout.Label($"Altitude: {vessel.altitude:N0} m");
-                GUILayout.Label($"Body Radius: {vessel.mainBody.Radius:N0} m");
-            } else
+            if (vessel == null)
             {
                 return;
             }
 
-            // target vessel
+            GUILayout.Label($"Active: {vessel.vesselName}");
+            GUILayout.Label($"Altitude: {vessel.altitude:N0} m");
+
             ITargetable target = FlightGlobals.fetch.VesselTarget;
 
             if (target is Vessel targetVessel)
             {
-                // get and show our launch plan
+                InsertionTarget insertionTarget = DrawInsertionTargetInputs(targetVessel);
+                LaunchLocation launchLocation = LaunchLocation.FromVessel(vessel);
+                LaunchPlan launchPlan = LaunchPlanner.Create(
+                    vessel,
+                    targetVessel,
+                    insertionTarget,
+                    launchLocation);
 
-                InsertionTarget it = DrawInsertionTargetInputs(targetVessel);
-
-                LaunchLocation ll = LaunchLocation.FromVessel(vessel);
-
-                LaunchPlan lp = LaunchPlanner.Create(vessel, targetVessel, it, ll);
-
-                // pass our plan to guidance
-                if (_launchHandler.State == LaunchGuidanceState.Idle)
-                {
-                    SetCurrentPlan(lp);
-                }
-                else if (_launchHandler.State == LaunchGuidanceState.PlanReady)
-                {
-                    _currentPlan = lp;
-                    _selectedPlan = lp;
-                    _launchHandler.SetPlan(lp);
-                }
+                SyncLaunchPlan(launchPlan);
 
                 DrawPlanSelector();
                 DrawLaunchHandlerButtons();
+                DrawLaunchPlanSummary(launchPlan, targetVessel);
+                DrawAscentGuidance();
+                ShowPhasingRecommendation(launchPlan.PhasingRecommendation, launchPlan);
+                DrawLaunchRecommendation(launchPlan);
+                DrawLaunchWindowSummary(launchPlan);
 
-                // ACTIVE LAUNCH PLAN
                 GUILayout.Space(10);
-                GUILayout.Label("[Launch Plan]");
-                if (_launchHandler.State == LaunchGuidanceState.WarpingToLaunch ||
-                    _launchHandler.State == LaunchGuidanceState.AwaitingLaunch)
+                _showAdvancedDetails = GUILayout.Toggle(
+                    _showAdvancedDetails,
+                    "Show Advanced Details");
+
+                if (_showAdvancedDetails)
                 {
-                    GUILayout.Label(
-                        "Launch In: " +
-                        BlackbirdHelpers.FormatDuration(
-                            Math.Max(0.0, _launchHandler.SecondsUntilLaunch)));
+                    DrawAdvancedDetails(launchPlan, targetVessel);
                 }
-
-                GUILayout.Label($"Running for Scale: {lp.ScaleLabel}");
-
-                GUILayout.Space(10);
-                GUILayout.Label("-- Active Orbit --");
-                GUILayout.Label($"Inclination: {lp.ActiveOrbit.InclinationDeg:F2}°");
-                GUILayout.Label($"LAN: {lp.ActiveOrbit.LanDeg:F2}°");
-                GUILayout.Label($"Apoapsis: {lp.ActiveOrbit.ApoapsisAlt / 1000:F0} km");
-                GUILayout.Label($"Periapsis: {lp.ActiveOrbit.PeriapsisAlt / 1000:F0} km");
-                GUILayout.Label($"Period: {lp.ActiveOrbit.PeriodSeconds:F1}s");
-
-                GUILayout.Space(10);
-                GUILayout.Label("-- Target Info --");
-                GUILayout.Label($"Name: {targetVessel.vesselName}");
-
-                // distance
-                GUILayout.Label($"Distance: {lp.DistanceMeters / 1000:F1} km");
-                // inclination
-                GUILayout.Label($"Inclination: {lp.TargetOrbit.InclinationDeg:F2}°");
-                // LAN (longitude of ascending node
-                GUILayout.Label($"LAN: {lp.TargetOrbit.LanDeg:F2}°");
-                // apoapsis
-                GUILayout.Label($"Apoapsis: {lp.TargetOrbit.ApoapsisAlt / 1000:F0} km");
-                // periapsis
-                GUILayout.Label($"Periapsis: {lp.TargetOrbit.PeriapsisAlt / 1000:F0} km");
-                // phase angle
-                GUILayout.Label($"Phase Angle: {lp.PhaseAngleDeg:F1}°");
-
-                GUILayout.Label($"Period Diff: {lp.PhasingOrbit.PeriodDifferenceSeconds:F1}s");
-
-                GUILayout.Label(
-                    lp.PhasingOrbit.IsFasterThanTarget
-                        ? "Phasing: Insertion orbit catches target"
-                        : "Phasing: Target pulls away");
-
-                // ORBITS
-                GUILayout.Space(10);
-                GUILayout.Label("-- Orbit Comparison --");
-                GUILayout.Label($"Inc Delta: {lp.RelativeInclinationDeg:F2}°");
-                GUILayout.Label($"LAN Delta: {lp.RelativeLanDeg:F2}°");
-                GUILayout.Label($"Period Delta: {lp.RelativePeriodSeconds:F1}s");
-
-                // PHASING
-                GUILayout.Space(10);
-                GUILayout.Label("-- Phasing Period -- ");
-                GUILayout.Label($"Period Diff: {lp.PhasingOrbit.PeriodDifferenceSeconds:F1}s");
-                GUILayout.Label($"Period Diff: {lp.PhasingOrbit.PeriodDifferenceMinutes:F2} min");
-                GUILayout.Label($"Period Diff: {lp.PhasingOrbit.PeriodDifferencePercent:F3}%");
-                GUILayout.Label($"Phase Gain: {lp.PhasingOrbit.RelativePhaseGainDegPerOrbit:F2}°/orbit");
-                if (lp.PhasingOrbit.HasRendezvousEstimate)
-                {
-                    GUILayout.Label($"Rendezvous Orbits: {lp.PhasingOrbit.EstimatedOrbitsToRendezvous:F1}");
-                    GUILayout.Label(
-                        $"Rendezvous Time: {BlackbirdHelpers.FormatDuration(lp.PhasingOrbit.EstimatedTimeToRendezvousSeconds)}");
-                }
-                else
-                {
-                    GUILayout.Label("Rendezvous Estimate: unavailable");
-                }
-
-                GUILayout.Label(
-                    lp.PhasingOrbit.IsFasterThanTarget
-                        ? "Phasing: insertion orbit is faster than target"
-                        : "Phasing: insertion orbit is slower than target");
-
-                // RECOMMENDATION
-                ShowPhasingRecommendation(lp.PhasingRecommendation, lp);
-
-                GUILayout.Space(10);
-                GUILayout.Label("-- Launch Recommendation -- ");
-                GUILayout.Label(
-                    double.IsNaN(lp.LaunchAzimuthDeg)
-                        ? "Azimuth: unavailable"
-                        : $"Azimuth: {lp.LaunchAzimuthDeg:F1}°");
-                GUILayout.Label($"Apoapsis: {lp.RecommendedApAlt / 1000:F0} km");
-                GUILayout.Label($"Periapsis: {lp.RecommendedPeAlt / 1000:F0} km");
-                
-                GUILayout.Space(10);
-                GUILayout.Label("-- Launch Window --");
-                GUILayout.Label($"Current Node: {lp.LaunchWindow.NodeName}");
-                GUILayout.Label($"Asc Node Lon: {lp.LaunchWindow.AscendingNodeLongitudeDeg:F2}°");
-                GUILayout.Label($"Desc Node Lon: {lp.LaunchWindow.DescendingNodeLongitudeDeg:F2}°");
-                GUILayout.Label($"Time to Asc: {lp.LaunchWindow.TimeToAscendingNodeSeconds:F0}s");
-                GUILayout.Label($"Time to Desc: {lp.LaunchWindow.TimeToDescendingNodeSeconds:F0}s");
-                GUILayout.Label($"Selected Offset: {lp.LaunchWindow.PlaneOffsetDeg:F2}°");
-                string fmtLaunchIn = BlackbirdHelpers.FormatDuration(lp.LaunchWindow.TimeToPlaneCrossingSeconds);
-                GUILayout.Label($"Launch In: {fmtLaunchIn}");
-            } else
+            }
+            else
             {
                 GUILayout.Space(10);
                 GUILayout.Label("No Target");
@@ -188,6 +92,21 @@ namespace Blackbird
 
             GUI.DragWindow();
         }
+
+        private void SyncLaunchPlan(LaunchPlan launchPlan)
+        {
+            if (_launchHandler.State == LaunchGuidanceState.Idle)
+            {
+                SetCurrentPlan(launchPlan);
+            }
+            else if (_launchHandler.State == LaunchGuidanceState.PlanReady)
+            {
+                _currentPlan = launchPlan;
+                _selectedPlan = launchPlan;
+                _launchHandler.SetPlan(launchPlan);
+            }
+        }
+
         private InsertionTarget DrawInsertionTargetInputs(Vessel targetVessel)
         {
             GUILayout.Space(10);
@@ -200,14 +119,12 @@ namespace Blackbird
                 _insertionPeText = targetVessel.orbit.PeA.ToString("F0");
             }
 
-            // apoapsis input
             GUILayout.BeginHorizontal();
             GUILayout.Label("Ap:", GUILayout.Width(40));
             _insertionApText = GUILayout.TextField(_insertionApText, GUILayout.Width(100));
             GUILayout.Label("m");
             GUILayout.EndHorizontal();
 
-            // periapsis input
             GUILayout.BeginHorizontal();
             GUILayout.Label("Pe:", GUILayout.Width(40));
             _insertionPeText = GUILayout.TextField(_insertionPeText, GUILayout.Width(100));
@@ -224,7 +141,8 @@ namespace Blackbird
             _launchHandler.SetPlan(plan);
         }
 
-        private InsertionTarget CreateInsertionTargetFromUi(Vessel targetVessel) {
+        private InsertionTarget CreateInsertionTargetFromUi(Vessel targetVessel)
+        {
             if (_useTargetOrbitInsertion)
             {
                 return InsertionTarget.FromTargetOrbit(targetVessel);
@@ -241,7 +159,6 @@ namespace Blackbird
                 return InsertionTarget.FromTargetOrbit(targetVessel);
             }
 
-            // circular
             if (pe > ap)
             {
                 double temp = ap;
@@ -256,41 +173,11 @@ namespace Blackbird
             };
         }
 
-        private void ShowPhasingRecommendation(PhasingRecommendation pr, LaunchPlan lp)
-        {
-            GUILayout.Label("-- Phasing Recommendation --");
-
-            if (pr == null)
-            {
-                GUILayout.Label("Unavailable");
-                return;
-            }
-
-            if (!pr.HasRecommendation)
-            {
-                GUILayout.Label("Unavailable");
-                GUILayout.Label(pr.ReasonUnavailable);
-                return;
-            }
-
-            GUILayout.Label("Mode: " + pr.Mode);
-            GUILayout.Label("Apoapsis: " + (pr.ApoapsisAlt / 1000.0).ToString("N0") + " km");
-            GUILayout.Label("Periapsis: " + (pr.PeriapsisAlt / 1000.0).ToString("N0") + " km");
-            GUILayout.Label("Period Diff: " + pr.PeriodDifferenceSeconds.ToString("N1") + "s");
-            GUILayout.Label("Phase Gain: " + pr.PhaseGainDegPerOrbit.ToString("N2") + "°/orbit");
-            GUILayout.Label("Rendezvous Orbits: " + pr.EstimatedOrbitsToRendezvous.ToString("N1"));
-            GUILayout.Label("Rendezvous Time: " + BlackbirdHelpers.FormatDuration(pr.EstimatedTimeToRendezvousSeconds));
-            GUILayout.Label(
-                "Offset: " +
-                ((pr.ApoapsisAlt - lp.TargetOrbit.ApoapsisAlt) / 1000.0)
-                    .ToString("N0") +
-                " km");
-        }
-
         private void DrawPlanSelector()
         {
             GUILayout.Space(8);
             GUILayout.Label("Launch Plan");
+
             if (_currentPlan == null)
             {
                 GUILayout.Label("No valid launch plan.");
@@ -298,7 +185,6 @@ namespace Blackbird
             }
 
             bool selected = ReferenceEquals(_selectedPlan, _currentPlan);
-
             bool newSelected = GUILayout.Toggle(selected, "Current computed plan");
 
             if (newSelected && !selected)
@@ -312,32 +198,226 @@ namespace Blackbird
 
         private void DrawLaunchHandlerButtons()
         {
-            if (_selectedPlan == null) return;
+            if (_selectedPlan == null)
+            {
+                return;
+            }
 
             GUILayout.Space(8);
 
             GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanReady;
-            
-            if (GUILayout.Button("Accept Plan")) _launchHandler.AcceptPlan();
+            if (GUILayout.Button("Accept Plan"))
+            {
+                _launchHandler.AcceptPlan();
+            }
 
             GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted;
+            if (GUILayout.Button("Warp To Launch"))
+            {
+                _launchHandler.WarpToLaunch();
+            }
 
-            if (GUILayout.Button("Warp To Launch")) _launchHandler.WarpToLaunch();
-
-            GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted
-                        || _launchHandler.State == LaunchGuidanceState.AwaitingLaunch;
-
-            if (GUILayout.Button("Start Guidance")) _launchHandler.StartGuidance();
+            GUI.enabled =
+                _launchHandler.State == LaunchGuidanceState.PlanAccepted ||
+                _launchHandler.State == LaunchGuidanceState.AwaitingLaunch;
+            if (GUILayout.Button("Start Guidance"))
+            {
+                _launchHandler.StartGuidance();
+            }
 
             GUI.enabled =
                 _launchHandler.State == LaunchGuidanceState.PlanAccepted ||
                 _launchHandler.State == LaunchGuidanceState.WarpingToLaunch ||
                 _launchHandler.State == LaunchGuidanceState.AwaitingLaunch ||
                 _launchHandler.State == LaunchGuidanceState.GuidingAscent;
-
-            if (GUILayout.Button("Abort Guidance")) _launchHandler.Abort();
+            if (GUILayout.Button("Abort Guidance"))
+            {
+                _launchHandler.Abort();
+            }
 
             GUI.enabled = true;
+        }
+
+        private void DrawLaunchPlanSummary(
+            LaunchPlan launchPlan,
+            Vessel targetVessel)
+        {
+            GUILayout.Space(10);
+            GUILayout.Label("[Launch Plan]");
+            GUILayout.Label($"Target: {targetVessel.vesselName}");
+            GUILayout.Label($"Scale: {launchPlan.ScaleLabel}");
+
+            if (_launchHandler.State == LaunchGuidanceState.WarpingToLaunch ||
+                _launchHandler.State == LaunchGuidanceState.AwaitingLaunch)
+            {
+                GUILayout.Label(
+                    "Launch In: " +
+                    BlackbirdHelpers.FormatDuration(
+                        Math.Max(0.0, _launchHandler.SecondsUntilLaunch)));
+            }
+        }
+
+        private void DrawAscentGuidance()
+        {
+            if (_launchHandler.State != LaunchGuidanceState.GuidingAscent)
+            {
+                return;
+            }
+
+            AscentGuidanceInfo guidanceInfo = _launchHandler.GuidanceInfo;
+
+            GUILayout.Space(10);
+            GUILayout.Label("[Ascent Guidance]");
+
+            if (guidanceInfo == null)
+            {
+                GUILayout.Label("Guidance unavailable");
+                return;
+            }
+
+            GUILayout.Label(
+                double.IsNaN(guidanceInfo.TargetAzimuthDeg)
+                    ? "Target Heading: unavailable"
+                    : $"Target Heading: {guidanceInfo.TargetAzimuthDeg:F1}°");
+
+            GUILayout.Label($"Target Pitch: {guidanceInfo.TargetPitchDeg:F1}°");
+            GUILayout.Label($"Current Pitch: {guidanceInfo.CurrentPitchDeg:F1}°");
+            GUILayout.Label($"Pitch Error: {guidanceInfo.PitchErrorDeg:F1}°");
+            GUILayout.Label($"Target LAN: {guidanceInfo.TargetLanDeg:F2}°");
+            GUILayout.Label($"Current LAN: {guidanceInfo.CurrentLanDeg:F2}°");
+            GUILayout.Label($"LAN Error: {guidanceInfo.LanErrorDeg:F2}°");
+            GUILayout.Label(guidanceInfo.HeadingInstruction);
+            GUILayout.Label(guidanceInfo.PitchInstruction);
+        }
+
+        private void ShowPhasingRecommendation(
+            PhasingRecommendation recommendation,
+            LaunchPlan launchPlan)
+        {
+            GUILayout.Space(10);
+            GUILayout.Label("[Phasing Recommendation]");
+
+            if (recommendation == null)
+            {
+                GUILayout.Label("Unavailable");
+                return;
+            }
+
+            if (!recommendation.HasRecommendation)
+            {
+                GUILayout.Label("Unavailable");
+                GUILayout.Label(recommendation.ReasonUnavailable);
+                return;
+            }
+
+            GUILayout.Label($"Mode: {recommendation.Mode}");
+            GUILayout.Label($"Apoapsis: {recommendation.ApoapsisAlt / 1000.0:N0} km");
+            GUILayout.Label($"Periapsis: {recommendation.PeriapsisAlt / 1000.0:N0} km");
+            GUILayout.Label($"Rendezvous: {BlackbirdHelpers.FormatDuration(recommendation.EstimatedTimeToRendezvousSeconds)}");
+            GUILayout.Label($"Rendezvous Orbits: {recommendation.EstimatedOrbitsToRendezvous:N1}");
+        }
+
+        private void DrawLaunchRecommendation(LaunchPlan launchPlan)
+        {
+            GUILayout.Space(10);
+            GUILayout.Label("[Launch Recommendation]");
+            GUILayout.Label(
+                double.IsNaN(launchPlan.LaunchAzimuthDeg)
+                    ? "Azimuth: unavailable"
+                    : $"Azimuth: {launchPlan.LaunchAzimuthDeg:F1}°");
+            GUILayout.Label($"Apoapsis: {launchPlan.RecommendedApAlt / 1000:F0} km");
+            GUILayout.Label($"Periapsis: {launchPlan.RecommendedPeAlt / 1000:F0} km");
+        }
+
+        private void DrawLaunchWindowSummary(LaunchPlan launchPlan)
+        {
+            GUILayout.Space(10);
+            GUILayout.Label("[Launch Window]");
+            GUILayout.Label($"Current Node: {launchPlan.LaunchWindow.NodeName}");
+            GUILayout.Label(
+                "Launch In: " +
+                BlackbirdHelpers.FormatDuration(
+                    launchPlan.LaunchWindow.TimeToPlaneCrossingSeconds));
+        }
+
+        private void DrawAdvancedDetails(
+            LaunchPlan launchPlan,
+            Vessel targetVessel)
+        {
+            GUILayout.Space(10);
+            GUILayout.Label("[Advanced Details]");
+
+            GUILayout.Space(10);
+            GUILayout.Label("-- Active Orbit --");
+            GUILayout.Label($"Inclination: {launchPlan.ActiveOrbit.InclinationDeg:F2}°");
+            GUILayout.Label($"LAN: {launchPlan.ActiveOrbit.LanDeg:F2}°");
+            GUILayout.Label($"Apoapsis: {launchPlan.ActiveOrbit.ApoapsisAlt / 1000:F0} km");
+            GUILayout.Label($"Periapsis: {launchPlan.ActiveOrbit.PeriapsisAlt / 1000:F0} km");
+            GUILayout.Label($"Period: {launchPlan.ActiveOrbit.PeriodSeconds:F1}s");
+
+            GUILayout.Space(10);
+            GUILayout.Label("-- Target Orbit --");
+            GUILayout.Label($"Name: {targetVessel.vesselName}");
+            GUILayout.Label($"Distance: {launchPlan.DistanceMeters / 1000:F1} km");
+            GUILayout.Label($"Inclination: {launchPlan.TargetOrbit.InclinationDeg:F2}°");
+            GUILayout.Label($"LAN: {launchPlan.TargetOrbit.LanDeg:F2}°");
+            GUILayout.Label($"Apoapsis: {launchPlan.TargetOrbit.ApoapsisAlt / 1000:F0} km");
+            GUILayout.Label($"Periapsis: {launchPlan.TargetOrbit.PeriapsisAlt / 1000:F0} km");
+            GUILayout.Label($"Phase Angle: {launchPlan.PhaseAngleDeg:F1}°");
+
+            GUILayout.Space(10);
+            GUILayout.Label("-- Orbit Comparison --");
+            GUILayout.Label($"Inc Delta: {launchPlan.RelativeInclinationDeg:F2}°");
+            GUILayout.Label($"LAN Delta: {launchPlan.RelativeLanDeg:F2}°");
+            GUILayout.Label($"Period Delta: {launchPlan.RelativePeriodSeconds:F1}s");
+
+            GUILayout.Space(10);
+            GUILayout.Label("-- Phasing Period --");
+            GUILayout.Label($"Period Diff: {launchPlan.PhasingOrbit.PeriodDifferenceSeconds:F1}s");
+            GUILayout.Label($"Period Diff: {launchPlan.PhasingOrbit.PeriodDifferenceMinutes:F2} min");
+            GUILayout.Label($"Period Diff: {launchPlan.PhasingOrbit.PeriodDifferencePercent:F3}%");
+            GUILayout.Label($"Phase Gain: {launchPlan.PhasingOrbit.RelativePhaseGainDegPerOrbit:F2}°/orbit");
+
+            if (launchPlan.PhasingOrbit.HasRendezvousEstimate)
+            {
+                GUILayout.Label($"Rendezvous Orbits: {launchPlan.PhasingOrbit.EstimatedOrbitsToRendezvous:F1}");
+                GUILayout.Label(
+                    $"Rendezvous Time: {BlackbirdHelpers.FormatDuration(launchPlan.PhasingOrbit.EstimatedTimeToRendezvousSeconds)}");
+            }
+            else
+            {
+                GUILayout.Label("Rendezvous Estimate: unavailable");
+            }
+
+            GUILayout.Label(
+                launchPlan.PhasingOrbit.IsFasterThanTarget
+                    ? "Phasing: insertion orbit is faster than target"
+                    : "Phasing: insertion orbit is slower than target");
+
+            GUILayout.Space(10);
+            GUILayout.Label("-- Phasing Recommendation Details --");
+            PhasingRecommendation recommendation = launchPlan.PhasingRecommendation;
+            if (recommendation != null && recommendation.HasRecommendation)
+            {
+                GUILayout.Label($"Period Diff: {recommendation.PeriodDifferenceSeconds:N1}s");
+                GUILayout.Label($"Phase Gain: {recommendation.PhaseGainDegPerOrbit:N2}°/orbit");
+                GUILayout.Label(
+                    "Offset: " +
+                    ((recommendation.ApoapsisAlt - launchPlan.TargetOrbit.ApoapsisAlt) / 1000.0).ToString("N0") +
+                    " km");
+            }
+            else
+            {
+                GUILayout.Label("Unavailable");
+            }
+
+            GUILayout.Space(10);
+            GUILayout.Label("-- Launch Window Details --");
+            GUILayout.Label($"Asc Node Lon: {launchPlan.LaunchWindow.AscendingNodeLongitudeDeg:F2}°");
+            GUILayout.Label($"Desc Node Lon: {launchPlan.LaunchWindow.DescendingNodeLongitudeDeg:F2}°");
+            GUILayout.Label($"Time to Asc: {launchPlan.LaunchWindow.TimeToAscendingNodeSeconds:F0}s");
+            GUILayout.Label($"Time to Desc: {launchPlan.LaunchWindow.TimeToDescendingNodeSeconds:F0}s");
+            GUILayout.Label($"Selected Offset: {launchPlan.LaunchWindow.PlaneOffsetDeg:F2}°");
         }
     }
 }

@@ -65,12 +65,14 @@
     <Compile Include="Guidance\LaunchGuidanceState.cs" />
     <Compile Include="Guidance\LaunchHandler.cs" />
     <Compile Include="Helpers\Helpers.cs" />
+    <Compile Include="Models\AscentGuidanceInfo.cs" />
     <Compile Include="Models\InsertionTarget.cs" />
     <Compile Include="Models\LaunchPlan.cs" />
     <Compile Include="Models\LaunchLocation.cs" />
     <Compile Include="Models\LaunchWindowInfo.cs" />
     <Compile Include="Models\PhasingOrbit.cs" />
     <Compile Include="Models\PhasingRecommendation.cs" />
+    <Compile Include="Models\PitchProfilePoint.cs" />
     <Compile Include="Planning\PhasingRecommendationCalculator.cs" />
     <Compile Include="Models\PhasingRecommendationMode.cs" />
     <Compile Include="Planning\LaunchPlanner.cs" />

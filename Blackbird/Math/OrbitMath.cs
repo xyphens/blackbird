@@ -23,20 +23,31 @@ namespace Blackbird.Mathematics
         // find the Azimuth (plane) in degrees we want to launch into
         public static double GetLaunchAzimuth(double activeVesselLatitude, double targetInclination)
         {
-            
-            double incRadians = targetInclination * Math.PI / 180.0;
-            double latRadians = activeVesselLatitude * Math.PI / 180.0;
+            double incRad = targetInclination * Math.PI / 180.0;
+            double latRad = activeVesselLatitude * Math.PI / 180.0;
 
-            if (Math.Abs(incRadians) < Math.Abs(latRadians))
+            double cosLatitude = Math.Cos(latRad);
+
+            if (Math.Abs(cosLatitude) < 1e-9)
             {
                 return double.NaN;
             }
 
-            double cosAzimuth = Math.Cos(incRadians) / Math.Cos(latRadians);
-            cosAzimuth = Math.Max(-1.0, Math.Min(1.0, cosAzimuth));
+            double argument = Math.Cos(incRad) / cosLatitude;
 
-            double azRadians = Math.Asin(cosAzimuth);
-            return azRadians * 180.0 / Math.PI;
+            if (argument > 1.0 && argument < 1.000001)
+            {
+                argument = 1.0;
+            } else if (argument < -1.0 && argument > -1.000001)
+            {
+                argument = -1.0;
+            }
+
+            if (argument < -1.0 || argument > 1.0) return double.NaN;
+
+            double azimuthRad = Math.Asin(argument);
+
+            return NormalizeDegrees(azimuthRad * 180.0 / Math.PI);
         }
 
         // convert negative degrees to a real radian

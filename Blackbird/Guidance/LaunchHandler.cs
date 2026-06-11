@@ -6,11 +6,15 @@ namespace Blackbird.Guidance
     public sealed class LaunchHandler
     {
         // TODO: lower the lead time or make it an input
-        private const double WarpStopLeadTimeSeconds = 20.0;
+        private const double WarpStopLeadTimeSeconds = 10.0;
         private double _targetUt;
+
         public LaunchGuidanceState State { get; private set; }
         public LaunchPlan CurrentPlan { get; private set; }
         public bool HasPlan => CurrentPlan != null;
+
+        private readonly AscentGuidance _ascentGuidance = new AscentGuidance();
+        public AscentGuidanceInfo GuidanceInfo { get; private set; }
         public void SetPlan(LaunchPlan plan)
         {
             CurrentPlan = plan;
@@ -21,7 +25,7 @@ namespace Blackbird.Guidance
             get
             {
                 if (_targetUt <= 0.0) return 0.0;
-                return _targetUt - Planetarium.GetUniversalTime();
+                return Math.Max(0.0, _targetUt - Planetarium.GetUniversalTime());
             }
         }
         public void AcceptPlan()
@@ -52,42 +56,33 @@ namespace Blackbird.Guidance
 
             SetSafeWarpRate(timeToLaunch);
         }
-        // ramp the warp rate down so we don't overshoot our target
         private static void SetSafeWarpRate(double secondsRemaining)
         {
             int rateIndex;
 
-            if (secondsRemaining > 7200.0)
+            if (secondsRemaining <= WarpStopLeadTimeSeconds)
             {
-                rateIndex = 7;
+                rateIndex = 0;
             }
-            else if (secondsRemaining > 3600.0)
-            {
-                rateIndex = 6;
-            }
-            else if (secondsRemaining > 1200.0)
-            {
-                rateIndex = 5;
-            }
-            else if (secondsRemaining > 600.0)
-            {
-                rateIndex = 4;
-            }
-            else if (secondsRemaining > 240.0)
+            else if (secondsRemaining < 60.0)
             {
                 rateIndex = 3;
             }
-            else if (secondsRemaining > 90.0)
+            else if (secondsRemaining < 180.0)
             {
-                rateIndex = 2;
+                rateIndex = 4;
             }
-            else if (secondsRemaining > WarpStopLeadTimeSeconds)
+            else if (secondsRemaining < 600.0)
             {
-                rateIndex = 1;
+                rateIndex = 5;
+            }
+            else if (secondsRemaining < 1800.0)
+            {
+                rateIndex = 6;
             }
             else
             {
-                rateIndex = 0;
+                rateIndex = 7;
             }
 
             TimeWarp.SetRate(rateIndex, false);
@@ -101,15 +96,31 @@ namespace Blackbird.Guidance
             State = LaunchGuidanceState.GuidingAscent;
         }
 
-        public void Update()
+        public void Update(Vessel vessel)
         {
-            if (State != LaunchGuidanceState.WarpingToLaunch) return;
+            if (State == LaunchGuidanceState.GuidingAscent)
+            {
+                GuidanceInfo =
+                    _ascentGuidance.GetGuidance(
+                        vessel,
+                        CurrentPlan);
 
-            double secondsRemaining = _targetUt - Planetarium.GetUniversalTime();
+                return;
+            }
+
+            if (State != LaunchGuidanceState.WarpingToLaunch)
+            {
+                return;
+            }
+
+            double nowUt = Planetarium.GetUniversalTime();
+
+            double secondsRemaining = _targetUt - nowUt;
 
             if (secondsRemaining <= WarpStopLeadTimeSeconds)
             {
                 TimeWarp.SetRate(0, true);
+                _targetUt = 0.0;
                 State = LaunchGuidanceState.AwaitingLaunch;
                 return;
             }

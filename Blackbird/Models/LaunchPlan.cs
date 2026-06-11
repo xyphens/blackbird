@@ -1,4 +1,5 @@
-﻿using Blackbird.Models;
+﻿using Blackbird.Enums;
+using Blackbird.Models;
 
 namespace Blackbird.Models
 {
@@ -19,7 +20,7 @@ namespace Blackbird.Models
         public double LaunchAzimuthDeg { get; set; }
         public double RecommendedApAlt { get; set; }
         public double RecommendedPeAlt { get; set; }
-        public string ScaleLabel { get; set; }
+        public PlanetScale.PlanetScaleEnum ScaleLabel { get; set; }
         public InsertionTarget InsertionTarget { get; set; }
         public PhasingOrbit PhasingOrbit { get; set; }
         public PhasingRecommendation PhasingRecommendation;
