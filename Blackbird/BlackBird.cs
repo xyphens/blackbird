@@ -275,6 +275,37 @@ namespace Blackbird
                 return;
             }
 
+            GUILayout.Label($"Profile Pitch: {guidanceInfo.TargetPitchDeg:F1}°");
+            GUILayout.Label($"Pitch Offset: {guidanceInfo.PitchOffsetDeg:+0.0;-0.0;0.0}°");
+            GUILayout.Label($"Command Pitch: {guidanceInfo.CommandPitchDeg:F1}°");
+            GUILayout.Label($"Current Pitch: {guidanceInfo.CurrentPitchDeg:F1}°");
+            GUILayout.Label($"Pitch Error: {guidanceInfo.PitchErrorDeg:F1}°");
+
+            // fine tuning pitch buttons
+            GUILayout.BeginHorizontal();
+
+            if (GUILayout.Button("- Pitch"))
+            {
+                _launchHandler.DecreasePitchOffset();
+            }
+
+            if (GUILayout.Button("+ Pitch"))
+            {
+                _launchHandler.IncreasePitchOffset();
+            }
+
+            if (GUILayout.Button("Reset"))
+            {
+                _launchHandler.ResetPitchOffset();
+            }
+
+            GUILayout.EndHorizontal();
+
+            _launchHandler.FollowGuidance =
+                GUILayout.Toggle(
+                    _launchHandler.FollowGuidance,
+                    "Follow Guidance");
+
             GUILayout.Label(
                 double.IsNaN(guidanceInfo.TargetAzimuthDeg)
                     ? "Target Heading: unavailable"

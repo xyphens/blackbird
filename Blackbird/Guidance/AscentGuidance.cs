@@ -32,11 +32,12 @@ namespace Blackbird.Guidance
             new PitchProfilePoint { AltitudeMeters = 45000.0, PitchDegrees = 0.0 }
         };
 
-        public AscentGuidanceInfo GetGuidance(Vessel vessel, LaunchPlan plan)
+        public AscentGuidanceInfo GetGuidance(Vessel vessel, LaunchPlan plan, double pitchOffsetDeg, bool followGuidance)
         {
             if (vessel == null || plan == null) return null;
 
-            double targetAzimuth = plan.LaunchAzimuthDeg;
+            double targetAzimuth = double.IsNaN(plan.LaunchAzimuthDeg) ? GetFallbackLaunchHeading(vessel, plan) : plan.LaunchAzimuthDeg;
+
             double targetLan = plan.TargetOrbit.LanDeg;
 
             double currentLan = vessel.orbit.LAN;
@@ -44,8 +45,9 @@ namespace Blackbird.Guidance
             double lanError = OrbitMath.DeltaDegrees(currentLan, targetLan);
 
             double targetPitch = GetTargetPitchDeg(vessel.altitude, plan);
+            double commandPitch = Math.Max(0.0, Math.Min(90.0, targetPitch + pitchOffsetDeg));
             double currentPitch = GetCurrentPitchDeg(vessel);
-            double pitchError = targetPitch - currentPitch;
+            double pitchError = OrbitMath.DeltaDegrees(currentPitch, commandPitch);
 
             return new AscentGuidanceInfo
             {
@@ -54,10 +56,13 @@ namespace Blackbird.Guidance
                 CurrentLanDeg = currentLan,
                 LanErrorDeg = lanError,
                 HeadingInstruction = GetHeadingInstruction(targetAzimuth),
-                PitchInstruction = "Pitch to " + targetPitch.ToString("F1") + "°",
                 TargetPitchDeg = targetPitch,
+                PitchOffsetDeg = pitchOffsetDeg,
+                CommandPitchDeg = commandPitch,
                 CurrentPitchDeg = currentPitch,
                 PitchErrorDeg = pitchError,
+                FollowGuidanceEnabled = followGuidance,
+                PitchInstruction = "Pitch to " + commandPitch.ToString("F1") + "°",
             };
         }
         private static string GetHeadingInstruction(double targetAzimuthDeg)
@@ -106,6 +111,37 @@ namespace Blackbird.Guidance
             Vector3d forward = vessel.ReferenceTransform.up.normalized;
             double angleFromUp = Vector3d.Angle(forward, up);
             return 90.0 - angleFromUp;
+        }
+
+        private static double GetFallbackLaunchHeading(Vessel vessel, LaunchPlan plan) { 
+            if (vessel == null || plan == null) return double.NaN;
+
+            double inclination = plan.TargetOrbit.InclinationDeg;
+            double latitude = vessel.latitude;
+            double azimuth = OrbitMath.GetLaunchAzimuth(inclination, latitude);
+
+            if (!double.IsNaN(azimuth)) return azimuth;
+
+            double currentHeading = GetCurrentHeadingDeg(vessel);
+
+            if (!double.IsNaN(currentHeading)) return currentHeading;
+
+            return 90.0;
+        }
+
+        private static double GetCurrentHeadingDeg(Vessel vessel)
+        {
+            Vector3d up = (vessel.GetWorldPos3D() - vessel.mainBody.position).normalized;
+            Vector3d north = Vector3d.Exclude(up, vessel.mainBody.transform.up).normalized;
+            Vector3d east = Vector3d.Cross(north, up);
+            Vector3d forward = Vector3d.Exclude(up, vessel.ReferenceTransform.up).normalized;
+
+            double northComponent = Vector3d.Dot(forward, north);
+            double eastComponent = Vector3d.Dot(forward, east);
+
+            double headingRad = Math.Atan2(eastComponent, northComponent);
+
+            return OrbitMath.NormalizeDegrees(headingRad * 180.0 / Math.PI);
         }
     }
 }

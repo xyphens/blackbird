@@ -1,25 +1,29 @@
 ﻿using System;
 using Blackbird.Models;
+using UnityEngine;
 
 namespace Blackbird.Guidance
 {
     public sealed class LaunchHandler
     {
         // TODO: lower the lead time or make it an input
-        private const double WarpStopLeadTimeSeconds = 10.0;
+        private const double WarpStopLeadTimeSeconds = 300.0;
         private double _targetUt;
+
+        public double PitchOffsetDeg { get; private set; }
+        public bool FollowGuidance { get; set; }
 
         public LaunchGuidanceState State { get; private set; }
         public LaunchPlan CurrentPlan { get; private set; }
         public bool HasPlan => CurrentPlan != null;
 
-        private readonly AscentGuidance _ascentGuidance = new AscentGuidance();
-        public AscentGuidanceInfo GuidanceInfo { get; private set; }
         public void SetPlan(LaunchPlan plan)
         {
             CurrentPlan = plan;
             State = plan != null ? LaunchGuidanceState.PlanReady : LaunchGuidanceState.Idle;
         }
+        private readonly AscentGuidance _ascentGuidance = new AscentGuidance();
+        public AscentGuidanceInfo GuidanceInfo { get; private set; }
         public double SecondsUntilLaunch
         {
             get
@@ -53,30 +57,37 @@ namespace Blackbird.Guidance
                 timeToLaunch;
 
             State = LaunchGuidanceState.WarpingToLaunch;
-
-            SetSafeWarpRate(timeToLaunch);
+            TimeWarp.SetRate(4, false);
         }
         private static void SetSafeWarpRate(double secondsRemaining)
         {
             int rateIndex;
 
-            if (secondsRemaining <= WarpStopLeadTimeSeconds)
+            if (secondsRemaining <= 300.0)
             {
                 rateIndex = 0;
             }
-            else if (secondsRemaining < 60.0)
+            else if (secondsRemaining <= 420.0)
+            {
+                rateIndex = 1;
+            }
+            else if (secondsRemaining <= 600.0)
+            {
+                rateIndex = 2;
+            }
+            else if (secondsRemaining <= 900.0)
             {
                 rateIndex = 3;
             }
-            else if (secondsRemaining < 180.0)
+            else if (secondsRemaining <= 1200.0)
             {
                 rateIndex = 4;
             }
-            else if (secondsRemaining < 600.0)
+            else if (secondsRemaining <= 1800.0)
             {
                 rateIndex = 5;
             }
-            else if (secondsRemaining < 1800.0)
+            else if (secondsRemaining <= 3600.0)
             {
                 rateIndex = 6;
             }
@@ -85,7 +96,8 @@ namespace Blackbird.Guidance
                 rateIndex = 7;
             }
 
-            TimeWarp.SetRate(rateIndex, false);
+            Debug.Log(
+                $"[BlackBird] Warp: T-{secondsRemaining:F1}s");
         }
 
         public void StartGuidance()
@@ -103,8 +115,15 @@ namespace Blackbird.Guidance
                 GuidanceInfo =
                     _ascentGuidance.GetGuidance(
                         vessel,
-                        CurrentPlan);
+                        CurrentPlan,
+                        PitchOffsetDeg,
+                        FollowGuidance
+                        );
 
+                if (FollowGuidance && GuidanceInfo != null)
+                {
+                    ApplyPitchGuidance(vessel, GuidanceInfo);
+                }
                 return;
             }
 
@@ -116,6 +135,14 @@ namespace Blackbird.Guidance
             double nowUt = Planetarium.GetUniversalTime();
 
             double secondsRemaining = _targetUt - nowUt;
+
+            if (secondsRemaining <= 0.0)
+            {
+                TimeWarp.SetRate(0, true);
+                _targetUt = 0.0;
+                State = LaunchGuidanceState.AwaitingLaunch;
+                return;
+            }
 
             if (secondsRemaining <= WarpStopLeadTimeSeconds)
             {
@@ -149,6 +176,42 @@ namespace Blackbird.Guidance
             CurrentPlan = null;
             _targetUt = 0.0;
             State = LaunchGuidanceState.Idle;
+        }
+    
+        public void IncreasePitchOffset()
+        {
+            PitchOffsetDeg += 1.0;
+        }
+        public void DecreasePitchOffset()
+        {
+            PitchOffsetDeg -= 1.0;
+        }
+        public void ResetPitchOffset()
+        {
+            PitchOffsetDeg = 0.0;
+        }
+
+        public static void ApplyPitchGuidance(Vessel vessel, AscentGuidanceInfo gi)
+        {
+            if (vessel == null || gi == null || double.IsNaN(gi.TargetAzimuthDeg)) return;
+
+            if (!vessel.Autopilot.Enabled)
+            {
+                vessel.Autopilot.Enable(VesselAutopilot.AutopilotMode.StabilityAssist);
+            }
+
+            Vector3d up = (vessel.GetWorldPos3D() - vessel.mainBody.position).normalized;
+            Vector3d north = Vector3d.Exclude(up, vessel.mainBody.transform.up).normalized;
+            Vector3d east = Vector3d.Cross(up, north).normalized;
+            double headingRad = gi.TargetAzimuthDeg * Math.PI / 180.0;
+            Vector3d horizontalDirection = (north * Math.Cos(headingRad)) + (east * Math.Sin(headingRad));
+            double pitchRad = gi.CommandPitchDeg * Math.PI / 180.0;
+
+            Vector3d desiredForward = (horizontalDirection * Math.Cos(pitchRad)) + (up * Math.Sin(pitchRad));
+
+            Quaternion desiredRotation = Quaternion.LookRotation(desiredForward, up);
+
+            vessel.Autopilot.SAS.LockRotation(desiredRotation);
         }
     }
 }

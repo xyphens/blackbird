@@ -17,5 +17,10 @@ namespace Blackbird.Models
         public double TargetPitchDeg { get; set; }
         public double CurrentPitchDeg { get; set; }
         public double PitchErrorDeg { get; set; }
+        public double PitchOffsetDeg { get; set; }
+        public double CommandPitchDeg { get; set; }
+        public bool FollowGuidanceEnabled { get; set; }
+        public double CurrentHeadingDeg { get; set; }
+        public double HeadingErrorDeg { get; set; }
     }
 }
