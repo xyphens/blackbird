@@ -62,6 +62,8 @@
     <Compile Include="Guidance\AscentGuidance.cs" />
     <Compile Include="Guidance\AscentProfile.cs" />
     <Compile Include="Enums\AssistantMode.cs" />
+    <Compile Include="Guidance\LaunchGuidanceState.cs" />
+    <Compile Include="Guidance\LaunchHandler.cs" />
     <Compile Include="Helpers\Helpers.cs" />
     <Compile Include="Models\InsertionTarget.cs" />
     <Compile Include="Models\LaunchPlan.cs" />

@@ -4,6 +4,7 @@ using Blackbird;
 using Blackbird.Helpers;
 using Blackbird.Models;
 using Blackbird.Planning;
+using Blackbird.Guidance;
 
 namespace Blackbird
 {
@@ -16,6 +17,11 @@ namespace Blackbird
         private string _insertionPeText = "";
         private bool _useTargetOrbitInsertion = true;
 
+        // launch plan and guidance
+        private readonly LaunchHandler _launchHandler = new LaunchHandler();
+        private LaunchPlan _currentPlan;
+        private LaunchPlan _selectedPlan;
+
         public void Start()
         {
             Debug.Log("[RendezvousAssistant] Loaded");
@@ -23,10 +29,7 @@ namespace Blackbird
 
         public void Update()
         {
-            if (FlightGlobals.ActiveVessel != null)
-            {
-                Vessel vessel = FlightGlobals.ActiveVessel;
-            }
+            _launchHandler.Update();
         }
         private void OnGUI()
         {
@@ -63,6 +66,33 @@ namespace Blackbird
                 LaunchLocation ll = LaunchLocation.FromVessel(vessel);
 
                 LaunchPlan lp = LaunchPlanner.Create(vessel, targetVessel, it, ll);
+
+                // pass our plan to guidance
+                if (_launchHandler.State == LaunchGuidanceState.Idle)
+                {
+                    SetCurrentPlan(lp);
+                }
+                else if (_launchHandler.State == LaunchGuidanceState.PlanReady)
+                {
+                    _currentPlan = lp;
+                    _selectedPlan = lp;
+                    _launchHandler.SetPlan(lp);
+                }
+
+                DrawPlanSelector();
+                DrawLaunchHandlerButtons();
+
+                // ACTIVE LAUNCH PLAN
+                GUILayout.Space(10);
+                GUILayout.Label("[Launch Plan]");
+                if (_launchHandler.State == LaunchGuidanceState.WarpingToLaunch ||
+                    _launchHandler.State == LaunchGuidanceState.AwaitingLaunch)
+                {
+                    GUILayout.Label(
+                        "Launch In: " +
+                        BlackbirdHelpers.FormatDuration(
+                            Math.Max(0.0, _launchHandler.SecondsUntilLaunch)));
+                }
 
                 GUILayout.Label($"Running for Scale: {lp.ScaleLabel}");
 
@@ -187,6 +217,13 @@ namespace Blackbird
             return CreateInsertionTargetFromUi(targetVessel);
         }
 
+        private void SetCurrentPlan(LaunchPlan plan)
+        {
+            _currentPlan = plan;
+            _selectedPlan = plan;
+            _launchHandler.SetPlan(plan);
+        }
+
         private InsertionTarget CreateInsertionTargetFromUi(Vessel targetVessel) {
             if (_useTargetOrbitInsertion)
             {
@@ -236,8 +273,6 @@ namespace Blackbird
                 return;
             }
 
-
-
             GUILayout.Label("Mode: " + pr.Mode);
             GUILayout.Label("Apoapsis: " + (pr.ApoapsisAlt / 1000.0).ToString("N0") + " km");
             GUILayout.Label("Periapsis: " + (pr.PeriapsisAlt / 1000.0).ToString("N0") + " km");
@@ -250,6 +285,59 @@ namespace Blackbird
                 ((pr.ApoapsisAlt - lp.TargetOrbit.ApoapsisAlt) / 1000.0)
                     .ToString("N0") +
                 " km");
+        }
+
+        private void DrawPlanSelector()
+        {
+            GUILayout.Space(8);
+            GUILayout.Label("Launch Plan");
+            if (_currentPlan == null)
+            {
+                GUILayout.Label("No valid launch plan.");
+                return;
+            }
+
+            bool selected = ReferenceEquals(_selectedPlan, _currentPlan);
+
+            bool newSelected = GUILayout.Toggle(selected, "Current computed plan");
+
+            if (newSelected && !selected)
+            {
+                _selectedPlan = _currentPlan;
+                _launchHandler.SetPlan(_selectedPlan);
+            }
+
+            GUILayout.Label($"Guidance State: {_launchHandler.State}");
+        }
+
+        private void DrawLaunchHandlerButtons()
+        {
+            if (_selectedPlan == null) return;
+
+            GUILayout.Space(8);
+
+            GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanReady;
+            
+            if (GUILayout.Button("Accept Plan")) _launchHandler.AcceptPlan();
+
+            GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted;
+
+            if (GUILayout.Button("Warp To Launch")) _launchHandler.WarpToLaunch();
+
+            GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted
+                        || _launchHandler.State == LaunchGuidanceState.AwaitingLaunch;
+
+            if (GUILayout.Button("Start Guidance")) _launchHandler.StartGuidance();
+
+            GUI.enabled =
+                _launchHandler.State == LaunchGuidanceState.PlanAccepted ||
+                _launchHandler.State == LaunchGuidanceState.WarpingToLaunch ||
+                _launchHandler.State == LaunchGuidanceState.AwaitingLaunch ||
+                _launchHandler.State == LaunchGuidanceState.GuidingAscent;
+
+            if (GUILayout.Button("Abort Guidance")) _launchHandler.Abort();
+
+            GUI.enabled = true;
         }
     }
 }
