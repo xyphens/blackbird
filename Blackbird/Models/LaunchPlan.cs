@@ -22,5 +22,6 @@ namespace Blackbird.Models
         public string ScaleLabel { get; set; }
         public InsertionTarget InsertionTarget { get; set; }
         public PhasingOrbit PhasingOrbit { get; set; }
+        public PhasingRecommendation PhasingRecommendation;
     }
 }

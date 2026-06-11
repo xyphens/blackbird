@@ -68,6 +68,9 @@
     <Compile Include="Models\LaunchLocation.cs" />
     <Compile Include="Models\LaunchWindowInfo.cs" />
     <Compile Include="Models\PhasingOrbit.cs" />
+    <Compile Include="Models\PhasingRecommendation.cs" />
+    <Compile Include="Planning\PhasingRecommendationCalculator.cs" />
+    <Compile Include="Models\PhasingRecommendationMode.cs" />
     <Compile Include="Planning\LaunchPlanner.cs" />
     <Compile Include="BlackBird.cs" />
     <Compile Include="Models\OrbitInfo.cs" />

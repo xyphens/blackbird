@@ -98,12 +98,14 @@ namespace Blackbird
                         ? "Phasing: Insertion orbit catches target"
                         : "Phasing: Target pulls away");
 
+                // ORBITS
                 GUILayout.Space(10);
                 GUILayout.Label("-- Orbit Comparison --");
                 GUILayout.Label($"Inc Delta: {lp.RelativeInclinationDeg:F2}°");
                 GUILayout.Label($"LAN Delta: {lp.RelativeLanDeg:F2}°");
                 GUILayout.Label($"Period Delta: {lp.RelativePeriodSeconds:F1}s");
 
+                // PHASING
                 GUILayout.Space(10);
                 GUILayout.Label("-- Phasing Period -- ");
                 GUILayout.Label($"Period Diff: {lp.PhasingOrbit.PeriodDifferenceSeconds:F1}s");
@@ -125,6 +127,9 @@ namespace Blackbird
                     lp.PhasingOrbit.IsFasterThanTarget
                         ? "Phasing: insertion orbit is faster than target"
                         : "Phasing: insertion orbit is slower than target");
+
+                // RECOMMENDATION
+                ShowPhasingRecommendation(lp.PhasingRecommendation, lp);
 
                 GUILayout.Space(10);
                 GUILayout.Label("-- Launch Recommendation -- ");
@@ -214,5 +219,37 @@ namespace Blackbird
             };
         }
 
+        private void ShowPhasingRecommendation(PhasingRecommendation pr, LaunchPlan lp)
+        {
+            GUILayout.Label("-- Phasing Recommendation --");
+
+            if (pr == null)
+            {
+                GUILayout.Label("Unavailable");
+                return;
+            }
+
+            if (!pr.HasRecommendation)
+            {
+                GUILayout.Label("Unavailable");
+                GUILayout.Label(pr.ReasonUnavailable);
+                return;
+            }
+
+
+
+            GUILayout.Label("Mode: " + pr.Mode);
+            GUILayout.Label("Apoapsis: " + (pr.ApoapsisAlt / 1000.0).ToString("N0") + " km");
+            GUILayout.Label("Periapsis: " + (pr.PeriapsisAlt / 1000.0).ToString("N0") + " km");
+            GUILayout.Label("Period Diff: " + pr.PeriodDifferenceSeconds.ToString("N1") + "s");
+            GUILayout.Label("Phase Gain: " + pr.PhaseGainDegPerOrbit.ToString("N2") + "°/orbit");
+            GUILayout.Label("Rendezvous Orbits: " + pr.EstimatedOrbitsToRendezvous.ToString("N1"));
+            GUILayout.Label("Rendezvous Time: " + BlackbirdHelpers.FormatDuration(pr.EstimatedTimeToRendezvousSeconds));
+            GUILayout.Label(
+                "Offset: " +
+                ((pr.ApoapsisAlt - lp.TargetOrbit.ApoapsisAlt) / 1000.0)
+                    .ToString("N0") +
+                " km");
+        }
     }
 }

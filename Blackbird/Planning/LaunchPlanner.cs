@@ -91,6 +91,12 @@ namespace Blackbird.Planning
 
             LaunchWindowInfo lwi = LaunchWindowInfo.Create(active, targetOrbit, ls);
 
+            PhasingRecommendation pr = PhasingRecommendationCalculator.Create(
+                                        active.mainBody,
+                                        targetOrbit,
+                                        phaseAngleDeg,
+                                        PhasingRecommendationMode.Balanced); // todo: make this a user input
+
             return new LaunchPlan
             {
                 ActiveOrbit = activeOrbit,
@@ -106,7 +112,8 @@ namespace Blackbird.Planning
                 RelativePeriodSeconds = targetOrbit.PeriodSeconds - activeOrbit.PeriodSeconds,
                 InsertionTarget = targetInsertion,
                 PhasingOrbit = po,
-                ScaleLabel = PlanetScale.GetScale().ToString()
+                ScaleLabel = PlanetScale.GetScale().ToString(),
+                PhasingRecommendation = pr
             };
         }
     }
