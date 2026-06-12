@@ -359,9 +359,9 @@ namespace Blackbird
             if (canAdjustGuidance)
             {
                 GUILayout.BeginHorizontal();
-                if (GUILayout.Button("- Pitch")) _launchHandler.DecreasePitchOffset();
-                if (GUILayout.Button("+ Pitch")) _launchHandler.IncreasePitchOffset();
-                if (GUILayout.Button("Reset Pitch")) _launchHandler.ResetPitchOffset();
+                if (GUILayout.Button("- Pitch")) _launchHandler.DecreaseManualPitchCommand();
+                if (GUILayout.Button("+ Pitch")) _launchHandler.IncreaseManualPitchCommand();
+                if (GUILayout.Button("Reset Pitch")) _launchHandler.ResetPitchCommand();
                 GUILayout.EndHorizontal();
             }
 
@@ -380,9 +380,9 @@ namespace Blackbird
             if (canAdjustGuidance)
             {
                 GUILayout.BeginHorizontal();
-                if (GUILayout.Button("- Heading")) _launchHandler.DecreaseHeadingOffset();
-                if (GUILayout.Button("+ Heading")) _launchHandler.IncreaseHeadingOffset();
-                if (GUILayout.Button("Reset Heading")) _launchHandler.ResetHeadingOffset();
+                if (GUILayout.Button("- Heading")) _launchHandler.DecreaseManualHeadingCommand();
+                if (GUILayout.Button("+ Heading")) _launchHandler.IncreaseManualHeadingCommand();
+                if (GUILayout.Button("Reset Heading")) _launchHandler.ResetHeadingCommand();
                 GUILayout.EndHorizontal();
             }
 
