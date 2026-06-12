@@ -1,4 +1,5 @@
 ﻿using System;
+using UnityEngine;
 
 namespace Blackbird.Mathematics
 {
@@ -80,6 +81,97 @@ namespace Blackbird.Mathematics
         {
             double rotationDeg = universalTimeSeconds / rotationPeriodSeconds * 360.0;
             return NormalizeDegrees(inertialLongitudeDeg - rotationDeg);
+        }
+        public static double Clamp(double value, double min, double max)
+        {
+            return value < min ? min : value > max ? max : value;
+        }
+        public static double ClampPi(double value, double tau)
+        {
+            value %= tau;
+            value = value < 0.0 ? value + tau : value;
+
+            if (value >= tau) value = 0.0;
+
+            return value > Math.PI ? value - tau : value;
+        }
+
+        public static double SafeAcos(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value))
+                return double.NaN;
+
+            return Math.Acos(Math.Max(-1.0, Math.Min(1.0, value)));
+        }
+
+        public static Vector3d EulerAngles(QuaternionD q, double tau)
+        {
+            double magnitude = Math.Sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+
+            if (magnitude < 2.2204460492503131e-16) return Vector3d.zero;
+
+            if (Math.Abs(magnitude - 1.0) > 1e-10)
+            {
+                q.x /= magnitude;
+                q.y /= magnitude;
+                q.z /= magnitude;
+                q.w /= magnitude;
+            }
+
+            double sqw = q.w * q.w;
+            double sqx = q.x * q.x;
+            double sqy = q.y * q.y;
+            double sqz = q.z * q.z;
+
+            double unit = sqx + sqy + sqz + sqw;
+            double test = q.x * q.w - q.y * q.z;
+
+            if (test > 0.499999999 * unit)
+            {
+                double yaw = 2.0 * Math.Atan2(q.y, q.w);
+                return new Vector3d(90.0, Rad2Deg(Clamp2Pi(yaw, tau)), 0.0);
+            }
+
+            if (test < -0.499999999 * unit)
+            {
+                double yaw = -2.0 * Math.Atan2(q.y, q.w);
+                return new Vector3d(270.0, Rad2Deg(Clamp2Pi(yaw, tau)), 0.0);
+            }
+
+            double pitch = Math.Asin(2.0 * test / unit);
+            double yawNormal =
+                Math.Atan2(
+                    2.0 * (q.x * q.z + q.w * q.y),
+                    sqw - sqx - sqy + sqz);
+
+            double roll =
+                Math.Atan2(
+                    2.0 * (q.x * q.y + q.w * q.z),
+                    sqw - sqx + sqy - sqz);
+
+            return new Vector3d(
+                Rad2Deg(Clamp2Pi(pitch, tau)),
+                Rad2Deg(Clamp2Pi(yawNormal, tau)),
+                Rad2Deg(Clamp2Pi(roll, tau)));
+        }
+
+        public static double Clamp2Pi(double value, double tau)
+        {
+            value %= tau;
+            value = value < 0.0 ? value + tau : value;
+            return value >= tau ? 0.0 : value;
+        }
+        public static double Rad2Deg(double value)
+        {
+            return value * 180.0 / Math.PI;
+        }
+        public static bool IsFinite(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+        public static double ApplyDeadband(double value, double deadband)
+        {
+            return Math.Abs(value) < deadband ? 0.0 : value - Math.Sign(value) * deadband;
         }
     }
 }

@@ -5,6 +5,22 @@ namespace Blackbird.Guidance
 {
     public sealed class AttitudeControl
     {
+        /*
+         * Portions of this controller are derived from the control architecture
+         * used by the MechJeb2 project:
+         *
+         * https://github.com/MuMech/MechJeb2
+         *
+         * Specifically:
+         * - DirectionTracker-style attitude tracking
+         * - BetterController-style cascaded attitude PID control
+         * - Surface attitude reference handling
+         *
+         * Original project licensed under GPL-3.0.
+         *
+         * BlackBird contains a custom implementation adapted for its own
+         * architecture and user interface.
+         */
         private const double PosKpDefault = 2.03;
         private const double PosTiDefault = 1.97;
         private const double PosTdDefault = 0.0;
@@ -25,18 +41,18 @@ namespace Blackbird.Guidance
         private const double SmoothTorque = 0.10;
         private const double Soften = 0.5;
 
-        private readonly PidHandler[] _velPid =
+        private readonly PIDTranslation[] _velPid =
         {
-            new PidHandler(),
-            new PidHandler(),
-            new PidHandler()
+            new PIDTranslation(),
+            new PIDTranslation(),
+            new PIDTranslation()
         };
 
-        private readonly PidHandler[] _posPid =
+        private readonly PIDTranslation[] _posPid =
         {
-            new PidHandler(),
-            new PidHandler(),
-            new PidHandler()
+            new PIDTranslation(),
+            new PIDTranslation(),
+            new PIDTranslation()
         };
 
         private readonly DirectionTracking _directionTracking = new DirectionTracking();
@@ -135,7 +151,7 @@ namespace Blackbird.Guidance
 
                 if (Math.Abs(error[i]) <= 2.0 * effectiveLinearDistance)
                 {
-                    PidHandler posPid = _posPid[i];
+                    PIDTranslation posPid = _posPid[i];
 
                     posPid.Kp = posKp;
                     posPid.Ti = PosTiDefault;
@@ -174,7 +190,7 @@ namespace Blackbird.Guidance
                     _posPid[1].Reset();
                 }
 
-                PidHandler velPid = _velPid[i];
+                PIDTranslation velPid = _velPid[i];
 
                 velPid.Kp = VelKpDefault;
                 velPid.Ti = VelTiDefault;

@@ -1,5 +1,13 @@
 # BlackBird Context
 
+## Acknowledgements
+
+BlackBird's attitude control system is based on concepts and control architecture derived from the MechJeb2 project. MechJeb2 is licensed under GPL-3.0 and can be found at:
+
+https://github.com/MuMech/MechJeb2
+
+---
+
 ## Overview
 
 BlackBird is a KSP launch planning and rendezvous assistance addon.
@@ -12,7 +20,9 @@ The long-term goal is:
 4. Follow launch guidance or autopilot.
 5. Reach a near-rendezvous with minimal correction burns.
 
-BlackBird is intended to be a focused rendezvous tool, not a full automation suite like MechJeb.
+BlackBird is intended to be a focused rendezvous launch tool for RSS + Principia.  It does provide passive support for Stock KSP.
+
+---
 
 ## Supported Environments
 
@@ -51,6 +61,7 @@ BlackBird is responsible for:
 * Launch planning
 * Launch windows
 * Launch guidance
+* Attitude control
 * Rendezvous planning
 * Optional ascent autopilot
 
@@ -100,6 +111,7 @@ Responsible for:
 * Target attitude
 * Pitch profiles
 * Guidance calculations
+* Command heading/pitch selection
 
 ### AscentProfile.cs
 
@@ -111,14 +123,34 @@ Launch guidance state machine.
 
 ### LaunchHandler.cs
 
-Primary launch guidance controller.
+Primary launch guidance coordinator.
 
 Responsibilities:
 
 * State transitions
 * Warp management
 * Guidance updates
-* Fly-by-wire integration
+* Manual command state
+* Fly-by-wire handoff
+* Attitude controller integration
+
+### AttitudeController.cs
+
+Responsible for:
+
+* Surface-reference target attitude construction
+* Requested attitude calculation
+* Cascaded position/velocity PID control
+* Torque-based actuation calculation
+* Writing pitch/roll/yaw controls through `FlightCtrlState`
+
+### DirectionTracker.cs
+
+Tracks current and desired attitude deltas in pitch/roll/yaw order.
+
+### PidLoop.cs
+
+PID controller used by `AttitudeController`.
 
 ---
 
@@ -134,7 +166,7 @@ General utility functions.
 
 ### OrbitMath.cs
 
-Contains orbital math utilities.
+Contains orbital and shared math utilities.
 
 Important functions:
 
@@ -205,17 +237,17 @@ Pitch profile node.
 
 ### LaunchPlanner
 
-Creates LaunchPlan objects.
+Creates `LaunchPlan` objects.
 
 ### PhasingRecommendationCalculator
 
-Computes rendezvous recommendations.
+Computes rendezvous/phasing recommendations.
 
 ---
 
 ## Root
 
-### BlackBird.cs
+### BlackBird.cs / RendezvousAssistant.cs
 
 Main addon entry point.
 
@@ -223,7 +255,9 @@ Owns:
 
 * UI
 * Update loop
-* Fly-by-wire integration
+* Active vessel tracking
+* Fly-by-wire subscription
+* Launch handler calls
 
 ---
 
@@ -237,7 +271,7 @@ User flies manually using vessel controls.
 
 ## Guidance
 
-BlackBird provides steering guidance.
+BlackBird maintains user-commanded attitude.
 
 User commands:
 
@@ -246,7 +280,7 @@ User commands:
 
 through the BlackBird UI.
 
-BlackBird should maintain the user-commanded attitude.
+Current roll command is fixed internally and should eventually become user-controllable.
 
 ## Autopilot
 
@@ -256,6 +290,8 @@ BlackBird follows:
 * Pitch profile
 
 automatically.
+
+Autopilot uses the same attitude controller as Guidance mode.
 
 ---
 
@@ -304,11 +340,9 @@ This is intentional.
 
 ### Pitch Profiles
 
-Stock profile
-
-RSS profile
-
-Altitude-based interpolation.
+* Stock profile
+* RSS profile
+* Altitude-based interpolation
 
 ### Guidance UI
 
@@ -327,7 +361,42 @@ ManualPitchCommandDeg
 ManualHeadingCommandDeg
 ```
 
-Older offset-based architecture is being removed.
+Older offset-based architecture has been removed.
+
+### Warp
+
+Warp-to-launch is implemented and currently working.
+
+### Attitude Control
+
+BlackBird now uses a Euler/Quaternion-based attitude controller with error correction instead of independent scalar pitch/yaw control.
+
+Old model:
+
+```text
+PitchErrorDeg -> state.pitch
+HeadingErrorDeg -> state.yaw
+```
+
+Current model:
+
+```text
+Command heading/pitch/roll
+    ->
+Requested attitude quaternion
+    ->
+DirectionTracker
+    ->
+Position PID
+    ->
+Velocity PID
+    ->
+Torque demand
+    ->
+FlightCtrlState pitch/roll/yaw
+```
+
+This fixed the prior guidance-mode tumble caused by applying surface heading/pitch errors directly to vessel-local controls.
 
 ---
 
@@ -335,27 +404,35 @@ Older offset-based architecture is being removed.
 
 ## Guidance Calculation
 
-LaunchHandler.Update()
-
-Only computes:
+`LaunchHandler.Update()` computes:
 
 ```csharp
 GuidanceInfo
 ```
 
-No steering should occur inside Update().
+No steering occurs inside `Update()`.
 
 ## Steering
 
-Migrating away from:
+Steering occurs only through fly-by-wire:
 
-```csharp
-ApplyAscentGuidance(...)
-Quaternion.LookRotation(...)
-SAS.LockRotation(...)
+```text
+Update()
+    ->
+AscentGuidance.GetGuidance()
+    ->
+GuidanceInfo
+    ->
+OnFlyByWire
+    ->
+LaunchHandler.ApplyFlightControls()
+    ->
+AttitudeController.Drive()
+    ->
+FlightCtrlState
 ```
 
-Old SAS steering path should eventually be removed.
+The old SAS steering path has been removed.
 
 ### Fly-By-Wire
 
@@ -367,19 +444,9 @@ public FlightCtrlState ctrlState;
 public void SetControlState(FlightCtrlState state);
 ```
 
-Target architecture:
+BlackBird subscribes to the active vessel's `OnFlyByWire` callback and unsubscribes when the active vessel changes.
 
-```text
-Update()
-    ->
-GetGuidance()
-    ->
-GuidanceInfo
-    ->
-OnFlyByWire
-    ->
-ApplyFlightControls()
-```
+SAS should be disabled while BlackBird attitude control is active so stock SAS does not fight the controller.
 
 ---
 
@@ -387,30 +454,28 @@ ApplyFlightControls()
 
 ## P0
 
-### Guidance Mode Tumbles
+### Autopilot Validation
 
-Autopilot mode appears functional.
+Guidance attitude control is now mechanically working.
 
-Guidance mode causes unstable flight.
+Autopilot still needs validation for:
 
-Likely causes:
+* Launch azimuth correctness
+* Pitch profile correctness
+* Roll behavior
+* Ascent stability across different rockets
 
-* Incorrect pitch sign
-* Incorrect yaw sign
-* Surface-heading errors being applied directly to vessel-local controls
-* Controller gain tuning
+### Roll Command
 
-### Warp Logic
+Roll is currently not exposed as a user command.
 
-Warp system currently does not behave correctly.
+Eventually Guidance mode should support:
 
-Known issues:
+```csharp
+ManualRollCommandDeg
+```
 
-* Overshoots launch windows
-* Stops early
-* Does not scale rates correctly
-
-Warp system requires redesign.
+and initialize roll to current vessel roll when Guidance is enabled.
 
 ---
 
@@ -418,13 +483,17 @@ Warp system requires redesign.
 
 ## P0
 
-* Stabilize fly-by-wire controller
-* Fix Guidance mode
-* Fix warp system
+* Stabilize fly-by-wire controller [Done]
+* Replace scalar pitch/yaw steering with attitude control [Done]
+* Fix warp system [Done]
+* Validate Guidance mode attitude holding
+* Validate Autopilot ascent behavior
 
 ## P1
 
-* Validate launch guidance
+* Validate launch azimuth
+* Validate pitch profiles
+* Add manual roll command support
 * Validate RSS pitch profiles
 * Improve ascent guidance
 
@@ -444,8 +513,15 @@ Important project decisions:
 * RSS + Principia are the design targets.
 * Stock is only the test environment.
 * BlackBird is not intended to become another MechJeb.
+* BlackBird borrows MechJeb-derived attitude control concepts, but its mission scope is focused rendezvous launch planning in RSS + Principia.
 * User selects a target vessel and BlackBird should produce a near-rendezvous launch solution.
-
-Current focus:
-
-Stabilizing the new fly-by-wire guidance controller.
+* Warp-to-launch is fixed.
+* Offset-based manual guidance has been removed.
+* Guidance mode now uses quaternion/PID-based attitude control through fly-by-wire.
+* Next major work:
+1.  Refine ascent calculations (especially heading estimates)
+    - Projections point at the target vessel's current location rather than a heading we should intercept.  We need to factor in our rocket's deltaV, ideal pitch + heading, TWR into our rendezvous projection
+2.  Incorporate deltaV in orbit recommendations
+3.  Add yaw control and raw number inputs + buttons
+4.  (Re-)move debug level metrics labels and keep UI cleanly focused on need-to-know
+5.  Add + show the following:  projected apoapsis and periapsis, estimated remaining deltaV, target info (current heading, altitude)
