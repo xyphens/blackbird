@@ -17,11 +17,12 @@ namespace Blackbird
         private string _insertionPeText = "";
         private bool _useTargetOrbitInsertion = true;
         private bool _showAdvancedDetails;
+        private Vessel _flyByWireVessel;
 
         private readonly string[] _guidanceModeLabels =
         {
             "None",
-            "Manual Guidance",
+            "Guidance",
             "Autopilot"
         };
 
@@ -37,7 +38,31 @@ namespace Blackbird
 
         public void Update()
         {
-            _launchHandler.Update(FlightGlobals.ActiveVessel);
+            Vessel activeVessel = FlightGlobals.ActiveVessel;
+
+            if (_flyByWireVessel != activeVessel)
+            {
+                if (_flyByWireVessel != null) _flyByWireVessel.OnFlyByWire -= OnFlyByWire;
+
+                _flyByWireVessel = activeVessel;
+
+                if (_flyByWireVessel != null) _flyByWireVessel.OnFlyByWire += OnFlyByWire;
+            }
+
+            _launchHandler.Update(activeVessel);
+        }
+        private void OnFlyByWire(FlightCtrlState state)
+        {
+            _launchHandler.ApplyFlightControls(state);
+        }
+
+        public void OnDestroy()
+        {
+            if (_flyByWireVessel != null)
+            {
+                _flyByWireVessel.OnFlyByWire -= OnFlyByWire;
+                _flyByWireVessel = null;
+            }
         }
 
         private void OnGUI()
@@ -269,19 +294,24 @@ namespace Blackbird
         {
             GUILayout.Space(10);
             GUILayout.Label("Flight Mode");
-            GuidanceMode selected = _launchHandler.GuidanceMode; // currently active
 
-            int selectedIndex = selected == GuidanceMode.Guidance ? 1 : 
-                                selected == GuidanceMode.Autopilot ? 2 :
-                                0;
+            int selectedIndex =
+                _launchHandler.GuidanceMode == GuidanceMode.Guidance ? 1 :
+                _launchHandler.GuidanceMode == GuidanceMode.Autopilot ? 2 :
+                0;
 
-            int newSelectedIndex = GUILayout.SelectionGrid(selectedIndex, _guidanceModeLabels, 1);
+            int newSelectedIndex =
+                GUILayout.SelectionGrid(
+                    selectedIndex,
+                    _guidanceModeLabels,
+                    3);
 
-            GuidanceMode newMode = newSelectedIndex == 1 ? GuidanceMode.Guidance :
-                                    newSelectedIndex == 2 ? GuidanceMode.Autopilot :
-                                    GuidanceMode.None;
+            GuidanceMode newMode =
+                newSelectedIndex == 1 ? GuidanceMode.Guidance :
+                newSelectedIndex == 2 ? GuidanceMode.Autopilot :
+                GuidanceMode.None;
 
-            if (newMode == selected) _launchHandler.SetGuidanceMode(newMode); // apply if different
+            if (newMode != _launchHandler.GuidanceMode) _launchHandler.SetGuidanceMode(newMode, FlightGlobals.ActiveVessel);
         }
 
         private void DrawAscentGuidance()
@@ -292,8 +322,6 @@ namespace Blackbird
             }
 
             AscentGuidanceInfo guidanceInfo = _launchHandler.GuidanceInfo;
-
-            bool canAdjustGuidance = _launchHandler.GuidanceMode == GuidanceMode.Guidance;
 
             GUILayout.Space(10);
             GUILayout.Label("[Ascent Guidance]");
@@ -307,14 +335,25 @@ namespace Blackbird
             // show guidance method dropdowns
             DrawAscentGuidanceMethod();
 
+            string gMode = _launchHandler.GuidanceMode == GuidanceMode.Autopilot 
+                            ? "Autopilot" :
+                            _launchHandler.GuidanceMode == GuidanceMode.Guidance ? "Guidance" 
+                            : "None";
+
+            bool canAdjustGuidance = _launchHandler.GuidanceMode == GuidanceMode.Guidance;
+
+            GUILayout.Label($"Guidance mode: {gMode}");
+
+            GUILayout.Label(guidanceInfo.PitchInstruction);
+            GUILayout.Label(guidanceInfo.HeadingInstruction);
+
             // PITCH
             GUILayout.Label($"Pitch Profile");
-            GUILayout.Label($"Profile Pitch: {guidanceInfo.TargetPitchDeg:F1}°");
+            GUILayout.Label($"Target Pitch: {guidanceInfo.TargetPitchDeg:F1}°");
             //GUILayout.Label($"Pitch Offset: {guidanceInfo.PitchOffsetDeg:+0.0;-0.0;0.0}°");
             GUILayout.Label($"Pitching Towards: {guidanceInfo.CommandPitchDeg:F1}°");
             GUILayout.Label($"Current Pitch: {guidanceInfo.CurrentPitchDeg:F1}°");
             GUILayout.Label($"Pitch Error: {guidanceInfo.PitchErrorDeg:F1}°");
-            GUILayout.Label(guidanceInfo.PitchInstruction);
 
             // pitch inputs
             if (canAdjustGuidance)
@@ -333,7 +372,6 @@ namespace Blackbird
                     ? "Target Heading: unavailable"
                     : $"Target Heading: {guidanceInfo.TargetAzimuthDeg:F1}°");
 
-            GUILayout.Label(guidanceInfo.HeadingInstruction);
             GUILayout.Label($"Heading Towards: {guidanceInfo.CommandHeadingDeg:F1}°");
             GUILayout.Label($"Current Heading: {guidanceInfo.CurrentHeadingDeg:F1}°");
             GUILayout.Label($"Heading Error: {guidanceInfo.HeadingErrorDeg:F1}°");

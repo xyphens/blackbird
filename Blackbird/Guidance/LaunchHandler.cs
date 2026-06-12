@@ -1,5 +1,6 @@
 ﻿using System;
 using Blackbird.Enums;
+using Blackbird.Mathematics;
 using Blackbird.Models;
 using UnityEngine;
 
@@ -11,12 +12,22 @@ namespace Blackbird.Guidance
         private const double WarpStopLeadTimeSeconds = 300.0;
         private double _targetUt;
 
+        private const double PitchGain = 0.015;
+        private const double YawGain = 0.015;
+        private const float MaxControlInput = 0.25f;
+
         // pitch guidance
         public double PitchOffsetDeg { get; private set; }
+        public double GuidanceBasePitchDeg { get; private set; }
+        public double ManualPitchCommandDeg { get; private set; } = 90.0;
+        // heading guidance
         public double HeadingOffsetDeg { get; private set; }
+        public double GuidanceBaseHeadingDeg { get; private set; }
+  
+        public double ManualHeadingCommandDeg { get; private set; } = 90.0;
         // read inputs from Blackbird?
         public GuidanceMode GuidanceMode { get; set; } = GuidanceMode.None;
-        public bool EnableAutopilot { get; set; }
+        private GuidanceMode _previousGuidanceMode = GuidanceMode.None;
         public LaunchGuidanceState State { get; private set; }
         public LaunchPlan CurrentPlan { get; private set; }
         public bool HasPlan => CurrentPlan != null;
@@ -123,17 +134,17 @@ namespace Blackbird.Guidance
                     _ascentGuidance.GetGuidance(
                         vessel,
                         CurrentPlan,
-                        PitchOffsetDeg,
-                        HeadingOffsetDeg,
-                        GuidanceMode
-                        );
+                        ManualPitchCommandDeg,
+                        ManualHeadingCommandDeg,
+                        GuidanceMode);
 
-                if ((GuidanceMode == GuidanceMode.Guidance ||
-                     GuidanceMode == GuidanceMode.Autopilot) &&
-                    GuidanceInfo != null)
-                {
-                    ApplyAscentGuidance(vessel, GuidanceInfo);
-                }
+                //if ((GuidanceMode == GuidanceMode.Guidance ||
+                //     GuidanceMode == GuidanceMode.Autopilot) &&
+                //    GuidanceInfo != null)
+                //{
+                //    Debug.Log($"Pitch set to {GuidanceInfo.CommandPitchDeg:F1}, heading set to: {GuidanceInfo.CommandHeadingDeg:F1}");
+                //    ApplyAscentGuidance(vessel, GuidanceInfo);
+                //}
                 return;
             }
 
@@ -163,9 +174,47 @@ namespace Blackbird.Guidance
             SetSafeWarpRate(secondsRemaining);
         }
 
-        public void SetGuidanceMode(GuidanceMode mode)
+        public void SetGuidanceMode(GuidanceMode gMode, Vessel vessel = null)
         {
-            GuidanceMode = mode;
+            if (GuidanceMode == gMode) return;
+
+            // switch to manual guidance
+            if (vessel == null || GuidanceInfo == null) return;
+
+            if (gMode == GuidanceMode.Guidance)
+            {
+                // prefill manual guidance vectors w/ ships default heading
+                ManualPitchCommandDeg = GuidanceInfo.CurrentPitchDeg;
+                ManualHeadingCommandDeg = GuidanceInfo.CurrentHeadingDeg;
+
+                if (GuidanceMode == GuidanceMode.None)
+                {
+                    // log our base heading + pitch at the pad
+                    GuidanceBasePitchDeg = GuidanceInfo.CurrentPitchDeg;
+                    GuidanceBaseHeadingDeg = GuidanceInfo.CurrentHeadingDeg;
+                    // point to default if pre-launch
+                    //PitchOffsetDeg = 90.0;
+                    //HeadingOffsetDeg = 0.0;
+                }
+            }
+
+            // auto-pilot enabled, point to target vectors
+            if (gMode == GuidanceMode.Autopilot)
+            {
+                PitchOffsetDeg =
+                    GuidanceInfo.CurrentPitchDeg - GuidanceInfo.TargetPitchDeg;
+
+                HeadingOffsetDeg =
+                    OrbitMath.DeltaDegrees(
+                        GuidanceInfo.TargetAzimuthDeg,
+                        GuidanceInfo.CurrentHeadingDeg);
+
+                ManualPitchCommandDeg = GuidanceInfo.TargetPitchDeg;
+
+                ManualHeadingCommandDeg = GuidanceInfo.TargetAzimuthDeg;
+            }
+
+            GuidanceMode = gMode;
         }
 
         // abort launch before liftoff
@@ -198,11 +247,13 @@ namespace Blackbird.Guidance
         // pitch command
         public void IncreasePitchOffset()
         {
-            PitchOffsetDeg += 1.0;
+            ManualPitchCommandDeg += 1.0;
+            Debug.Log($"[BlackBird] IncreasePitchOffset -> {ManualPitchCommandDeg:F1}");
         }
         public void DecreasePitchOffset()
         {
-            PitchOffsetDeg -= 1.0;
+            ManualPitchCommandDeg -= 1.0;
+            Debug.Log($"[BlackBird] DecreasePitchOffset -> {ManualPitchCommandDeg:F1}");
         }
         public void SetPitchOffset(float pitchOffset) 
         {
@@ -211,44 +262,84 @@ namespace Blackbird.Guidance
         public void ResetPitchOffset()
         {
             PitchOffsetDeg = 0.0;
+            GuidanceBasePitchDeg = 90.0;
+            ManualPitchCommandDeg = 90.0;
+            Debug.Log($"[BlackBird] Pitch Reset -> {GuidanceBasePitchDeg:F1}");
         }
         public void IncreaseHeadingOffset()
         {
-            HeadingOffsetDeg += 1.0;
+            ManualHeadingCommandDeg += 1.0;
+            Debug.Log($"[BlackBird] IncreaseHeadingOffset -> {HeadingOffsetDeg:F1}");
         }
         public void DecreaseHeadingOffset()
         {
-            HeadingOffsetDeg -= 1.0;
+            ManualHeadingCommandDeg -= 1.0;
+            Debug.Log($"[BlackBird] DecreaseHeadingOffset -> {HeadingOffsetDeg:F1}");
         }
         public void SetHeadingOffset(float headingOffset)
         {
             HeadingOffsetDeg = headingOffset;
+            
         }
         public void ResetHeadingOffset()
         {
+            GuidanceBaseHeadingDeg = 90.0;
             HeadingOffsetDeg = 0.0;
+            ManualHeadingCommandDeg = 90.0;
+            Debug.Log($"[BlackBird] Heading Reset -> {HeadingOffsetDeg:F1}");
         }
         // apply either manual or autopilot pitch + heading inputs
-        public static void ApplyAscentGuidance(Vessel vessel, AscentGuidanceInfo gi)
+        //public static void ApplyAscentGuidance(Vessel vessel, AscentGuidanceInfo gi)
+        //{
+
+        //    if (vessel == null || gi == null || double.IsNaN(gi.CommandPitchDeg) || double.IsNaN(gi.CommandHeadingDeg)) return;
+
+        //    if (!vessel.Autopilot.Enabled) vessel.Autopilot.Enable(VesselAutopilot.AutopilotMode.StabilityAssist);
+
+        //    Vector3d up = (vessel.GetWorldPos3D() - vessel.mainBody.position).normalized;
+        //    Vector3d north = Vector3d.Exclude(up, vessel.mainBody.transform.up).normalized;
+        //    Vector3d east = Vector3d.Cross(up, north).normalized;
+
+        //    double headingRad = gi.CommandHeadingDeg * Math.PI / 180.0;
+
+        //    Vector3d horizontalDirection = (north * Math.Cos(headingRad)) + (east * Math.Sin(headingRad));
+        //    double pitchRad = gi.CommandPitchDeg * Math.PI / 180.0;
+
+        //    Vector3d desiredForward = (horizontalDirection * Math.Cos(pitchRad)) + (up * Math.Sin(pitchRad));
+
+        //    //Quaternion desiredRotation = Quaternion.LookRotation(desiredForward, up);
+        //    Quaternion desiredRotation = Quaternion.LookRotation(desiredForward, up) * Quaternion.Euler(90.0f, 0.0f, 0.0f);
+
+        //    //Debug.Log(
+        //    //    $"CommandHeadingDeg={gi.CommandHeadingDeg:F1} " +
+        //    //    $"CommandPitchDeg={gi.CommandPitchDeg:F1} ");
+
+        //    //vessel.Autopilot.SAS.LockRotation(desiredRotation);
+        //}
+
+        public void ApplyFlightControls(FlightCtrlState state)
         {
-            if (vessel == null || gi == null || double.IsNaN(gi.CommandPitchDeg) || double.IsNaN(gi.CommandHeadingDeg)) return;
+            if (state == null) return;
+            if (State != LaunchGuidanceState.GuidingAscent) return;
+            if (GuidanceMode == GuidanceMode.None || GuidanceInfo == null) return;
 
-            if (!vessel.Autopilot.Enabled) vessel.Autopilot.Enable(VesselAutopilot.AutopilotMode.StabilityAssist);
+            float pitchInput =
+                Mathf.Clamp(
+                    (float)(GuidanceInfo.PitchErrorDeg * PitchGain),
+                    -MaxControlInput,
+                    MaxControlInput);
 
-            Vector3d up = (vessel.GetWorldPos3D() - vessel.mainBody.position).normalized;
-            Vector3d north = Vector3d.Exclude(up, vessel.mainBody.transform.up).normalized;
-            Vector3d east = Vector3d.Cross(up, north).normalized;
+            float yawInput =
+                Mathf.Clamp(
+                    (float)(GuidanceInfo.HeadingErrorDeg * YawGain),
+                    -MaxControlInput,
+                    MaxControlInput);
 
-            double headingRad = gi.CommandHeadingDeg * Math.PI / 180.0;
+            state.pitch = pitchInput;
+            state.yaw = yawInput;
 
-            Vector3d horizontalDirection = (north * Math.Cos(headingRad)) + (east * Math.Sin(headingRad));
-            double pitchRad = gi.CommandPitchDeg * Math.PI / 180.0;
-
-            Vector3d desiredForward = (horizontalDirection * Math.Cos(pitchRad)) + (up * Math.Sin(pitchRad));
-
-            Quaternion desiredRotation = Quaternion.LookRotation(desiredForward, up);
-
-            vessel.Autopilot.SAS.LockRotation(desiredRotation);
+            // Don't force roll yet.
+            // state.roll = 0.0f;
         }
     }
 }

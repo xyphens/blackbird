@@ -32,53 +32,61 @@ namespace Blackbird.Guidance
             new PitchProfilePoint { AltitudeMeters = 45000.0, PitchDegrees = 0.0 }
         };
 
-        public AscentGuidanceInfo GetGuidance(Vessel vessel, LaunchPlan plan, double pitchOffsetDeg, double headingOffsetDeg, GuidanceMode guidanceMode)
+        public AscentGuidanceInfo GetGuidance(Vessel vessel, LaunchPlan plan, double manualPitchCommandDeg, double manualHeadingCommandDeg, GuidanceMode guidanceMode)
         {
             if (vessel == null || plan == null) return null;
 
             double targetAzimuth = double.IsNaN(plan.LaunchAzimuthDeg) ? GetFallbackLaunchHeading(vessel, plan) : plan.LaunchAzimuthDeg;
-            // heading guidance
-            double commandHeading = guidanceMode == GuidanceMode.Autopilot 
-                                    ? targetAzimuth 
-                                    : OrbitMath.NormalizeDegrees(targetAzimuth + headingOffsetDeg);
+            double targetPitch = GetTargetPitchDeg(vessel.altitude, plan);
+
             double currentHeading = GetCurrentHeadingDeg(vessel);
+            double currentPitch = GetCurrentPitchDeg(vessel);
+
+            double commandHeading = 0.0;
+            double commandPitch = 0.0;
+
+            // heading guidance
+            if (guidanceMode == GuidanceMode.Autopilot) {
+                commandHeading = OrbitMath.NormalizeDegrees(targetAzimuth);
+                commandPitch = Math.Max(-30.0, Math.Min(90.0, targetPitch));  // allows autopilot to dip below horizon for circ.
+            } else if (guidanceMode == GuidanceMode.Guidance)
+            {
+                commandHeading = manualHeadingCommandDeg;
+                commandPitch = manualPitchCommandDeg;
+            } else
+            {
+                commandHeading = currentHeading;
+                commandPitch = currentPitch;
+            }
+
             double headingError = OrbitMath.DeltaDegrees(currentHeading, commandHeading);
 
             double targetLan = plan.TargetOrbit.LanDeg;
-
             double currentLan = vessel.orbit.LAN;
 
             double lanError = OrbitMath.DeltaDegrees(currentLan, targetLan);
-
-            // pitch guidance
-            double targetPitch = GetTargetPitchDeg(vessel.altitude, plan);
-
-            double commandPitch = guidanceMode == GuidanceMode.Autopilot 
-                                    ? targetPitch 
-                                    : targetPitch + pitchOffsetDeg;
-            commandPitch = Math.Max(0.0, Math.Min(90.0, commandPitch)); // todo: we might want to allow negative pitch when out of atmosphere
-
-            double currentPitch = GetCurrentPitchDeg(vessel);
             double pitchError = OrbitMath.DeltaDegrees(currentPitch, commandPitch);
 
             return new AscentGuidanceInfo
             {
                 TargetAzimuthDeg = targetAzimuth,
                 CurrentHeadingDeg = currentHeading,
-                HeadingOffsetDeg = headingOffsetDeg,
                 CommandHeadingDeg = commandHeading,
                 HeadingErrorDeg = headingError,
+
                 TargetLanDeg = targetLan,
                 CurrentLanDeg = currentLan,
                 LanErrorDeg = lanError,
-                HeadingInstruction = "Heading to " + commandHeading.ToString("F1") + "°",
+
+                HeadingInstruction = "Head towards " + commandHeading.ToString("F1") + "°",
+
                 TargetPitchDeg = targetPitch,
-                PitchOffsetDeg = pitchOffsetDeg,
                 CommandPitchDeg = commandPitch,
                 CurrentPitchDeg = currentPitch,
                 PitchErrorDeg = pitchError,
+
                 GuidanceMode = guidanceMode,
-                PitchInstruction = "Pitch to " + commandPitch.ToString("F1") + "°",
+                PitchInstruction = "Pitch towards " + commandPitch.ToString("F1") + "°",
             };
         }
 
@@ -144,7 +152,7 @@ namespace Blackbird.Guidance
         {
             Vector3d up = (vessel.GetWorldPos3D() - vessel.mainBody.position).normalized;
             Vector3d north = Vector3d.Exclude(up, vessel.mainBody.transform.up).normalized;
-            Vector3d east = Vector3d.Cross(north, up);
+            Vector3d east = Vector3d.Cross(up, north);
             Vector3d forward = Vector3d.Exclude(up, vessel.ReferenceTransform.up).normalized;
 
             double northComponent = Vector3d.Dot(forward, north);

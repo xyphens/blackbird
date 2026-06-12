@@ -46,7 +46,7 @@ namespace Blackbird.Mathematics
 
             if (argument < -1.0 || argument > 1.0) return double.NaN;
 
-            double azimuthRad = Math.Asin(argument);
+            double azimuthRad = Math.Acos(argument);
 
             return NormalizeDegrees(azimuthRad * 180.0 / Math.PI);
         }
