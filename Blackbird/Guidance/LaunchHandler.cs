@@ -12,9 +12,7 @@ namespace Blackbird.Guidance
         private const double WarpStopLeadTimeSeconds = 10.0;
         private double _targetUt;
 
-        private const double PitchGain = 0.015;
-        private const double YawGain = 0.015;
-        private const float MaxControlInput = 0.25f;
+        private readonly AttitudeControl _attitudeControl = new AttitudeControl();
 
         // manual guidance
         public double ManualPitchCommandDeg { get; private set; } = 90.0;
@@ -140,20 +138,27 @@ namespace Blackbird.Guidance
 
             if (gMode == GuidanceMode.Guidance)
             {
-                ManualPitchCommandDeg = ClampPitchCommand(GuidanceInfo.CurrentPitchDeg);
+                ManualPitchCommandDeg = GuidanceInfo.CurrentPitchDeg;
                 ManualHeadingCommandDeg = OrbitMath.NormalizeDegrees(GuidanceInfo.CurrentHeadingDeg);
+                ScreenMessages.PostScreenMessage(
+                    $"BlackBird Guidance: pitch={ManualPitchCommandDeg:F1}, heading={ManualHeadingCommandDeg:F1}",
+                    5.0f,
+                    ScreenMessageStyle.UPPER_CENTER);
             }
 
             if (gMode == GuidanceMode.Autopilot)
             {
-                ManualPitchCommandDeg = ClampPitchCommand(GuidanceInfo.TargetPitchDeg);
+                ManualPitchCommandDeg = ClampAutopilotPitchCommand(GuidanceInfo.TargetPitchDeg);
                 ManualHeadingCommandDeg = OrbitMath.NormalizeDegrees(GuidanceInfo.TargetAzimuthDeg);
             }
+
+            if (GuidanceMode != gMode) _attitudeControl.Reset();
 
             GuidanceMode = gMode;
         }
 
-        private static double ClampPitchCommand(double pitchDeg)
+        // todo: possibly make the floor an input
+        private static double ClampAutopilotPitchCommand(double pitchDeg)
         {
             return Math.Max(-30.0, Math.Min(90.0, pitchDeg));
         }
@@ -195,8 +200,10 @@ namespace Blackbird.Guidance
         }
         public void ResetPitchCommand()
         {
-            ManualPitchCommandDeg = 90.0;
-            Debug.Log($"[BlackBird] ResetPitchCommand -> {ManualPitchCommandDeg:F1}");
+            if (GuidanceInfo != null)
+                ManualPitchCommandDeg = ClampAutopilotPitchCommand(GuidanceInfo.CurrentPitchDeg);
+            else
+                ManualPitchCommandDeg = 90.0;
         }
         public void IncreaseManualHeadingCommand()
         {
@@ -210,37 +217,20 @@ namespace Blackbird.Guidance
         }
         public void ResetHeadingCommand()
         {
-            ManualHeadingCommandDeg = 280;
+            ManualHeadingCommandDeg = GuidanceInfo != null
+                                    ? OrbitMath.NormalizeDegrees(GuidanceInfo.CurrentHeadingDeg)
+                                    : 90.0;
             Debug.Log($"[BlackBird] ResetHeadingCommand -> {ManualHeadingCommandDeg:F1}");
         }
 
-        public void ApplyFlightControls(FlightCtrlState state)
+        public void ApplyFlightControls(FlightCtrlState state, Vessel vessel)
         {
             if (state == null) return;
             if (State != LaunchGuidanceState.GuidingAscent) return;
             if (GuidanceMode == GuidanceMode.None || GuidanceInfo == null) return;
 
-            float pitchInput =
-                Mathf.Clamp(
-                    (float)(GuidanceInfo.PitchErrorDeg * PitchGain),
-                    -MaxControlInput,
-                    MaxControlInput);
-
-            if (GuidanceMode == GuidanceMode.Guidance)
-            {
-                state.pitch = pitchInput;
-                state.yaw = 0.0f; // todo: we'll want to re-enable heading in manual
-                return;
-            }
-
-            float yawInput =
-                Mathf.Clamp(
-                    (float)(GuidanceInfo.HeadingErrorDeg * YawGain),
-                    -MaxControlInput,
-                    MaxControlInput);
-
-            state.pitch = pitchInput;
-            state.yaw = yawInput;
+            // todo: add input handling for roll stabilization
+            _attitudeControl.Drive(vessel, state, GuidanceInfo.CommandHeadingDeg, GuidanceInfo.CommandPitchDeg, 0.0);
         }
     }
 }

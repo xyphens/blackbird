@@ -10,7 +10,7 @@ using Blackbird.Enums;
 namespace Blackbird
 {
     [KSPAddon(KSPAddon.Startup.Flight, false)]
-    public sealed class RendezvousAssistant : MonoBehaviour
+    public sealed class BlackBird : MonoBehaviour
     {
         private Rect _windowRect = new Rect(200, 200, 350, 800);
         private string _insertionApText = "";
@@ -33,7 +33,7 @@ namespace Blackbird
 
         public void Start()
         {
-            Debug.Log("[RendezvousAssistant] Loaded");
+            Debug.Log("[BlackBird] Loaded");
         }
 
         public void Update()
@@ -53,7 +53,9 @@ namespace Blackbird
         }
         private void OnFlyByWire(FlightCtrlState state)
         {
-            _launchHandler.ApplyFlightControls(state);
+            if (_launchHandler == null || _flyByWireVessel == null) return;
+
+            _launchHandler.ApplyFlightControls(state, _flyByWireVessel);
         }
 
         public void OnDestroy()
@@ -316,24 +318,21 @@ namespace Blackbird
 
         private void DrawAscentGuidance()
         {
-            if (_launchHandler.State != LaunchGuidanceState.GuidingAscent)
-            {
-                return;
-            }
+            if (_launchHandler.State != LaunchGuidanceState.GuidingAscent) return;
 
             AscentGuidanceInfo guidanceInfo = _launchHandler.GuidanceInfo;
 
             GUILayout.Space(10);
             GUILayout.Label("[Ascent Guidance]");
 
+            // show guidance method dropdowns
+            DrawAscentGuidanceMethod();
+
             if (guidanceInfo == null)
             {
                 GUILayout.Label("Guidance unavailable");
                 return;
             }
-
-            // show guidance method dropdowns
-            DrawAscentGuidanceMethod();
 
             string gMode = _launchHandler.GuidanceMode == GuidanceMode.Autopilot 
                             ? "Autopilot" :
@@ -350,10 +349,9 @@ namespace Blackbird
             // PITCH
             GUILayout.Label($"Pitch Profile");
             GUILayout.Label($"Target Pitch: {guidanceInfo.TargetPitchDeg:F1}°");
-            //GUILayout.Label($"Pitch Offset: {guidanceInfo.PitchOffsetDeg:+0.0;-0.0;0.0}°");
-            GUILayout.Label($"Pitching Towards: {guidanceInfo.CommandPitchDeg:F1}°");
+            GUILayout.Label($"Pitch Input: {guidanceInfo.CommandPitchDeg:F1}°");
             GUILayout.Label($"Current Pitch: {guidanceInfo.CurrentPitchDeg:F1}°");
-            GUILayout.Label($"Pitch Error: {guidanceInfo.PitchErrorDeg:F1}°");
+            //GUILayout.Label($"Pitch Error: {guidanceInfo.PitchErrorDeg:F1}°");
 
             // pitch inputs
             if (canAdjustGuidance)
@@ -370,11 +368,11 @@ namespace Blackbird
             GUILayout.Label(
                 double.IsNaN(guidanceInfo.TargetAzimuthDeg)
                     ? "Target Heading: unavailable"
-                    : $"Target Heading: {guidanceInfo.TargetAzimuthDeg:F1}°");
+                    : $"Ideal heading: {guidanceInfo.TargetAzimuthDeg:F1}°");
 
-            GUILayout.Label($"Heading Towards: {guidanceInfo.CommandHeadingDeg:F1}°");
+            GUILayout.Label($"Heading Input: {guidanceInfo.CommandHeadingDeg:F1}°");
             GUILayout.Label($"Current Heading: {guidanceInfo.CurrentHeadingDeg:F1}°");
-            GUILayout.Label($"Heading Error: {guidanceInfo.HeadingErrorDeg:F1}°");
+            //GUILayout.Label($"Heading Error: {guidanceInfo.HeadingErrorDeg:F1}°");
 
             // heading inputs
             if (canAdjustGuidance)
