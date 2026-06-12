@@ -16,5 +16,10 @@ namespace Blackbird.Enums
                 ? PlanetScaleEnum.RSS
                 : PlanetScaleEnum.Stock;
         }
+
+        public static double GetStandardGravity()
+        {
+            return FlightGlobals.currentMainBody.gravParameter
+        }
     }
 }
