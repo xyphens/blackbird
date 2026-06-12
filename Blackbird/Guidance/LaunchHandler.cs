@@ -140,20 +140,14 @@ namespace Blackbird.Guidance
 
             if (gMode == GuidanceMode.Guidance)
             {
-                ManualPitchCommandDeg =
-                    ClampPitchCommand(GuidanceInfo.CurrentPitchDeg);
-
-                ManualHeadingCommandDeg =
-                    OrbitMath.NormalizeDegrees(GuidanceInfo.CurrentHeadingDeg);
+                ManualPitchCommandDeg = ClampPitchCommand(GuidanceInfo.CurrentPitchDeg);
+                ManualHeadingCommandDeg = OrbitMath.NormalizeDegrees(GuidanceInfo.CurrentHeadingDeg);
             }
 
             if (gMode == GuidanceMode.Autopilot)
             {
-                ManualPitchCommandDeg =
-                    ClampPitchCommand(GuidanceInfo.TargetPitchDeg);
-
-                ManualHeadingCommandDeg =
-                    OrbitMath.NormalizeDegrees(GuidanceInfo.TargetAzimuthDeg);
+                ManualPitchCommandDeg = ClampPitchCommand(GuidanceInfo.TargetPitchDeg);
+                ManualHeadingCommandDeg = OrbitMath.NormalizeDegrees(GuidanceInfo.TargetAzimuthDeg);
             }
 
             GuidanceMode = gMode;
@@ -232,6 +226,13 @@ namespace Blackbird.Guidance
                     -MaxControlInput,
                     MaxControlInput);
 
+            if (GuidanceMode == GuidanceMode.Guidance)
+            {
+                state.pitch = pitchInput;
+                state.yaw = 0.0f; // todo: we'll want to re-enable heading in manual
+                return;
+            }
+
             float yawInput =
                 Mathf.Clamp(
                     (float)(GuidanceInfo.HeadingErrorDeg * YawGain),
@@ -240,9 +241,6 @@ namespace Blackbird.Guidance
 
             state.pitch = pitchInput;
             state.yaw = yawInput;
-
-            // Don't force roll yet.
-            // state.roll = 0.0f;
         }
     }
 }
