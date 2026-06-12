@@ -31,7 +31,6 @@ namespace Blackbird.Guidance
             new PitchProfilePoint { AltitudeMeters = 35000.0, PitchDegrees = 5.0 },
             new PitchProfilePoint { AltitudeMeters = 45000.0, PitchDegrees = 0.0 }
         };
-
         public AscentGuidanceInfo GetGuidance(Vessel vessel, LaunchPlan plan, double manualPitchCommandDeg, double manualHeadingCommandDeg, GuidanceMode guidanceMode)
         {
             if (vessel == null || plan == null) return null;

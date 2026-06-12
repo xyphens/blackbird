@@ -17,14 +17,7 @@ namespace Blackbird.Planning
 
         public static LaunchPlan Create(Vessel active, Vessel target, InsertionTarget insertionTarget, LaunchLocation launchSite)
         {
-            if (active == null || target == null)
-            {
-                return null;
-            }
-
-            // init basic target orbit info
-            // double targetAltitude = target.orbit.altitude;
-            // double phasingOffset = GetPhasingOffset(active);
+            if (active == null || target == null) return null;
 
             // launch site init
             LaunchLocation ls = launchSite ?? LaunchLocation.FromVessel(active);

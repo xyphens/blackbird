@@ -16,21 +16,13 @@ namespace Blackbird.Guidance
         private const double YawGain = 0.015;
         private const float MaxControlInput = 0.25f;
 
-        // pitch guidance
-        public double PitchOffsetDeg { get; private set; }
-        public double GuidanceBasePitchDeg { get; private set; }
+        // manual guidance
         public double ManualPitchCommandDeg { get; private set; } = 90.0;
-        // heading guidance
-        public double HeadingOffsetDeg { get; private set; }
-        public double GuidanceBaseHeadingDeg { get; private set; }
-  
         public double ManualHeadingCommandDeg { get; private set; } = 90.0;
         // read inputs from Blackbird?
         public GuidanceMode GuidanceMode { get; set; } = GuidanceMode.None;
-        private GuidanceMode _previousGuidanceMode = GuidanceMode.None;
         public LaunchGuidanceState State { get; private set; }
         public LaunchPlan CurrentPlan { get; private set; }
-        public bool HasPlan => CurrentPlan != null;
 
         public void SetPlan(LaunchPlan plan)
         {
@@ -136,48 +128,40 @@ namespace Blackbird.Guidance
 
             SetSafeWarpRate(secondsRemaining);
         }
-
         public void SetGuidanceMode(GuidanceMode gMode, Vessel vessel = null)
         {
             if (GuidanceMode == gMode) return;
 
-            // switch to manual guidance
-            if (vessel == null || GuidanceInfo == null) return;
+            if (vessel == null || GuidanceInfo == null)
+            {
+                GuidanceMode = gMode;
+                return;
+            }
 
             if (gMode == GuidanceMode.Guidance)
             {
-                // prefill manual guidance vectors w/ ships default heading
-                ManualPitchCommandDeg = GuidanceInfo.CurrentPitchDeg;
-                ManualHeadingCommandDeg = GuidanceInfo.CurrentHeadingDeg;
+                ManualPitchCommandDeg =
+                    ClampPitchCommand(GuidanceInfo.CurrentPitchDeg);
 
-                if (GuidanceMode == GuidanceMode.None)
-                {
-                    // log our base heading + pitch at the pad
-                    GuidanceBasePitchDeg = GuidanceInfo.CurrentPitchDeg;
-                    GuidanceBaseHeadingDeg = GuidanceInfo.CurrentHeadingDeg;
-                    // point to default if pre-launch
-                    //PitchOffsetDeg = 90.0;
-                    //HeadingOffsetDeg = 0.0;
-                }
+                ManualHeadingCommandDeg =
+                    OrbitMath.NormalizeDegrees(GuidanceInfo.CurrentHeadingDeg);
             }
 
-            // auto-pilot enabled, point to target vectors
             if (gMode == GuidanceMode.Autopilot)
             {
-                PitchOffsetDeg =
-                    GuidanceInfo.CurrentPitchDeg - GuidanceInfo.TargetPitchDeg;
+                ManualPitchCommandDeg =
+                    ClampPitchCommand(GuidanceInfo.TargetPitchDeg);
 
-                HeadingOffsetDeg =
-                    OrbitMath.DeltaDegrees(
-                        GuidanceInfo.TargetAzimuthDeg,
-                        GuidanceInfo.CurrentHeadingDeg);
-
-                ManualPitchCommandDeg = GuidanceInfo.TargetPitchDeg;
-
-                ManualHeadingCommandDeg = GuidanceInfo.TargetAzimuthDeg;
+                ManualHeadingCommandDeg =
+                    OrbitMath.NormalizeDegrees(GuidanceInfo.TargetAzimuthDeg);
             }
 
             GuidanceMode = gMode;
+        }
+
+        private static double ClampPitchCommand(double pitchDeg)
+        {
+            return Math.Max(-30.0, Math.Min(90.0, pitchDeg));
         }
 
         // abort launch before liftoff
@@ -185,9 +169,6 @@ namespace Blackbird.Guidance
         {
             TimeWarp.SetRate(0, true);
             _targetUt = 0.0;
-
-            PitchOffsetDeg = 0;
-            HeadingOffsetDeg = 0;
 
             if (CurrentPlan != null)
             {
@@ -211,36 +192,32 @@ namespace Blackbird.Guidance
         public void IncreaseManualPitchCommand()
         {
             ManualPitchCommandDeg += 1.0;
-            Debug.Log($"[BlackBird] IncreasePitchOffset -> {ManualPitchCommandDeg:F1}");
+            Debug.Log($"[BlackBird] IncreaseManualPitchCommand -> {ManualPitchCommandDeg:F1}");
         }
         public void DecreaseManualPitchCommand()
         {
             ManualPitchCommandDeg -= 1.0;
-            Debug.Log($"[BlackBird] DecreasePitchOffset -> {ManualPitchCommandDeg:F1}");
+            Debug.Log($"[BlackBird] DecreaseManualPitchCommand -> {ManualPitchCommandDeg:F1}");
         }
         public void ResetPitchCommand()
         {
-            PitchOffsetDeg = 0.0;
-            GuidanceBasePitchDeg = 90.0;
             ManualPitchCommandDeg = 90.0;
-            Debug.Log($"[BlackBird] Pitch Reset -> {GuidanceBasePitchDeg:F1}");
+            Debug.Log($"[BlackBird] ResetPitchCommand -> {ManualPitchCommandDeg:F1}");
         }
         public void IncreaseManualHeadingCommand()
         {
             ManualHeadingCommandDeg += 1.0;
-            Debug.Log($"[BlackBird] IncreaseHeadingOffset -> {HeadingOffsetDeg:F1}");
+            Debug.Log($"[BlackBird] IncreaseManualHeadingCommand -> {ManualHeadingCommandDeg:F1}");
         }
         public void DecreaseManualHeadingCommand()
         {
             ManualHeadingCommandDeg -= 1.0;
-            Debug.Log($"[BlackBird] DecreaseHeadingOffset -> {HeadingOffsetDeg:F1}");
+            Debug.Log($"[BlackBird] DecreaseManualHeadingCommand -> {ManualHeadingCommandDeg:F1}");
         }
         public void ResetHeadingCommand()
         {
-            GuidanceBaseHeadingDeg = 90.0;
-            HeadingOffsetDeg = 0.0;
-            ManualHeadingCommandDeg = 90.0;
-            Debug.Log($"[BlackBird] Heading Reset -> {HeadingOffsetDeg:F1}");
+            ManualHeadingCommandDeg = 280;
+            Debug.Log($"[BlackBird] ResetHeadingCommand -> {ManualHeadingCommandDeg:F1}");
         }
 
         public void ApplyFlightControls(FlightCtrlState state)
