@@ -31,9 +31,13 @@ namespace Blackbird.Guidance
                 return Failure("PSG problem has no phases.");
             }
 
-            return warmStart != null && warmStart.IsValid
-                ? RunConvergedSolve(problem, warmStart)
-                : RunInitialBootstrapping(problem);
+            if (warmStart != null && warmStart.IsValid)
+            {
+                PsgOptimizationResult result = RunConvergedSolve(problem, warmStart);
+                if (result != null && result.Success) return result;
+            }
+
+            return RunInitialBootstrapping(problem);
         }
 
         private PsgOptimizationResult RunInitialBootstrapping(PsgProblem problem)
@@ -485,6 +489,8 @@ namespace Blackbird.Guidance
                     double duration = ClampDuration(p, GetInitialPhaseDuration(phase));
                     if (_warmStart.Segments != null && p < _warmStart.Segments.Length)
                     {
+                        if (_problem.InitialUniversalTime >= _warmStart.Segments[p].EndUniversalTime)
+                            return false;
                         duration = Math.Max(0.05, _warmStart.Segments[p].EndUniversalTime - _warmStart.Segments[p].StartUniversalTime);
                     }
 

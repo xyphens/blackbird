@@ -16,6 +16,7 @@ namespace Blackbird.Guidance
         private const double SolutionStaleSeconds = 20.0;
         private const double ExpiredSolutionGraceSeconds = 0.25;
         private const double TerminalGuidanceLockSeconds = 2.0;
+        private const double TerminalOverrunGraceSeconds = 30.0;
 
         private readonly PsgOptimizer _optimizer = new PsgOptimizer();
         private PoweredGuidancePhase _phase = PoweredGuidancePhase.Unavailable;
@@ -95,9 +96,11 @@ namespace Blackbird.Guidance
                     true);
             }
 
-            if (_solution != null && _solution.IsValid && !IsSolutionExpired(vesselState.UniversalTime))
+            if (_solution != null && _solution.IsValid)
             {
+                bool isExpired = IsSolutionExpired(vesselState.UniversalTime);
                 Vector3d relativePosition = vesselState.Position - vesselState.Body.position;
+
                 if (IsPsgTerminalComplete(vesselState, relativePosition))
                 {
                     _complete = true;
@@ -115,23 +118,47 @@ namespace Blackbird.Guidance
                         true);
                 }
 
+                if (isExpired && vesselState.UniversalTime > _solution.FinalUniversalTime + TerminalOverrunGraceSeconds)
+                {
+                    _complete = true;
+                    _phase = PoweredGuidancePhase.Complete;
+                    return CreateCommand(
+                        PoweredGuidancePhase.Complete,
+                        "PSG terminal overrun",
+                        0.0,
+                        profileHeadingDeg,
+                        0.0,
+                        apError,
+                        peError,
+                        0.0,
+                        0.0,
+                        true);
+                }
+
                 PsgGuidanceVector guidance = _solution.InertialGuidance(vesselState.UniversalTime);
                 if (guidance != null && guidance.IsValid)
                 {
-                    if (timeToGo <= TerminalGuidanceLockSeconds)
+                    if (!isExpired)
                     {
-                        if (!_hasLockedTerminalDirection)
+                        if (timeToGo <= TerminalGuidanceLockSeconds)
                         {
-                            _lockedTerminalDirection = guidance.InertialDirection.normalized;
-                            _hasLockedTerminalDirection = true;
-                        }
+                            if (!_hasLockedTerminalDirection)
+                            {
+                                _lockedTerminalDirection = guidance.InertialDirection.normalized;
+                                _hasLockedTerminalDirection = true;
+                            }
 
-                        guidance.InertialDirection = _lockedTerminalDirection;
+                            guidance.InertialDirection = _lockedTerminalDirection;
+                        }
+                        else
+                        {
+                            _hasLockedTerminalDirection = false;
+                            _lockedTerminalDirection = Vector3d.zero;
+                        }
                     }
-                    else
+                    else if (_hasLockedTerminalDirection)
                     {
-                        _hasLockedTerminalDirection = false;
-                        _lockedTerminalDirection = Vector3d.zero;
+                        guidance.InertialDirection = _lockedTerminalDirection;
                     }
 
                     double psgPitch;
@@ -139,9 +166,11 @@ namespace Blackbird.Guidance
                     GetPitchHeadingFromInertial(vesselState, guidance.InertialDirection, out psgPitch, out psgHeading);
 
                     _phase = PoweredGuidancePhase.PoweredGuidance;
+                    string guidanceStatus = isExpired ? "PSG guidance overrun" :
+                        IsSolutionStale(vesselState.UniversalTime) ? "PSG guidance stale" : "PSG guidance";
                     return CreateCommand(
                         PoweredGuidancePhase.PoweredGuidance,
-                        IsSolutionStale(vesselState.UniversalTime) ? "PSG guidance stale" : "PSG guidance",
+                        guidanceStatus,
                         ClampPitchForControl(psgPitch),
                         psgHeading,
                         guidance.Throttle,

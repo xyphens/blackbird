@@ -3,6 +3,15 @@ BlackBird Codex Handoff
 
 Last updated: 2026-06-13
 
+Session Context
+---------------
+
+Codex does not have direct access to other chatgpt.com or VS Code chat sessions.
+
+This file is the durable handoff. A future Codex session should treat this file plus
+the repository state as the source of truth, not assume hidden chat history exists.
+
+
 Project Summary
 ---------------
 
@@ -21,7 +30,8 @@ User workflow goal:
 4. BlackBird guides or flies ascent into the planned insertion orbit.
 5. Result should be near rendezvous with minimal correction burns.
 
-The planner should know the intended rendezvous strategy before launch. It should not invent the strategy only after reaching orbit.
+The planner should know the intended rendezvous strategy before launch. It should
+not invent the strategy only after reaching orbit.
 
 
 Hard Rules
@@ -34,7 +44,7 @@ Do not violate these:
 - No "make do with what we have" when the correct move is to expand a contract or state model.
 - If required data is missing, expand the appropriate model/interface instead of building around the absence.
 - Do not patch around failures caused by an incomplete/non-working implementation.
-- Do not keep tuning the current heuristic ascent controller as if it were PVG.
+- Do not keep tuning heuristic ascent logic as if it were PVG/PSG.
 - Do not import MechJeb or copy MechJeb source.
 - It is acceptable to study MechJeb architecture and derive our own implementation from the same algorithms.
 - Universal math/algorithm ideas may be reimplemented, but no direct MechJeb code transplant.
@@ -42,7 +52,7 @@ Do not violate these:
 - Keep responsibilities clear:
   - `LaunchPlanner` is mission planning.
   - `AscentGuidance` is the flight-control computer.
-  - `PoweredAscentGuidance` should become the powered guidance brain.
+  - `PoweredAscentGuidance` coordinates powered solved guidance.
   - `LaunchHandler` coordinates user actions, state, warp, and control application.
   - `AttitudeControl` actuates steering.
   - `VesselState` is a current vessel snapshot, including solver inputs.
@@ -50,52 +60,176 @@ Do not violate these:
   - `ITrajectoryProvider` is the boundary for Stock vs Principia trajectory reads.
 
 
-Current Build State
--------------------
+Current Build And Harness State
+-------------------------------
 
-Last known build command:
+Main build command:
 
 `C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe Blackbird.csproj /p:Configuration=Debug`
 
-Last known result:
+Latest result:
 - Build succeeded.
 - 0 warnings.
 - 0 errors.
 - Output: `bin\Debug\Blackbird.dll`
 
+PSG harness build command:
+
+`C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe PsgHarness\PsgHarness.csproj /p:Configuration=Debug`
+
+Latest result:
+- Build succeeded.
+- 0 warnings.
+- 0 errors.
+- Output: `PsgHarness\bin\Debug\Blackbird.PsgHarness.exe`
+
+PSG harness run:
+
+`PsgHarness\bin\Debug\Blackbird.PsgHarness.exe`
+
+Latest result:
+- Scenario: stock Kerbin, equatorial 81 km insertion.
+- Success: true.
+- Iterations: 46.
+- Termination: 2.
+- Constraint violation: about `2.0E-014`.
+- Elapsed solve time: about `0.43 s`.
+- Terminal AP: `81000.0 m`.
+- Terminal PE: `81000.0 m`.
+- Eccentricity: `0.000000`.
+
 
 Important Current Reality
 -------------------------
 
-The current `PoweredAscentGuidance` is not PVG.
+The project has moved past the older heuristic-only `PoweredAscentGuidance` state.
 
-It is a heuristic feedback scaffold that:
-- follows the altitude-indexed ascent profile early,
-- enters "Powered guidance",
-- commands mostly 100% throttle,
-- computes pitch from AP/PE/velocity heuristics,
-- cuts off when PE reaches insertion tolerance.
+Current repo state includes a BlackBird-owned PSG implementation:
 
-This scaffold has failed testing:
-- earlier version cut throttle before circularization;
-- patched version stopped cutting early but overburned;
-- behavior confirms it is not solving terminal powered ascent.
+- `Guidance/PsgOptimizer.cs`
+- `Guidance/PsgPhase.cs`
+- `Guidance/PsgTarget.cs`
+- `Guidance/PsgProblem.cs`
+- `Guidance/PsgSolution.cs`
+- `Guidance/PsgTerminal.cs`
+- `Guidance/PsgInitialState.cs`
+- `Guidance/PsgBodyModel.cs`
+- `Guidance/PsgOptimizationResult.cs`
+- `Guidance/PsgSnapshotLogger.cs`
+- `ThirdParty/alglib/*.cs`
+- `PsgHarness/Program.cs`
+- `PsgHarness/PsgHarness.csproj`
 
-Do not continue patching or tuning the scaffold.
+`Blackbird.csproj` explicitly compiles:
+- all `Guidance\Psg*.cs` files;
+- `Models\PoweredStageInfo.cs`;
+- `Models\PoweredGuidanceCommand.cs`;
+- `ThirdParty\alglib\*.cs`.
 
-Correct next direction:
-- replace heuristic internals with a real PSG/PVG-style optimizer and solved inertial guidance output.
+This is no longer just a contract sketch. It is a compiling PSG solver path with a
+standalone harness that converges on a simple stock Kerbin case.
 
 
-What Changed Recently
+PSG Implementation State
+------------------------
+
+`PsgOptimizer`:
+- uses ALGLIB nonlinear constrained optimization via `minnlc`;
+- uses SQP (`minlcsetalgosqp`);
+- uses finite-difference objective/constraints;
+- uses `MaxIterations = 1200`;
+- uses `SimpsonNodesPerPhase = 8`, producing 15 knots per phase;
+- supports bootstrapping and warm-started converged updates;
+- bootstraps with a flight-path-angle terminal pass, then attempts terminal relaxation when appropriate;
+- emits `PsgOptimizationResult` with success/status/iterations/termination/constraint violation.
+
+`PsgProblem`:
+- can be created from `VesselState`, or from explicit `PsgInitialState` + `PsgBodyModel`;
+- captures initial relative position, velocity, thrust direction, mass, UT, altitude, AP/PE, body mu/radius/rotation, atmosphere scale height, phases, and target.
+
+`PsgPhase`:
+- is built from `PoweredStageInfo`;
+- converts KSP tons/kN into kg/N;
+- derives mass flow from vacuum thrust and vacuum Isp;
+- carries start/end mass, thrust, Isp, burn time bounds, min throttle, KSP stage, shutdown, coast, unguided, and mass-continuity flags;
+- supports coast phases, though normal current extraction builds powered phases.
+
+`PsgTarget`:
+- is built from selected `LaunchPlan` / `AscentProfile`;
+- captures periapsis radius, apoapsis radius, attachment radius, inclination, LAN, target orbit normal, specific energy, and angular momentum vector.
+
+`PsgTerminal`:
+- supports terminal families analogous to the MechJeb PSG terminal ideas:
+  - `FlightPathAngle4`
+  - `FlightPathAngle5`
+  - `Kepler3`
+  - `Kepler4`
+  - `Kepler5`
+- evaluates angular momentum, energy/eccentricity, radius/speed/FPA, and normal alignment constraints depending on target kind.
+
+`PsgSolution`:
+- stores solved points and segments;
+- exposes `InertialGuidance(universalTime)`;
+- exposes `TimeToGo(universalTime)`;
+- exposes `VelocityToGo(universalTime)`;
+- exposes `TerminalGuidanceSatisfied(...)`;
+- supports shifting the solution start UT while the vessel is still prelaunch/landed.
+
+`PsgSnapshotLogger`:
+- writes problem/result snapshots to:
+  - `D:\SteamLibrary\steamapps\common\Kerbal Space Program Development\glog`
+  - or `<KSP root>\Blackbird`
+- logs body, initial state, target, phase inputs, optimizer status, terminal state, and solution points.
+
+
+Current Guidance Flow
 ---------------------
 
-Added stage-phase input surface:
+Planning:
 
-- `Models/PoweredStageInfo.cs`
-- `VesselState.PoweredStages`
+`LaunchPlanner.Create(...)`
+-> builds `LaunchPlan`
+-> generates `LaunchCandidate[]`
+-> each candidate owns insertion AP/PE, launch heading, phasing recommendation, ascent profile
+-> `LaunchPlan.SelectedCandidateIndex` chooses active candidate
 
-`VesselState.PoweredStages` is populated from KSP's own `VesselDeltaV` stage simulation using reflection over:
+Guidance:
+
+`LaunchHandler.Update(vessel)`
+-> `AscentGuidance.GetGuidance(...)`
+-> `VesselState.FromVessel(vessel)`
+-> selected candidate/profile
+-> `PoweredAscentGuidance.GetCommand(...)`
+-> `AscentGuidanceInfo`
+
+Powered solved guidance:
+
+`PoweredAscentGuidance.GetCommand(...)`
+-> builds `PsgTarget.FromPlan(...)`
+-> builds `PsgPhase[]` from `VesselState.PoweredStages`
+-> builds `PsgProblem.Create(...)`
+-> asynchronously runs `PsgOptimizer.Solve(problem, warmStart)`
+-> on success stores `PsgSolution`
+-> reads `PsgSolution.InertialGuidance(vesselState.UniversalTime)`
+-> converts inertial guidance to pitch/heading for display
+-> returns `PoweredGuidanceCommand` with inertial vector and throttle
+
+Control:
+
+`LaunchHandler.ApplyFlightControls(...)`
+-> if `GuidanceInfo.HasInertialDirection`, calls `AttitudeControl.DriveInertial(...)`
+-> otherwise calls `AttitudeControl.Drive(...)`
+-> sets `FlightCtrlState.mainThrottle` from `GuidanceInfo.CommandThrottle`
+
+This preserves the rule that PSG should not duplicate existing steering/throttle plumbing.
+
+
+Stage Data State
+----------------
+
+`Models/PoweredStageInfo.cs` and `VesselState.PoweredStages` exist.
+
+`VesselState.PoweredStages` is populated from KSP's `VesselDeltaV` stage simulation using reflection over:
 - `Vessel.VesselDeltaV`
 - `OperatingStageInfo`
 - `WorkingStageInfo`
@@ -103,6 +237,8 @@ Added stage-phase input surface:
 - `DeltaVEngineInfo`
 
 Each `PoweredStageInfo` exposes:
+- `IsValid`
+- `ReasonUnavailable`
 - `KspStage`
 - `PhaseIndex`
 - `IsCurrentOrFutureStage`
@@ -125,82 +261,9 @@ Each `PoweredStageInfo` exposes:
 - `BurnTimeSeconds`
 
 Why this matters:
-- MechJeb's PSG/PVG path consumes explicit phase/stage definitions.
+- MechJeb-style PSG consumes explicit phase/stage definitions.
 - Aggregated vessel thrust/mass/Isp is insufficient.
-- This was corrected after explicitly rejecting the "make do with aggregate values" approach.
-
-Also note:
-- A premature aggregate `PvgAscentSolution.cs` file was started and then removed.
-- Do not resurrect aggregate-only solver work.
-
-
-Current Relevant Files
-----------------------
-
-Models:
-- `Models/LaunchCandidate.cs`
-- `Models/LaunchPlan.cs`
-- `Models/VesselState.cs`
-- `Models/PoweredStageInfo.cs`
-- `Models/PoweredGuidanceCommand.cs`
-- `Models/AscentGuidanceInfo.cs`
-- `Models/OrbitInfo.cs`
-- `Models/TrajectoryState.cs`
-
-Guidance:
-- `Guidance/AscentProfile.cs`
-- `Guidance/AscentGuidance.cs`
-- `Guidance/PoweredAscentGuidance.cs`
-- `Guidance/LaunchHandler.cs`
-- `Guidance/AttitudeControl.cs`
-
-Planning:
-- `Planning/LaunchPlanner.cs`
-- `Planning/PhasingRecommendationCalculator.cs`
-
-Trajectory:
-- `Trajectory/ITrajectoryProvider.cs`
-- `Trajectory/TrajectoryProvider.cs`
-- `Trajectory/StockTrajectoryProvider.cs`
-- `Trajectory/PrincipiaTrajectoryProvider.cs`
-
-Math:
-- `Math/OrbitMath.cs`
-
-Enums:
-- `Enums/PoweredGuidancePhase.cs`
-- `Enums/AssistantMode.cs`
-- `Enums/PlanetScale.cs`
-
-UI:
-- `BlackBird.cs`
-
-
-Current Architecture Flow
--------------------------
-
-Planning:
-
-`LaunchPlanner.Create(...)`
--> builds `LaunchPlan`
--> generates `LaunchCandidate[]`
--> each candidate owns insertion AP/PE, launch heading, phasing recommendation, ascent profile
--> `LaunchPlan.SelectedCandidateIndex` chooses active candidate
-
-Guidance:
-
-`LaunchHandler.Update(vessel)`
--> `AscentGuidance.GetGuidance(...)`
--> `VesselState.FromVessel(vessel)`
--> selected candidate/profile
--> `PoweredAscentGuidance.GetCommand(...)`
--> `AscentGuidanceInfo`
-
-Control:
-
-`LaunchHandler.ApplyFlightControls(...)`
--> `AttitudeControl.Drive(vessel, state, heading, pitch, roll)`
--> sets `FlightCtrlState.mainThrottle` from `GuidanceInfo.CommandThrottle`
+- If more stage data is needed, expand `PoweredStageInfo` / `VesselState`, do not fake it inside the solver.
 
 
 Trajectory Provider Boundary
@@ -226,220 +289,20 @@ Principia provider:
 - Uses reflection into `ksp_plugin_adapter.dll` for current vessel state where available.
 - Still falls back to stock for future propagation/orbit summaries in places.
 
-Future PSG/PVG work should consume `VesselState` and `ITrajectoryProvider` rather than reading geometry directly from scattered KSP APIs.
+Future PSG/RSS/Principia work should consume `VesselState` and `ITrajectoryProvider`
+rather than reading geometry directly from scattered KSP APIs.
 
 
-MechJeb Reference Context
--------------------------
-
-Local MechJeb repo:
-
-`C:\Users\David\Downloads\MechJeb2-dev\MechJeb2-dev`
-
-Important files inspected:
-
-- `MechJeb2/MechJebModulePSGGlueBall.cs`
-  - Builds the PSG ascent problem.
-  - Feeds initial state, target, aero constants, stage phases, old solution.
-  - Uses `Core.StageStats.VacStats` and `Core.StageStats.AtmoStats`.
-
-- `MechJeb2/MechJebModuleGuidanceController.cs`
-  - Owns guidance status.
-  - Follows `Solution.InertialGuidance(time)`.
-  - Updates `Tgo` and `Vgo`.
-  - Ends terminal guidance via `Solution.TerminalGuidanceSatisfied(...)`.
-
-- `MechJeb2/MechJebModuleAscentPSGAutopilot.cs`
-  - Handles ascent phase transitions: vertical ascent, pitch program, zero-lift, guidance.
-  - In guidance mode, points at the inertial vector from the guidance controller.
-
-- `MechJebLib/PSG/AscentBuilder.cs`
-  - Builder for problem initial state, aerodynamic constants, stages/coasts, and terminal target.
-
-- `MechJebLib/PSG/Ascent.cs`
-  - Bootstrapping and converged optimization flow.
-
-- `MechJebLib/PSG/Optimizer.cs`
-  - Nonlinear constrained optimizer.
-  - Uses ALGLIB.
-  - Transcribes previous solution.
-  - Builds solution from optimized variables.
-
-- `MechJebLib/PSG/AscentProblem.cs`
-  - Direct collocation constraints.
-  - Dynamic constraints.
-  - Staging constraints.
-  - Control norm constraints.
-  - Terminal constraints.
-
-- `MechJebLib/PSG/Solution.cs`
-  - Stores solved trajectory.
-  - `InertialGuidance(time)` returns inertial direction and throttle.
-  - `TerminalGuidanceSatisfied(pos, vel, time)` checks angular momentum against solved terminal state.
-
-- `MechJebLib/PSG/Phase.cs`
-  - Defines powered/coast phase parameters:
-    - `M0`
-    - `Mf`
-    - thrust
-    - Isp
-    - burn time
-    - min throttle
-    - KSP stage
-    - allow shutdown
-    - mass continuity
-
-- `MechJebLib/PSG/Terminal/*`
-  - Terminal constraints:
-    - `FlightPathAngle4`
-    - `FlightPathAngle5`
-    - `Kepler3`
-    - `Kepler4`
-    - `Kepler5`
-
-Critical conclusion:
-- MechJeb's "PVG" path is really PSG/direct optimized powered guidance.
-- It is not a small AP/PE feedback formula.
-- The autopilot follows a solved inertial thrust-vector schedule.
-- Shutdown is based on solved terminal angular momentum/constraints, not "AP close" or "PE reached".
-
-
-Optimizer Decision Still Needed
--------------------------------
-
-To match the MechJeb-style implementation, BlackBird needs a nonlinear constrained optimizer.
-
-MechJeb uses ALGLIB.
-
-Options:
-1. Add ALGLIB as a dependency and implement BlackBird's own PSG optimizer using it.
-2. Implement an equivalent nonlinear constrained optimizer ourselves.
-
-Do not:
-- keep heuristic AP/PE feedback and call it PVG;
-- add a "temporary" optimizer substitute;
-- use aggregate vessel values instead of `PoweredStages`;
-- copy/import MechJebLib.
-
-If ALGLIB is used:
-- confirm licensing/dependency approach;
-- add it as an optimizer dependency, not as a MechJeb import;
-- write BlackBird-owned problem/phase/solution classes.
-
-
-Required Next Contract
-----------------------
-
-Before implementing the real guidance brain, define contracts for these BlackBird-owned types:
-
-1. `PsgPhase`
-   - Built from `PoweredStageInfo`.
-   - Fields should mirror required solver inputs:
-     - start mass
-     - end mass
-     - vacuum thrust
-     - vacuum Isp
-     - current/sea-level Isp if atmosphere is modeled
-     - burn time bounds
-     - min throttle
-     - KSP stage
-     - allow shutdown
-     - coast/mass continuity flags if supported
-
-2. `PsgTarget`
-   - Built from selected `LaunchCandidate` / `AscentProfile`.
-   - Represents terminal orbit constraints:
-     - periapsis radius
-     - apoapsis radius
-     - attachment radius/FPA or Kepler constraints
-     - inclination / plane normal
-     - LAN if required
-
-3. `PsgProblem`
-   - Initial state from `VesselState`:
-     - relative position
-     - relative velocity
-     - initial thrust direction
-     - mass
-     - universal time
-     - body mu
-     - body radius
-     - body rotation vector
-     - atmosphere/aero constants if modeled
-   - Phase list from `VesselState.PoweredStages`.
-   - Terminal target from `PsgTarget`.
-
-4. `PsgSolution`
-   - Solved trajectory/control output.
-   - Must expose:
-     - `InertialGuidance(double universalTime)`
-     - `TimeToGo(double universalTime)`
-     - `VelocityToGo(double universalTime)` or equivalent
-     - `TerminalGuidanceSatisfied(...)`
-     - terminal state summary for debugging/UI
-
-5. `PsgOptimizer`
-   - Owns actual solve.
-   - Should be async or throttled similarly to MechJeb so it does not stall flight.
-   - Supports warm-start/old solution later.
-
-6. `PoweredAscentGuidance`
-   - Should become a coordinator around `PsgOptimizer` and `PsgSolution`.
-   - It should not contain AP/PE heuristic steering.
-   - It should output a `PoweredGuidanceCommand` generated from solved inertial guidance.
-
-
-Current `PoweredAscentGuidance` Warning
----------------------------------------
-
-`Guidance/PoweredAscentGuidance.cs` currently contains many `FIXME` comments.
-
-These are not accepted final behavior.
-
-Current temporary items include:
-- terminal AP/PE tolerances;
-- pitch-program handoff margin;
-- terminal handoff bands;
-- vertical-ascent gate;
-- pitch blend/clamp;
-- radial-speed schedule;
-- AP/PE proportional shaping gains;
-- descent guard;
-- percentage-based terminal tolerance;
-- PE-based insertion cutoff.
-
-Do not spend more time tuning these unless the explicit task is to make a temporary test flight safer.
-
-For real work, replace these internals with solved guidance.
-
-
-Expected Behavior Right Now
----------------------------
-
-If tested in KSP right now:
-
-- Launch planning UI should function.
-- Candidate selection should function.
-- Guidance should start.
-- The vessel should follow the early ascent profile.
-- It should enter "Powered guidance".
-- It may overburn or miss the insertion target.
-
-This is expected because real PSG/PVG is not implemented yet.
-
-Do not interpret overburn/miss as a small bug in the final algorithm.
-It is evidence that the current scaffold must be replaced.
-
-
-Known UI / Debug State
-----------------------
+UI / Debug State
+----------------
 
 The UI currently shows:
 - active vessel;
 - altitude;
 - current apoapsis/periapsis;
 - launch plan/candidates;
-- ascent profile;
+- candidate AP/PE/heading/orbits/dV/remaining/error;
+- ascent profile altitude/pitch/heading/throttle;
 - guidance mode;
 - guidance phase;
 - pitch/heading profile/input/current values;
@@ -447,6 +310,9 @@ The UI currently shows:
 - target AP/PE;
 - AP/PE error;
 - guidance vgo/tgo;
+- PSG optimizer status;
+- PSG iterations;
+- PSG constraint violation;
 - predicted AP/PE;
 - remaining dV;
 - phase/plane error;
@@ -454,11 +320,37 @@ The UI currently shows:
 - launch recommendation/window;
 - advanced orbit details.
 
-`Guidance vgo` currently comes from the heuristic scaffold and is not a solved PVG value.
+This makes KSP test feedback much easier. Keep these fields until PSG is stable.
 
 
-Important Bugs / Design Notes From Testing
-------------------------------------------
+MechJeb Reference Context
+-------------------------
+
+Local MechJeb repo path provided by the user:
+
+`C:\Users\David\Downloads\MechJeb2-dev`
+
+Important files to study, not copy:
+- `MechJeb2/MechJebModulePSGGlueBall.cs`
+- `MechJeb2/MechJebModuleGuidanceController.cs`
+- `MechJeb2/MechJebModuleAscentPSGAutopilot.cs`
+- `MechJebLib/PSG/AscentBuilder.cs`
+- `MechJebLib/PSG/Ascent.cs`
+- `MechJebLib/PSG/Optimizer.cs`
+- `MechJebLib/PSG/AscentProblem.cs`
+- `MechJebLib/PSG/Solution.cs`
+- `MechJebLib/PSG/Phase.cs`
+- `MechJebLib/PSG/Terminal/*`
+
+Critical conclusion:
+- MechJeb's "PVG" path is effectively PSG/direct optimized powered guidance.
+- It is not a small AP/PE feedback formula.
+- The autopilot follows a solved inertial thrust-vector schedule.
+- Shutdown is based on solved terminal angular momentum/constraints, not "AP close" or "PE reached".
+
+
+Known Historical Test Notes
+---------------------------
 
 Historical issues fixed or investigated:
 - Launch heading initially went polar/incorrect due to heading/orbit-normal issues; stock heading now behaves better.
@@ -466,70 +358,146 @@ Historical issues fixed or investigated:
 - Launch countdown now decreases from accepted plan rather than staying locked.
 - Current AP/PE added to main UI.
 - Stage data added to `VesselState`.
+- Existing control plumbing now accepts solved inertial guidance vectors.
 
-Current unresolved core issue:
-- Powered guidance is not a real PSG/PVG solve and overburns/misses target.
+Older heuristic powered guidance failed testing:
+- early versions cut throttle before circularization;
+- later patched versions overburned;
+- that failure is why PSG implementation is now the correct path.
 
-Ascent profile notes:
-- `AscentProfileSolver` still has heuristic gravity-turn values and `FIXME` comments.
-- User noted profile points should eventually be calculated from an optimal altitude -> pitch -> target altitude relationship.
-- For RSS/Principia, expected behavior is continuous powered ascent, not coast-to-apoapsis circularization.
-
-
-Principia/RSS Direction
------------------------
-
-Long-term design:
-- All fundamental geometry/vector/orbit reads should go through `ITrajectoryProvider`.
-- Stock provider uses KSP patched conics.
-- Principia provider should fulfill the same API with true Principia state where possible.
-- The PSG/PVG solver should consume provider-backed `VesselState`.
-
-Do not build separate "stock ascent" and "RSS ascent" brains.
-There should be one powered guidance method whose inputs come from the provider/state layer.
+Do not revive AP/PE feedback patches as the primary solution.
 
 
-Immediate Next Steps For Tomorrow
-----------------------------------
+Open Risks And Remaining Work
+-----------------------------
 
-Start here:
+The main remaining work is no longer "create PSG contracts"; those files exist.
+The remaining work is to validate and mature the PSG implementation in real KSP
+flight conditions, especially multi-stage vehicles and RSS/Principia.
+
+Immediate next work:
+
+1. Test current PSG flight behavior in Stock KSP.
+   - Watch PSG status, iterations, and constraint violation.
+   - Confirm it uses inertial guidance, not profile fallback, after solving.
+   - Compare solved terminal AP/PE to actual achieved AP/PE.
+   - Save/review `blackbird-psg.log` snapshots after failed flights.
+
+2. Validate stage extraction.
+   - Confirm `VesselState.PoweredStages` has correct current/future stages.
+   - Confirm units after conversion: KSP tons -> kg, kN -> N.
+   - Confirm `MinimumThrottle` is meaningful for engines that cannot throttle deeply.
+   - Confirm multi-stage mass continuity/staging behavior.
+
+3. Validate PSG dynamics.
+   - Current optimizer dynamics use two-body gravity plus thrust.
+   - Thrust varies with a simple atmosphere/Isp interpolation.
+   - Real aero drag/lift losses are not clearly modeled in the optimizer path.
+   - This likely matters for RSS ascent and may matter for stock low-altitude guidance.
+
+4. Validate terminal completion.
+   - `PsgSolution.TerminalGuidanceSatisfied(...)` currently checks angular momentum against a time-selected terminal point.
+   - Confirm it cuts off at the right time in KSP.
+   - Do not add arbitrary AP/PE cutoff guards unless they correspond to the solved terminal constraints.
+
+5. Validate async solve cadence.
+   - `PoweredAscentGuidance` requests solves every 1s before a solution, every 5s with a solution, and every 0.5s near terminal.
+   - Confirm solver latency does not stall flight.
+   - Confirm stale/expired solution behavior is appropriate.
+
+6. Validate target construction.
+   - `PsgTarget.FromPlan(...)` uses selected ascent profile target AP/PE and launch plan target normal.
+   - Confirm target normal/LAN behavior for prograde, retrograde, and inclined rendezvous launches.
+
+7. Validate Principia boundary.
+   - Keep one PSG guidance method for Stock and RSS/Principia.
+   - Improve provider-backed state reads as needed.
+   - Do not split into separate "stock ascent" and "RSS ascent" brains.
+
+8. Keep `PsgHarness` useful.
+   - Add deterministic harness cases for multi-stage ascent.
+   - Add an off-equator/inclined target case.
+   - Add an RSS-like high-energy case.
+   - Use the harness to distinguish optimizer math failures from KSP control/telemetry failures.
+
+
+Recommended Next Debug Loop
+---------------------------
+
+Start here next session:
 
 1. Re-read this file.
-2. Re-read:
-   - `Models/VesselState.cs`
-   - `Models/PoweredStageInfo.cs`
-   - `Guidance/PoweredAscentGuidance.cs`
-   - `Models/PoweredGuidanceCommand.cs`
-   - `Enums/PoweredGuidancePhase.cs`
-   - `Guidance/AscentGuidance.cs`
-   - `Guidance/LaunchHandler.cs`
-3. Do not tune the heuristic guidance.
-4. Define the PSG/PVG contracts listed above.
-5. Decide optimizer dependency path:
-   - ALGLIB dependency vs in-house nonlinear constrained optimizer.
-6. Implement `PsgPhase` from `PoweredStageInfo`.
-7. Implement `PsgTarget` from selected candidate/profile.
-8. Implement `PsgProblem` from `VesselState + PsgPhase[] + PsgTarget`.
-9. Only then implement solver/solution and wire `PoweredAscentGuidance` to solved inertial output.
+2. Run:
+   - `MSBuild Blackbird.csproj /p:Configuration=Debug`
+   - `MSBuild PsgHarness\PsgHarness.csproj /p:Configuration=Debug`
+   - `PsgHarness\bin\Debug\Blackbird.PsgHarness.exe`
+3. In KSP, run one simple stock Kerbin launch with:
+   - single-stage or simple two-stage vessel;
+   - target orbit near 80-100 km;
+   - target vessel in low-inclination orbit.
+4. Capture:
+   - PSG status;
+   - PSG iterations;
+   - PSG violation;
+   - guidance tgo/vgo;
+   - target AP/PE;
+   - current AP/PE near cutoff;
+   - `blackbird-psg.log`.
+5. If the harness succeeds but KSP flight fails:
+   - first inspect `VesselState.PoweredStages`;
+   - then inspect `PsgProblem` snapshots;
+   - then inspect attitude/throttle application.
 
-Suggested first concrete file tomorrow:
-
-`Guidance/PsgPhase.cs`
-
-Reason:
-- It codifies the MechJeb-equivalent phase contract using our newly exposed `PoweredStageInfo`.
-- It prevents backsliding into aggregate-vessel guidance.
+Do not tune random constants first. Find the mismatch between:
+- solver problem inputs;
+- solved trajectory;
+- real vessel telemetry;
+- control actuation.
 
 
-Do Not Forget
--------------
+Most Relevant Files
+-------------------
 
-The user explicitly corrected the approach:
+Models:
+- `Models/LaunchCandidate.cs`
+- `Models/LaunchPlan.cs`
+- `Models/VesselState.cs`
+- `Models/PoweredStageInfo.cs`
+- `Models/PoweredGuidanceCommand.cs`
+- `Models/AscentGuidanceInfo.cs`
+- `Models/OrbitInfo.cs`
+- `Models/TrajectoryState.cs`
 
-Instead of saying:
-"I'll make do with what we have."
+Guidance:
+- `Guidance/AscentProfile.cs`
+- `Guidance/AscentGuidance.cs`
+- `Guidance/PoweredAscentGuidance.cs`
+- `Guidance/PsgOptimizer.cs`
+- `Guidance/PsgPhase.cs`
+- `Guidance/PsgTarget.cs`
+- `Guidance/PsgProblem.cs`
+- `Guidance/PsgSolution.cs`
+- `Guidance/PsgTerminal.cs`
+- `Guidance/PsgSnapshotLogger.cs`
+- `Guidance/LaunchHandler.cs`
+- `Guidance/AttitudeControl.cs`
 
-The correct response is:
-"We need to expand our model/interface to expose the needed items."
+Planning:
+- `Planning/LaunchPlanner.cs`
+- `Planning/PhasingRecommendationCalculator.cs`
 
-That correction is now part of the project contract.
+Trajectory:
+- `Trajectory/ITrajectoryProvider.cs`
+- `Trajectory/TrajectoryProvider.cs`
+- `Trajectory/StockTrajectoryProvider.cs`
+- `Trajectory/PrincipiaTrajectoryProvider.cs`
+
+Harness:
+- `PsgHarness/Program.cs`
+- `PsgHarness/PsgHarness.csproj`
+
+Math:
+- `Math/OrbitMath.cs`
+
+UI:
+- `BlackBird.cs`
