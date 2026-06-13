@@ -6,9 +6,6 @@ namespace Blackbird.Guidance
 {
     public sealed class PsgTarget
     {
-        // TODO(MechJeb parity): split this simple target container into AscentBuilder-style terminal selection.
-        // MechJeb chooses FlightPathAngle or Kepler terminal constraints based on fixed burn/coast state,
-        // near-circular attachment, and which orbital elements are constrained.
         public bool IsValid { get; private set; }
         public string ReasonUnavailable { get; private set; }
 
@@ -17,6 +14,7 @@ namespace Blackbird.Guidance
         public double AttachmentRadiusMeters { get; private set; }
         public double InclinationDeg { get; private set; }
         public double LanDeg { get; private set; }
+        public double ArgpDeg { get; private set; }
         public double FlightPathAngleDeg { get; private set; }
         public Vector3d TargetOrbitNormal { get; private set; }
         public double TargetSpecificEnergy { get; private set; }
@@ -24,6 +22,7 @@ namespace Blackbird.Guidance
 
         public bool UseAttachmentRadius { get; private set; }
         public bool UseLanConstraint { get; private set; }
+        public bool UseArgpConstraint { get; private set; }
 
         public static PsgTarget Create(
             double bodyGravParameter,
@@ -70,12 +69,14 @@ namespace Blackbird.Guidance
                 AttachmentRadiusMeters = attachmentRadiusMeters,
                 InclinationDeg = inclinationDeg,
                 LanDeg = lanDeg,
+                ArgpDeg = 0.0,
                 FlightPathAngleDeg = 0.0,
                 TargetOrbitNormal = normal,
                 TargetSpecificEnergy = specificEnergy,
                 TargetAngularMomentumVector = normal * angularMomentumMagnitude,
                 UseAttachmentRadius = true,
-                UseLanConstraint = useLanConstraint
+                UseLanConstraint = useLanConstraint,
+                UseArgpConstraint = false
             };
         }
 
@@ -134,9 +135,6 @@ namespace Blackbird.Guidance
                 periapsisRadius = temp;
             }
 
-            // TODO(MechJeb parity): this always attaches at periapsis. MechJeb only forces periapsis
-            // attachment for near-circular free-duration targets, otherwise it selects the terminal
-            // family and attachment state from the target flags.
             double attachmentRadius = periapsisRadius;
             double semiMajorAxis = (apoapsisRadius + periapsisRadius) * 0.5;
             double semiLatusRectum = 2.0 * apoapsisRadius * periapsisRadius / (apoapsisRadius + periapsisRadius);
@@ -159,12 +157,14 @@ namespace Blackbird.Guidance
                 AttachmentRadiusMeters = attachmentRadius,
                 InclinationDeg = inclination,
                 LanDeg = lan,
+                ArgpDeg = 0.0,
                 FlightPathAngleDeg = 0.0,
                 TargetOrbitNormal = normal,
                 TargetSpecificEnergy = specificEnergy,
                 TargetAngularMomentumVector = normal * angularMomentumMagnitude,
-                UseAttachmentRadius = true,
-                UseLanConstraint = OrbitMath.IsFinite(lan)
+                UseAttachmentRadius = false,
+                UseLanConstraint = normal.sqrMagnitude > 0.0 || OrbitMath.IsFinite(lan),
+                UseArgpConstraint = false
             };
         }
 
@@ -179,6 +179,7 @@ namespace Blackbird.Guidance
                 AttachmentRadiusMeters = double.NaN,
                 InclinationDeg = double.NaN,
                 LanDeg = double.NaN,
+                ArgpDeg = double.NaN,
                 FlightPathAngleDeg = double.NaN,
                 TargetOrbitNormal = Vector3d.zero,
                 TargetSpecificEnergy = double.NaN,

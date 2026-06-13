@@ -88,6 +88,7 @@ namespace Blackbird.Guidance
             sb.AppendLine("ut=" + Format(problem.InitialUniversalTime));
             sb.AppendLine("body.mu=" + Format(problem.BodyGravParameter));
             sb.AppendLine("body.radius=" + Format(problem.BodyRadiusMeters));
+            sb.AppendLine("body.atmosphereScaleHeight=" + Format(problem.AtmosphereScaleHeightMeters));
             AppendVector(sb, "body.angularVelocity", problem.BodyAngularVelocityRadiansPerSecond);
             AppendVector(sb, "initial.r", problem.InitialRelativePositionMeters);
             AppendVector(sb, "initial.v", problem.InitialRelativeVelocityMetersPerSecond);
@@ -155,6 +156,7 @@ namespace Blackbird.Guidance
                 sb.AppendLine("ut=" + Format(problem.InitialUniversalTime));
                 sb.AppendLine("body.mu=" + Format(problem.BodyGravParameter));
                 sb.AppendLine("body.radius=" + Format(problem.BodyRadiusMeters));
+                sb.AppendLine("body.atmosphereScaleHeight=" + Format(problem.AtmosphereScaleHeightMeters));
             }
 
             PsgSolution solution = result.Solution;

@@ -22,13 +22,11 @@ namespace Blackbird.Guidance
         public double BodyGravParameter { get; private set; }
         public double BodyRadiusMeters { get; private set; }
         public Vector3d BodyAngularVelocityRadiansPerSecond { get; private set; }
+        public double AtmosphereScaleHeightMeters { get; private set; }
 
         public PsgPhase[] Phases { get; private set; }
         public PsgTarget Target { get; private set; }
 
-        // TODO(MechJeb parity): match AscentBuilder/PSGGlueBall problem setup instead of only packaging
-        // the current state, target, and powered stages. That includes terminal target type selection,
-        // phase pruning, shutdown/coast metadata, and validated inertial/frame transforms.
         public static PsgProblem Create(
             PsgInitialState initialState,
             PsgBodyModel bodyModel,
@@ -83,6 +81,7 @@ namespace Blackbird.Guidance
                 BodyGravParameter = bodyModel.GravParameter,
                 BodyRadiusMeters = bodyModel.RadiusMeters,
                 BodyAngularVelocityRadiansPerSecond = bodyModel.AngularVelocityRadiansPerSecond,
+                AtmosphereScaleHeightMeters = 0.0,
                 Phases = phases,
                 Target = target
             };
@@ -147,9 +146,27 @@ namespace Blackbird.Guidance
                 BodyGravParameter = vesselState.BodyGravParameter,
                 BodyRadiusMeters = vesselState.BodyRadius,
                 BodyAngularVelocityRadiansPerSecond = GetBodyAngularVelocity(vesselState),
+                AtmosphereScaleHeightMeters = GetAtmosphereScaleHeight(vesselState.Body),
                 Phases = phases,
                 Target = target
             };
+        }
+
+        private static double GetAtmosphereScaleHeight(CelestialBody body)
+        {
+            if (body == null || !body.atmosphere || body.atmosphereDepth <= 0.0) return 0.0;
+
+            double sampleAltitude = body.atmosphereDepth * 0.15;
+            double rho0 = body.atmDensityASL;
+            double rho1 = body.GetDensity(body.GetPressure(sampleAltitude), body.GetTemperature(sampleAltitude));
+
+            if (!OrbitMath.IsFinite(rho0) || !OrbitMath.IsFinite(rho1) || rho0 <= 0.0 || rho1 <= 0.0 || rho0 <= rho1)
+            {
+                return 0.0;
+            }
+
+            double scaleHeight = sampleAltitude / System.Math.Log(rho0 / rho1);
+            return OrbitMath.IsFinite(scaleHeight) && scaleHeight > 0.0 ? scaleHeight : 0.0;
         }
 
         private static Vector3d GetBodyAngularVelocity(VesselState vesselState)

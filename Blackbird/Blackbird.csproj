@@ -80,6 +80,7 @@
     <Compile Include="Guidance\PsgSolution.cs" />
     <Compile Include="Guidance\PsgSnapshotLogger.cs" />
     <Compile Include="Guidance\PsgTarget.cs" />
+    <Compile Include="Guidance\PsgTerminal.cs" />
     <Compile Include="Guidance\PoweredAscentGuidance.cs" />
     <Compile Include="Helpers\Helpers.cs" />
     <Compile Include="Models\AscentGuidanceInfo.cs" />

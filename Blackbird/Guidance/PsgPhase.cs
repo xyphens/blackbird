@@ -50,9 +50,6 @@ namespace Blackbird.Guidance
             get { return Math.Max(0.0, StartMassKg - EndMassKg); }
         }
 
-        // TODO(MechJeb parity): build the same phase set MechJeb's AscentBuilder/SolutionBuilder expects,
-        // including fixed-duration stages, coast/unguided phases, allow-shutdown rules, min-throttle bounds,
-        // mass continuity, and terminal-stage selection.
         public static PsgPhase[] FromPoweredStages(PoweredStageInfo[] poweredStages)
         {
             if (poweredStages == null || poweredStages.Length == 0) return new PsgPhase[0];
@@ -138,7 +135,7 @@ namespace Blackbird.Guidance
             double minimumThrottle = OrbitMath.Clamp(stage.MinimumThrottle, 0.0, 1.0);
             double maximumBurnTime = minimumThrottle > 0.0
                 ? nominalBurnTime / minimumThrottle
-                : nominalBurnTime;
+                : double.PositiveInfinity;
 
             return new PsgPhase
             {

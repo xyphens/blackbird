@@ -11,7 +11,6 @@ namespace Blackbird.Planning
 {
     public static class LaunchPlanner
     {
-        // TODO(Planner): remove active parameter once callers no longer rely on the old signature.
         public static double GetPhasingOffset(Vessel active)
         {
             return PlanetScale.GetScale() == PlanetScale.PlanetScaleEnum.RSS ? 50000 : 30000;

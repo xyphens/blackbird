@@ -7,14 +7,17 @@ namespace Blackbird.Guidance
 {
     public sealed class PsgOptimizer
     {
-        // TODO(MechJeb parity): this is a compact direct-collocation solver, not the full MechJeb PSG transcription.
-        // Replace it with phase/interpolant layout parity, analytic sparse derivatives, terminal constraint families,
-        // and SolutionBuilder-style shutdown/coast/terminal-stage metadata.
-        private const int NodesPerPhase = 5;
-        private const double DiffStep = 1e-6;
-        // TODO(MechJeb parity): align constraint scaling and success criteria with MechJeb's normalized primal feasibility.
-        private const double FeasibilityTolerance = 5e-3;
-        private const int MaxIterations = 250;
+        private enum ObjectiveType
+        {
+            MaximumEnergy,
+            MinimumThrustAcceleration
+        }
+
+        private const int SimpsonNodesPerPhase = 8;
+        private const int KnotsPerPhase = SimpsonNodesPerPhase * 2 - 1;
+        private const double DiffStep = 1e-7;
+        private const double FeasibilityTolerance = 1e-4;
+        private const int MaxIterations = 1200;
 
         public PsgOptimizationResult Solve(PsgProblem problem, PsgSolution warmStart)
         {
@@ -28,7 +31,67 @@ namespace Blackbird.Guidance
                 return Failure("PSG problem has no phases.");
             }
 
-            var context = new SolveContext(problem, warmStart);
+            return warmStart != null && warmStart.IsValid
+                ? RunConvergedSolve(problem, warmStart)
+                : RunInitialBootstrapping(problem);
+        }
+
+        private PsgOptimizationResult RunInitialBootstrapping(PsgProblem problem)
+        {
+            PsgOptimizationResult boot = RunPass(
+                problem,
+                null,
+                true,
+                IsFixedBurnTime(problem.Phases) ? ObjectiveType.MaximumEnergy : ObjectiveType.MinimumThrustAcceleration,
+                "PSG boot");
+
+            if (boot == null || !boot.Success || boot.Solution == null)
+            {
+                return boot ?? Failure("PSG bootstrapping failed.");
+            }
+
+            PsgTerminal finalTerminal = PsgTerminal.Create(problem, PsgScale.FromProblem(problem), IsFixedBurnTime(problem.Phases));
+            if (finalTerminal.UsesFlightPathAngle)
+            {
+                boot.Status = "PSG bootstrapped " + boot.Status;
+                return boot;
+            }
+
+            PsgOptimizationResult relaxed = RunPass(
+                problem,
+                boot.Solution,
+                false,
+                ObjectiveType.MinimumThrustAcceleration,
+                "PSG terminal relaxation");
+
+            if (relaxed != null && relaxed.Success && relaxed.Solution != null)
+            {
+                relaxed.Status = "PSG bootstrapped " + relaxed.Status;
+                return relaxed;
+            }
+
+            boot.Status = "PSG bootstrapped FPA solution; terminal relaxation failed";
+            return boot;
+        }
+
+        private PsgOptimizationResult RunConvergedSolve(PsgProblem problem, PsgSolution warmStart)
+        {
+            return RunPass(
+                problem,
+                warmStart,
+                false,
+                IsFixedBurnTime(problem.Phases) ? ObjectiveType.MaximumEnergy : ObjectiveType.MinimumThrustAcceleration,
+                "PSG converged update");
+        }
+
+        private PsgOptimizationResult RunPass(
+            PsgProblem problem,
+            PsgSolution warmStart,
+            bool forceFlightPathAngleTerminal,
+            ObjectiveType objective,
+            string passName)
+        {
+            var context = new SolveContext(problem, warmStart, forceFlightPathAngleTerminal, objective);
             double[] x = context.CreateInitialGuess();
             double[] lowerBounds = context.CreateLowerBounds();
             double[] upperBounds = context.CreateUpperBounds();
@@ -51,25 +114,24 @@ namespace Blackbird.Guidance
                 alglib.minnlcresultsbuf(state, ref x, report);
 
                 ConstraintViolationReport violations = context.MeasureConstraintViolation(x, constraintLower, constraintUpper);
-                double violation = violations.Maximum;
-                PsgSolution solution = context.CreateSolution(x, report, violation);
-                bool success = report.terminationtype > 0 && violation <= FeasibilityTolerance;
+                PsgSolution solution = context.CreateSolution(x, report, violations.Maximum);
+                bool success = report.terminationtype > 0 && violations.PrimalFeasibility <= FeasibilityTolerance;
 
                 return new PsgOptimizationResult
                 {
                     Success = success,
                     Status = success
-                        ? "PSG converged " + violations.ToStatusString()
-                        : "PSG did not satisfy constraints " + violations.ToStatusString(),
+                        ? passName + " converged " + violations.ToStatusString()
+                        : passName + " did not satisfy constraints " + violations.ToStatusString(),
                     Solution = success ? solution : null,
                     Iterations = report.iterationscount,
                     TerminationType = report.terminationtype,
-                    ConstraintViolation = violation
+                    ConstraintViolation = violations.PrimalFeasibility
                 };
             }
             catch (Exception ex)
             {
-                return Failure("PSG optimizer failed: " + ex.Message);
+                return Failure(passName + " failed: " + ex.Message);
             }
         }
 
@@ -84,35 +146,58 @@ namespace Blackbird.Guidance
             };
         }
 
+        private static bool IsFixedBurnTime(PsgPhase[] phases)
+        {
+            if (phases == null) return true;
+
+            for (int i = 0; i < phases.Length; i++)
+            {
+                if (phases[i].AllowShutdown && !phases[i].IsCoast) return false;
+            }
+
+            return true;
+        }
+
         private sealed class SolveContext
         {
             private readonly PsgProblem _problem;
             private readonly PsgSolution _warmStart;
-            private readonly Scale _scale;
+            private readonly PsgScale _scale;
             private readonly PhaseLayout[] _layouts;
-            private readonly Vector3d _targetAngularMomentum;
-            private readonly double _targetSpecificEnergy;
+            private readonly PsgTerminal _terminal;
+            private readonly bool _fixedBurnTime;
+            private readonly ObjectiveType _objective;
 
             public int VariableCount { get; private set; }
             public int ConstraintCount { get; private set; }
 
-            public SolveContext(PsgProblem problem, PsgSolution warmStart)
+            public SolveContext(
+                PsgProblem problem,
+                PsgSolution warmStart,
+                bool forceFlightPathAngleTerminal,
+                ObjectiveType objective)
             {
                 _problem = problem;
                 _warmStart = warmStart;
-                _scale = Scale.FromProblem(problem);
+                _scale = PsgScale.FromProblem(problem);
                 _layouts = CreateLayouts(problem.Phases);
                 VariableCount = _layouts.Length == 0 ? 0 : _layouts[_layouts.Length - 1].EndVariableIndex;
-                ConstraintCount = CountConstraints(problem.Phases.Length);
-                _targetAngularMomentum = GetTargetAngularMomentum(problem, _scale);
-                _targetSpecificEnergy = problem.Target.TargetSpecificEnergy / (_scale.Velocity * _scale.Velocity);
+                _fixedBurnTime = IsFixedBurnTime(problem.Phases);
+                PsgTerminal terminal = PsgTerminal.Create(problem, _scale, _fixedBurnTime);
+                _terminal = forceFlightPathAngleTerminal ? terminal.GetFlightPathAngleTerminal() : terminal;
+                _objective = objective;
+                ConstraintCount = CountConstraints(problem.Phases, _terminal);
             }
 
             public double[] CreateInitialGuess()
             {
                 double[] x = new double[VariableCount];
-
                 if (_warmStart != null && _warmStart.IsValid && TryTranscribeWarmStart(x))
+                {
+                    return x;
+                }
+
+                if (TryCreateShootingInitialGuess(x))
                 {
                     return x;
                 }
@@ -123,9 +208,14 @@ namespace Blackbird.Guidance
                     ? _problem.InitialThrustDirection.normalized
                     : v0.normalized;
 
-                Vector3d normal = _targetAngularMomentum.sqrMagnitude > 0.0
-                    ? _targetAngularMomentum.normalized
+                Vector3d normal = _terminal.TargetNormal.sqrMagnitude > 0.0
+                    ? _terminal.TargetNormal.normalized
                     : Vector3d.Cross(r0, v0).normalized;
+
+                if (normal.sqrMagnitude <= 0.0)
+                {
+                    normal = Vector3d.Cross(r0.normalized, u0.normalized).normalized;
+                }
 
                 Vector3d finalRDirection = normal.sqrMagnitude > 0.0
                     ? Vector3d.Exclude(normal, r0).normalized
@@ -133,32 +223,38 @@ namespace Blackbird.Guidance
 
                 if (finalRDirection.sqrMagnitude <= 0.0) finalRDirection = r0.normalized;
 
-                double finalRadius = _problem.Target.AttachmentRadiusMeters / _scale.Length;
+                double finalRadius = GetInitialAttachmentRadius() / _scale.Length;
+                Vector3d finalR = finalRDirection * finalRadius;
                 Vector3d tangent = normal.sqrMagnitude > 0.0
                     ? Vector3d.Cross(normal, finalRDirection).normalized
                     : Vector3d.Exclude(finalRDirection, v0).normalized;
 
                 if (Vector3d.Dot(tangent, v0) < 0.0) tangent = -tangent;
-                if (tangent.sqrMagnitude <= 0.0) tangent = v0.normalized;
+                if (tangent.sqrMagnitude <= 0.0) tangent = u0.normalized;
 
-                double finalSpeedSquared = Math.Max(0.0, 2.0 * (_targetSpecificEnergy + 1.0 / finalRadius));
-                Vector3d finalR = finalRDirection * finalRadius;
-                Vector3d finalV = tangent * Math.Sqrt(finalSpeedSquared);
+                double finalSpeed = GetInitialTerminalSpeed(finalRadius);
+                Vector3d finalV = tangent * finalSpeed;
 
-                double totalTime = Math.Max(1e-6, TotalNominalTime());
+                double totalTime = Math.Max(1e-6, TotalInitialDuration());
                 double elapsed = 0.0;
+                double massStart = _problem.InitialMassKg / _scale.Mass;
 
                 for (int p = 0; p < _layouts.Length; p++)
                 {
                     PhaseLayout layout = _layouts[p];
                     PsgPhase phase = _problem.Phases[p];
-                    double phaseTime = GetInitialPhaseDuration(phase);
-                    x[layout.DurationIndex] = phaseTime / _scale.Time;
+                    double duration = ClampDuration(p, GetInitialPhaseDuration(phase));
+                    x[layout.DurationIndex] = duration / _scale.Time;
 
-                    for (int k = 0; k < NodesPerPhase; k++)
+                    double scaledPhaseStartMass = p == 0
+                        ? massStart
+                        : phase.StartMassKg / _scale.Mass;
+                    double scaledMdot = phase.MassFlowKgPerSecond * _scale.Time / _scale.Mass;
+
+                    for (int k = 0; k < KnotsPerPhase; k++)
                     {
-                        double local = NodesPerPhase > 1 ? (double)k / (NodesPerPhase - 1) : 0.0;
-                        double global = OrbitMath.Clamp((elapsed + local * phaseTime) / totalTime, 0.0, 1.0);
+                        double local = KnotsPerPhase > 1 ? (double)k / (KnotsPerPhase - 1) : 0.0;
+                        double global = OrbitMath.Clamp((elapsed + local * duration) / totalTime, 0.0, 1.0);
                         Vector3d r = Lerp(r0, finalR, global);
                         Vector3d v = Lerp(v0, finalV, global);
                         Vector3d u = Lerp(u0, tangent, global);
@@ -166,10 +262,13 @@ namespace Blackbird.Guidance
 
                         SetVector(x, layout.RIndex(k), r);
                         SetVector(x, layout.VIndex(k), v);
+                        x[layout.MIndex(k)] = phase.IsCoast
+                            ? scaledPhaseStartMass
+                            : Math.Max(phase.EndMassKg / _scale.Mass, scaledPhaseStartMass - scaledMdot * (duration / _scale.Time) * local);
                         SetVector(x, layout.UIndex(k), u.normalized);
                     }
 
-                    elapsed += phaseTime;
+                    elapsed += duration;
                 }
 
                 return x;
@@ -177,49 +276,54 @@ namespace Blackbird.Guidance
 
             public double[] CreateLowerBounds()
             {
-                double[] lower = CreateFilledArray(VariableCount, -10.0);
+                double[] lower = CreateFilledArray(VariableCount, -100.0);
 
                 for (int p = 0; p < _layouts.Length; p++)
                 {
                     PhaseLayout layout = _layouts[p];
                     PsgPhase phase = _problem.Phases[p];
 
-                    for (int k = 0; k < NodesPerPhase; k++)
+                    for (int k = 0; k < KnotsPerPhase; k++)
                     {
-                        SetVector(lower, layout.UIndex(k), new Vector3d(-1.2, -1.2, -1.2));
+                        lower[layout.MIndex(k)] = 0.0;
+                        SetVector(lower, layout.UIndex(k), new Vector3d(-2.0, -2.0, -2.0));
                     }
 
                     double minDuration;
                     double maxDuration;
-                    GetPhaseDurationBounds(p, phase, out minDuration, out maxDuration);
+                    GetPhaseDurationBounds(phase, out minDuration, out maxDuration);
                     lower[layout.DurationIndex] = minDuration / _scale.Time;
                 }
 
                 FreezeInitialState(lower);
+                FreezePhaseStartMasses(lower);
                 return lower;
             }
 
             public double[] CreateUpperBounds()
             {
-                double[] upper = CreateFilledArray(VariableCount, 10.0);
+                double[] upper = CreateFilledArray(VariableCount, 100.0);
 
                 for (int p = 0; p < _layouts.Length; p++)
                 {
                     PhaseLayout layout = _layouts[p];
                     PsgPhase phase = _problem.Phases[p];
+                    double scaledStartMass = phase.StartMassKg / _scale.Mass;
 
-                    for (int k = 0; k < NodesPerPhase; k++)
+                    for (int k = 0; k < KnotsPerPhase; k++)
                     {
-                        SetVector(upper, layout.UIndex(k), new Vector3d(1.2, 1.2, 1.2));
+                        upper[layout.MIndex(k)] = scaledStartMass;
+                        SetVector(upper, layout.UIndex(k), new Vector3d(2.0, 2.0, 2.0));
                     }
 
                     double minDuration;
                     double maxDuration;
-                    GetPhaseDurationBounds(p, phase, out minDuration, out maxDuration);
+                    GetPhaseDurationBounds(phase, out minDuration, out maxDuration);
                     upper[layout.DurationIndex] = maxDuration / _scale.Time;
                 }
 
                 FreezeInitialState(upper);
+                FreezePhaseStartMasses(upper);
                 return upper;
             }
 
@@ -238,12 +342,9 @@ namespace Blackbird.Guidance
             {
                 double[] lower = new double[ConstraintCount];
                 int ci = 0;
-
-                AddDynamicBounds(lower, ref ci, 0.0);
-                AddContinuityBounds(lower, ref ci, 0.0);
-                AddControlBounds(lower, ref ci, 1.0);
+                AddControlBounds(lower, ref ci, true);
+                AddPhaseBounds(lower, ref ci);
                 AddTerminalBounds(lower, ref ci, 0.0);
-
                 return lower;
             }
 
@@ -251,12 +352,9 @@ namespace Blackbird.Guidance
             {
                 double[] upper = new double[ConstraintCount];
                 int ci = 0;
-
-                AddDynamicBounds(upper, ref ci, 0.0);
-                AddContinuityBounds(upper, ref ci, 0.0);
-                AddControlBounds(upper, ref ci, 1.0);
+                AddControlBounds(upper, ref ci, false);
+                AddPhaseBounds(upper, ref ci);
                 AddTerminalBounds(upper, ref ci, 0.0);
-
                 return upper;
             }
 
@@ -264,10 +362,13 @@ namespace Blackbird.Guidance
             {
                 f[0] = Objective(x);
                 int ci = 1;
-
-                EvaluateDynamicConstraints(x, f, ref ci);
-                EvaluateContinuityConstraints(x, f, ref ci);
                 EvaluateControlConstraints(x, f, ref ci);
+                for (int p = 0; p < _layouts.Length; p++)
+                {
+                    EvaluateDynamicConstraints(x, f, ref ci, p);
+                    EvaluateStagingConstraint(x, f, ref ci, p);
+                    EvaluateContinuityConstraints(x, f, ref ci, p);
+                }
                 EvaluateTerminalConstraints(x, f, ref ci);
             }
 
@@ -280,46 +381,54 @@ namespace Blackbird.Guidance
                 Evaluate(x, f, null);
 
                 var report = new ConstraintViolationReport();
-                int ci = 0;
-                int dynamicCount = _problem.Phases.Length * (NodesPerPhase - 1) * 6;
-                int continuityCount = Math.Max(0, _problem.Phases.Length - 1) * 6;
-                int controlCount = _problem.Phases.Length * NodesPerPhase;
-                int terminalCount = 6;
+                for (int i = 0; i < ConstraintCount; i++)
+                {
+                    double value = f[i + 1];
+                    double violation = 0.0;
+                    if (value < constraintLower[i])
+                    {
+                        violation = constraintLower[i] - value;
+                    }
+                    else if (value > constraintUpper[i])
+                    {
+                        violation = value - constraintUpper[i];
+                    }
 
-                report.Dynamic = MeasureRange(f, constraintLower, constraintUpper, ci, dynamicCount);
-                ci += dynamicCount;
-                report.Continuity = MeasureRange(f, constraintLower, constraintUpper, ci, continuityCount);
-                ci += continuityCount;
-                report.Control = MeasureRange(f, constraintLower, constraintUpper, ci, controlCount);
-                ci += controlCount;
-                report.Terminal = MeasureRange(f, constraintLower, constraintUpper, ci, terminalCount);
+                    report.Maximum = Math.Max(report.Maximum, violation);
+                    report.PrimalFeasibility += violation * violation;
+                }
 
-                report.Maximum = Math.Max(
-                    Math.Max(report.Dynamic, report.Continuity),
-                    Math.Max(report.Control, report.Terminal));
-
+                report.PrimalFeasibility = Math.Sqrt(report.PrimalFeasibility);
                 return report;
             }
 
             public PsgSolution CreateSolution(double[] x, alglib.minnlcreport report, double violation)
             {
-                // TODO(MechJeb parity): preserve optimized shutdown, coast, staging, and terminal-stage metadata
-                // instead of flattening the trajectory into guidance points only.
                 var points = new List<PsgSolutionPoint>();
+                var segments = new List<PsgSolutionSegment>();
                 double universalTime = _problem.InitialUniversalTime;
+                bool[] preciseShutdown;
+                bool[] terminalStage;
+                AnalyzeStages(x, out preciseShutdown, out terminalStage);
 
                 for (int p = 0; p < _layouts.Length; p++)
                 {
                     PhaseLayout layout = _layouts[p];
                     PsgPhase phase = _problem.Phases[p];
                     double duration = Math.Max(0.0, x[layout.DurationIndex] * _scale.Time);
-                    double step = NodesPerPhase > 1 ? duration / (NodesPerPhase - 1) : 0.0;
+                    double step = KnotsPerPhase > 1 ? duration / (KnotsPerPhase - 1) : 0.0;
+                    double startUt = universalTime;
 
-                    for (int k = 0; k < NodesPerPhase; k++)
+                    for (int k = 0; k < KnotsPerPhase; k++)
                     {
                         if (p > 0 && k == 0) continue;
 
                         Vector3d u = GetVector(x, layout.UIndex(k));
+                        double control = u.magnitude;
+                        double throttle = phase.MinimumThrottle < 1.0
+                            ? (control - phase.MinimumThrottle) / (1.0 - phase.MinimumThrottle)
+                            : 1.0;
+
                         points.Add(new PsgSolutionPoint
                         {
                             UniversalTime = universalTime + step * k,
@@ -327,12 +436,24 @@ namespace Blackbird.Guidance
                             KspStage = phase.KspStage,
                             RelativePosition = GetVector(x, layout.RIndex(k)) * _scale.Length,
                             RelativeVelocity = GetVector(x, layout.VIndex(k)) * _scale.Velocity,
+                            MassKg = x[layout.MIndex(k)] * _scale.Mass,
                             InertialThrustDirection = u.sqrMagnitude > 0.0 ? u.normalized : Vector3d.zero,
-                            Throttle = phase.IsCoast ? 0.0 : 1.0
+                            Throttle = phase.IsCoast ? 0.0 : OrbitMath.Clamp(throttle, 0.01, 1.0)
                         });
                     }
 
                     universalTime += duration;
+                    segments.Add(new PsgSolutionSegment
+                    {
+                        PhaseIndex = p,
+                        KspStage = phase.KspStage,
+                        StartUniversalTime = startUt,
+                        EndUniversalTime = universalTime,
+                        IsCoast = phase.IsCoast,
+                        AllowShutdown = phase.AllowShutdown,
+                        PreciseShutdown = preciseShutdown[p],
+                        TerminalStage = terminalStage[p]
+                    });
                 }
 
                 return new PsgSolution
@@ -342,195 +463,498 @@ namespace Blackbird.Guidance
                     CreatedUniversalTime = _problem.InitialUniversalTime,
                     StartUniversalTime = _problem.InitialUniversalTime,
                     FinalUniversalTime = points.Count > 0 ? points[points.Count - 1].UniversalTime : _problem.InitialUniversalTime,
-                    TerminalAngularMomentum = (_targetAngularMomentum * _scale.Length * _scale.Velocity).magnitude,
-                    TerminalSpecificEnergy = _problem.Target.TargetSpecificEnergy,
+                    TerminalAngularMomentum = _terminal.TargetAngularMomentum * _scale.Length * _scale.Velocity,
+                    TerminalSpecificEnergy = _terminal.TargetSpecificEnergy * _scale.Velocity * _scale.Velocity,
                     Iterations = report.iterationscount,
                     TerminationType = report.terminationtype,
                     ConstraintViolation = violation,
-                    Points = points.ToArray()
+                    Points = points.ToArray(),
+                    Segments = segments.ToArray()
                 };
             }
 
             private bool TryTranscribeWarmStart(double[] x)
             {
-                if (_warmStart.Points == null || _warmStart.Points.Length == 0) return false;
+                if (_warmStart == null || _warmStart.Points == null || _warmStart.Points.Length == 0) return false;
 
+                double universalTime = _problem.InitialUniversalTime;
                 for (int p = 0; p < _layouts.Length; p++)
                 {
                     PhaseLayout layout = _layouts[p];
-                    double phaseStart = p == 0 ? _problem.InitialUniversalTime : GetPhaseStartTimeFromWarmStart(p);
-                    double phaseEnd = GetPhaseEndTimeFromWarmStart(p);
-                    double duration = Math.Max(0.1, phaseEnd - phaseStart);
-                    x[layout.DurationIndex] = duration / _scale.Time;
-
-                    for (int k = 0; k < NodesPerPhase; k++)
+                    PsgPhase phase = _problem.Phases[p];
+                    double duration = ClampDuration(p, GetInitialPhaseDuration(phase));
+                    if (_warmStart.Segments != null && p < _warmStart.Segments.Length)
                     {
-                        double t = phaseStart + duration * k / (NodesPerPhase - 1);
-                        PsgSolutionPoint point = NearestWarmPoint(t);
+                        duration = Math.Max(0.05, _warmStart.Segments[p].EndUniversalTime - _warmStart.Segments[p].StartUniversalTime);
+                    }
+
+                    x[layout.DurationIndex] = duration / _scale.Time;
+                    for (int k = 0; k < KnotsPerPhase; k++)
+                    {
+                        double t = universalTime + duration * k / (KnotsPerPhase - 1);
+                        PsgSolutionPoint point = _warmStart.GetPointAtUniversalTime(t);
                         if (point == null) return false;
 
                         SetVector(x, layout.RIndex(k), point.RelativePosition / _scale.Length);
                         SetVector(x, layout.VIndex(k), point.RelativeVelocity / _scale.Velocity);
+                        x[layout.MIndex(k)] = point.MassKg > 0.0
+                            ? point.MassKg / _scale.Mass
+                            : GetPhaseMassAtFraction(phase, (double)k / (KnotsPerPhase - 1)) / _scale.Mass;
                         SetVector(x, layout.UIndex(k), point.InertialThrustDirection.sqrMagnitude > 0.0
                             ? point.InertialThrustDirection.normalized
                             : _problem.InitialThrustDirection.normalized);
                     }
+
+                    universalTime += duration;
                 }
 
                 return true;
             }
 
-            private double GetPhaseStartTimeFromWarmStart(int phaseIndex)
+            private bool TryCreateShootingInitialGuess(double[] x)
             {
-                if (_warmStart == null || _warmStart.Points == null) return _problem.InitialUniversalTime;
+                if (_layouts.Length == 0) return false;
 
-                for (int i = 0; i < _warmStart.Points.Length; i++)
+                Vector3d r = _problem.InitialRelativePositionMeters / _scale.Length;
+                Vector3d v = _problem.InitialRelativeVelocityMetersPerSecond / _scale.Velocity;
+                double mass = _problem.InitialMassKg / _scale.Mass;
+                Vector3d u = GuessInitialGuidanceDirection(r, v);
+
+                if (r.sqrMagnitude <= 0.0 || u.sqrMagnitude <= 0.0 || mass <= 0.0) return false;
+
+                double targetEnergy = _terminal.TargetSpecificEnergy;
+                bool targetEnergyReached = SpecificEnergy(r, v) >= targetEnergy;
+
+                for (int p = 0; p < _layouts.Length; p++)
                 {
-                    if (_warmStart.Points[i].PhaseIndex == phaseIndex) return _warmStart.Points[i].UniversalTime;
+                    PhaseLayout layout = _layouts[p];
+                    PsgPhase phase = _problem.Phases[p];
+
+                    if (p == 0 || !phase.EnforceMassContinuity)
+                    {
+                        mass = phase.StartMassKg / _scale.Mass;
+                    }
+
+                    double duration = targetEnergyReached && !phase.IsCoast
+                        ? 0.0
+                        : EstimateShootingDuration(phase, r, v, mass, u, targetEnergy);
+
+                    duration = ClampDuration(p, duration * _scale.Time) / _scale.Time;
+                    x[layout.DurationIndex] = duration;
+
+                    Vector3d phaseR = r;
+                    Vector3d phaseV = v;
+                    double phaseM = mass;
+                    double step = KnotsPerPhase > 1 ? duration / (KnotsPerPhase - 1) : 0.0;
+
+                    for (int k = 0; k < KnotsPerPhase; k++)
+                    {
+                        if (k > 0)
+                        {
+                            PropagateGuess(phase, u, step, ref phaseR, ref phaseV, ref phaseM);
+                        }
+
+                        SetVector(x, layout.RIndex(k), phaseR);
+                        SetVector(x, layout.VIndex(k), phaseV);
+                        x[layout.MIndex(k)] = phase.IsCoast ? mass : Math.Max(phase.EndMassKg / _scale.Mass, phaseM);
+                        SetVector(x, layout.UIndex(k), u);
+                    }
+
+                    r = phaseR;
+                    v = phaseV;
+                    mass = phaseM;
+                    targetEnergyReached = targetEnergyReached || (!phase.IsCoast && SpecificEnergy(r, v) >= targetEnergy);
                 }
 
-                return _problem.InitialUniversalTime;
+                return true;
             }
 
-            private double GetPhaseEndTimeFromWarmStart(int phaseIndex)
+            private Vector3d GuessInitialGuidanceDirection(Vector3d r, Vector3d v)
             {
-                if (_warmStart == null || _warmStart.Points == null) return _problem.InitialUniversalTime + GetInitialPhaseDuration(_problem.Phases[phaseIndex]);
+                Vector3d up = r.sqrMagnitude > 0.0 ? r.normalized : Vector3d.zero;
+                Vector3d normal = _terminal.TargetNormal.sqrMagnitude > 0.0
+                    ? _terminal.TargetNormal.normalized
+                    : Vector3d.Cross(r, v).normalized;
 
-                for (int i = _warmStart.Points.Length - 1; i >= 0; i--)
+                Vector3d horizontal = normal.sqrMagnitude > 0.0
+                    ? Vector3d.Cross(normal, up).normalized
+                    : Vector3d.Exclude(up, _problem.InitialThrustDirection).normalized;
+
+                if (horizontal.sqrMagnitude <= 0.0)
                 {
-                    if (_warmStart.Points[i].PhaseIndex == phaseIndex) return _warmStart.Points[i].UniversalTime;
+                    horizontal = Vector3d.Exclude(up, v).normalized;
                 }
 
-                return _problem.InitialUniversalTime + GetInitialPhaseDuration(_problem.Phases[phaseIndex]);
+                if (horizontal.sqrMagnitude <= 0.0)
+                {
+                    return _problem.InitialThrustDirection.sqrMagnitude > 0.0
+                        ? _problem.InitialThrustDirection.normalized
+                        : up;
+                }
+
+                if (Vector3d.Dot(horizontal, v) < 0.0) horizontal = -horizontal;
+
+                return (horizontal + up).normalized;
             }
 
-            private PsgSolutionPoint NearestWarmPoint(double universalTime)
+            private double EstimateShootingDuration(
+                PsgPhase phase,
+                Vector3d r,
+                Vector3d v,
+                double mass,
+                Vector3d u,
+                double targetEnergy)
             {
-                PsgSolutionPoint best = null;
-                double bestDistance = double.PositiveInfinity;
+                double minDuration;
+                double maxDuration;
+                GetPhaseDurationBounds(phase, out minDuration, out maxDuration);
 
-                for (int i = 0; i < _warmStart.Points.Length; i++)
+                double duration = phase.IsCoast
+                    ? minDuration + 0.5 * (maxDuration - minDuration)
+                    : Math.Min(maxDuration, Math.Max(minDuration, phase.NominalBurnTimeSeconds));
+
+                double scaledDuration = Math.Max(0.0, duration / _scale.Time);
+                if (phase.IsCoast || scaledDuration <= 0.0) return scaledDuration;
+
+                double e0 = SpecificEnergy(r, v);
+                if (e0 >= targetEnergy) return 0.0;
+
+                const int steps = 80;
+                double step = scaledDuration / steps;
+                double elapsed = 0.0;
+                double previousEnergy = e0;
+
+                for (int i = 0; i < steps; i++)
                 {
-                    double distance = Math.Abs(_warmStart.Points[i].UniversalTime - universalTime);
-                    if (distance >= bestDistance) continue;
+                    PropagateGuess(phase, u, step, ref r, ref v, ref mass);
+                    elapsed += step;
 
-                    best = _warmStart.Points[i];
-                    bestDistance = distance;
+                    double energy = SpecificEnergy(r, v);
+                    if (energy >= targetEnergy)
+                    {
+                        double span = energy - previousEnergy;
+                        double fraction = span > 1e-12
+                            ? OrbitMath.Clamp((targetEnergy - previousEnergy) / span, 0.0, 1.0)
+                            : 1.0;
+
+                        return Math.Max(0.0, elapsed - step + step * fraction);
+                    }
+
+                    previousEnergy = energy;
                 }
 
-                return best;
+                return scaledDuration;
+            }
+
+            private void PropagateGuess(
+                PsgPhase phase,
+                Vector3d u,
+                double dt,
+                ref Vector3d r,
+                ref Vector3d v,
+                ref double mass)
+            {
+                if (dt <= 0.0) return;
+
+                Vector3d r1 = r;
+                Vector3d v1 = v;
+                double m1 = mass;
+                Vector3d a1 = GuessAcceleration(phase, r1, v1, m1, u);
+                double md1 = phase.IsCoast ? 0.0 : -PhaseMassFlow(phase);
+
+                Vector3d r2 = r + v1 * (0.5 * dt);
+                Vector3d v2 = v + a1 * (0.5 * dt);
+                double m2 = Math.Max(1e-6, mass + md1 * 0.5 * dt);
+                Vector3d a2 = GuessAcceleration(phase, r2, v2, m2, u);
+                double md2 = phase.IsCoast ? 0.0 : -PhaseMassFlow(phase);
+
+                Vector3d r3 = r + v2 * (0.5 * dt);
+                Vector3d v3 = v + a2 * (0.5 * dt);
+                double m3 = Math.Max(1e-6, mass + md2 * 0.5 * dt);
+                Vector3d a3 = GuessAcceleration(phase, r3, v3, m3, u);
+                double md3 = phase.IsCoast ? 0.0 : -PhaseMassFlow(phase);
+
+                Vector3d r4 = r + v3 * dt;
+                Vector3d v4 = v + a3 * dt;
+                double m4 = Math.Max(1e-6, mass + md3 * dt);
+                Vector3d a4 = GuessAcceleration(phase, r4, v4, m4, u);
+                double md4 = phase.IsCoast ? 0.0 : -PhaseMassFlow(phase);
+
+                r += dt / 6.0 * (v1 + 2.0 * v2 + 2.0 * v3 + v4);
+                v += dt / 6.0 * (a1 + 2.0 * a2 + 2.0 * a3 + a4);
+                mass = Math.Max(phase.EndMassKg / _scale.Mass, mass + dt / 6.0 * (md1 + 2.0 * md2 + 2.0 * md3 + md4));
+            }
+
+            private Vector3d GuessAcceleration(PsgPhase phase, Vector3d r, Vector3d v, double mass, Vector3d u)
+            {
+                double rMag = Math.Max(1e-9, r.magnitude);
+                Vector3d gravity = -r / (rMag * rMag * rMag);
+                if (phase.IsCoast) return gravity;
+
+                return gravity + PhaseThrust(phase, rMag) / Math.Max(1e-6, mass) * u;
+            }
+
+            private static double SpecificEnergy(Vector3d r, Vector3d v)
+            {
+                return 0.5 * v.sqrMagnitude - 1.0 / Math.Max(1e-9, r.magnitude);
             }
 
             private double Objective(double[] x)
             {
-                double value = 0.0;
-                int terminalPhase = _layouts.Length - 1;
+                if (_objective == ObjectiveType.MaximumEnergy)
+                {
+                    PhaseLayout last = _layouts[_layouts.Length - 1];
+                    Vector3d r = GetVector(x, last.RIndex(KnotsPerPhase - 1));
+                    Vector3d v = GetVector(x, last.VIndex(KnotsPerPhase - 1));
+                    return -SpecificEnergy(r, v);
+                }
 
+                double value = 0.0;
                 for (int p = 0; p < _layouts.Length; p++)
                 {
-                    if (p == terminalPhase)
-                    {
-                        value += x[_layouts[p].DurationIndex];
-                    }
+                    PsgPhase phase = _problem.Phases[p];
+                    if (phase.IsCoast || !phase.AllowShutdown) continue;
 
-                    for (int k = 1; k < NodesPerPhase; k++)
+                    PhaseLayout layout = _layouts[p];
+                    double thrust = PhaseVacuumThrust(phase);
+                    double h6 = x[layout.DurationIndex] / ((SimpsonNodesPerPhase - 1) * 6.0);
+
+                    for (int k = 0; k < KnotsPerPhase; k++)
                     {
-                        Vector3d prev = GetVector(x, _layouts[p].UIndex(k - 1));
-                        Vector3d current = GetVector(x, _layouts[p].UIndex(k));
-                        value += 0.002 * (current - prev).sqrMagnitude;
+                        double weight = k == 0 || k == KnotsPerPhase - 1 ? 1.0 : (k % 2 == 0 ? 2.0 : 4.0);
+                        double mass = Math.Max(1e-6, x[layout.MIndex(k)]);
+                        value += weight * thrust * h6 / mass;
                     }
                 }
 
                 return value;
             }
 
-            private void EvaluateDynamicConstraints(double[] x, double[] f, ref int ci)
-            {
-                for (int p = 0; p < _layouts.Length; p++)
-                {
-                    PhaseLayout layout = _layouts[p];
-                    double duration = Math.Max(1e-9, x[layout.DurationIndex]);
-                    double h = duration / (NodesPerPhase - 1);
-
-                    for (int k = 0; k < NodesPerPhase - 1; k++)
-                    {
-                        Vector3d r0 = GetVector(x, layout.RIndex(k));
-                        Vector3d r1 = GetVector(x, layout.RIndex(k + 1));
-                        Vector3d v0 = GetVector(x, layout.VIndex(k));
-                        Vector3d v1 = GetVector(x, layout.VIndex(k + 1));
-                        Vector3d a0 = Acceleration(x, p, k);
-                        Vector3d a1 = Acceleration(x, p, k + 1);
-
-                        Vector3d rDefect = r1 - r0 - 0.5 * h * (v0 + v1);
-                        Vector3d vDefect = v1 - v0 - 0.5 * h * (a0 + a1);
-
-                        SetConstraintVector(f, ref ci, rDefect);
-                        SetConstraintVector(f, ref ci, vDefect);
-                    }
-                }
-            }
-
-            private void EvaluateContinuityConstraints(double[] x, double[] f, ref int ci)
-            {
-                for (int p = 1; p < _layouts.Length; p++)
-                {
-                    PhaseLayout previous = _layouts[p - 1];
-                    PhaseLayout current = _layouts[p];
-
-                    SetConstraintVector(f, ref ci, GetVector(x, previous.RIndex(NodesPerPhase - 1)) - GetVector(x, current.RIndex(0)));
-                    SetConstraintVector(f, ref ci, GetVector(x, previous.VIndex(NodesPerPhase - 1)) - GetVector(x, current.VIndex(0)));
-                }
-            }
-
             private void EvaluateControlConstraints(double[] x, double[] f, ref int ci)
             {
                 for (int p = 0; p < _layouts.Length; p++)
                 {
+                    PsgPhase phase = _problem.Phases[p];
+                    if (phase.IsCoast && !phase.IsUnguided) continue;
+
                     PhaseLayout layout = _layouts[p];
-                    for (int k = 0; k < NodesPerPhase; k++)
+                    int count = phase.IsUnguided ? 1 : KnotsPerPhase;
+                    for (int k = 0; k < count; k++)
                     {
-                        Vector3d u = GetVector(x, layout.UIndex(k));
-                        f[ci++] = u.magnitude;
+                        f[ci++] = GetVector(x, layout.UIndex(k)).magnitude;
                     }
+                }
+            }
+
+            private void EvaluateDynamicConstraints(double[] x, double[] f, ref int ci, int p)
+            {
+                PhaseLayout layout = _layouts[p];
+                PsgPhase phase = _problem.Phases[p];
+                double duration = Math.Max(1e-9, x[layout.DurationIndex]);
+                double h = duration / (SimpsonNodesPerPhase - 1);
+                double h6 = h / 6.0;
+                double h8 = h * 0.125;
+
+                for (int n = 0; n < SimpsonNodesPerPhase - 1; n++)
+                {
+                    int k0 = 2 * n;
+                    int k1 = k0 + 1;
+                    int k2 = k0 + 2;
+
+                    Vector3d r0 = GetVector(x, layout.RIndex(k0));
+                    Vector3d r1 = GetVector(x, layout.RIndex(k1));
+                    Vector3d r2 = GetVector(x, layout.RIndex(k2));
+                    Vector3d v0 = GetVector(x, layout.VIndex(k0));
+                    Vector3d v1 = GetVector(x, layout.VIndex(k1));
+                    Vector3d v2 = GetVector(x, layout.VIndex(k2));
+                    Vector3d a0 = Acceleration(x, p, k0);
+                    Vector3d a1 = Acceleration(x, p, k1);
+                    Vector3d a2 = Acceleration(x, p, k2);
+
+                    AppendVector(f, ref ci, r2 - r0 - h6 * (v0 + 4.0 * v1 + v2));
+                    AppendVector(f, ref ci, r1 - 0.5 * (r0 + r2) - h8 * (v0 - v2));
+                    AppendVector(f, ref ci, v2 - v0 - h6 * (a0 + 4.0 * a1 + a2));
+                    AppendVector(f, ref ci, v1 - 0.5 * (v0 + v2) - h8 * (a0 - a2));
+
+                    if (!phase.IsCoast)
+                    {
+                        double mi = p > 0 && phase.EnforceMassContinuity
+                            ? x[layout.MIndex(0)]
+                            : phase.StartMassKg / _scale.Mass;
+                        double mdot = PhaseMassFlow(phase);
+                        f[ci++] = x[layout.MIndex(k1)] - mi + (n + 0.5) * h * mdot;
+                        f[ci++] = x[layout.MIndex(k2)] - mi + (n + 1.0) * h * mdot;
+                    }
+                }
+            }
+
+            private void EvaluateStagingConstraint(double[] x, double[] f, ref int ci, int p)
+            {
+                PsgPhase phase = _problem.Phases[p];
+                if (phase.IsCoast || !phase.AllowShutdown || phase.EnforceMassContinuity)
+                {
+                    f[ci++] = 0.0;
+                    return;
+                }
+
+                int nextBurn = NextAdjustableBurn(p);
+                if (nextBurn < 0)
+                {
+                    f[ci++] = 0.0;
+                    return;
+                }
+
+                int nextNextBurn = NextAdjustableBurn(nextBurn);
+                if (nextNextBurn < 0 && _problem.Phases[nextBurn].EnforceMassContinuity)
+                {
+                    f[ci++] = 0.0;
+                    return;
+                }
+
+                double thisBt = x[_layouts[p].DurationIndex];
+                double nextBt = x[_layouts[nextBurn].DurationIndex];
+
+                bool combineThis = nextNextBurn > 0 && _problem.Phases[nextBurn].EnforceMassContinuity;
+                bool combineNext = nextNextBurn > 0 && !combineThis && _problem.Phases[nextNextBurn].EnforceMassContinuity;
+
+                if (combineThis)
+                {
+                    thisBt += nextBt;
+                    nextBt = x[_layouts[nextNextBurn].DurationIndex];
+                }
+                else if (combineNext)
+                {
+                    nextBt += x[_layouts[nextNextBurn].DurationIndex];
+                }
+
+                double remainingThisBurn = phase.NominalBurnTimeSeconds / _scale.Time - thisBt;
+                double u = nextBt * nextBt + remainingThisBurn * remainingThisBurn + 2e-6;
+                f[ci++] = Math.Sqrt(u) - (nextBt + remainingThisBurn);
+            }
+
+            private void EvaluateContinuityConstraints(double[] x, double[] f, ref int ci, int p)
+            {
+                if (p == 0) return;
+
+                PhaseLayout previous = _layouts[p - 1];
+                PhaseLayout current = _layouts[p];
+                AppendVector(f, ref ci, GetVector(x, previous.RIndex(KnotsPerPhase - 1)) - GetVector(x, current.RIndex(0)));
+                AppendVector(f, ref ci, GetVector(x, previous.VIndex(KnotsPerPhase - 1)) - GetVector(x, current.VIndex(0)));
+                AppendVector(f, ref ci, GetVector(x, previous.UIndex(KnotsPerPhase - 1)) - GetVector(x, current.UIndex(0)));
+
+                if (_problem.Phases[p].EnforceMassContinuity)
+                {
+                    f[ci++] = x[previous.MIndex(KnotsPerPhase - 1)] - x[current.MIndex(0)];
                 }
             }
 
             private void EvaluateTerminalConstraints(double[] x, double[] f, ref int ci)
             {
-                // TODO(MechJeb parity): replace this h/energy/radius/radial approximation with the terminal
-                // class selected by AscentBuilder: FlightPathAngle5/4/3 or Kepler5/4/3.
                 PhaseLayout last = _layouts[_layouts.Length - 1];
-                Vector3d r = GetVector(x, last.RIndex(NodesPerPhase - 1));
-                Vector3d v = GetVector(x, last.VIndex(NodesPerPhase - 1));
-                Vector3d h = Vector3d.Cross(r, v);
-                double energy = 0.5 * v.sqrMagnitude - 1.0 / Math.Max(1e-9, r.magnitude);
-                double attachmentRadius = _problem.Target.AttachmentRadiusMeters / _scale.Length;
-                double radialVelocity = Vector3d.Dot(r, v) / Math.Max(1e-9, r.magnitude);
-
-                SetConstraintVector(f, ref ci, h - _targetAngularMomentum);
-                f[ci++] = energy - _targetSpecificEnergy;
-                f[ci++] = r.magnitude - attachmentRadius;
-                f[ci++] = radialVelocity;
+                Vector3d r = GetVector(x, last.RIndex(KnotsPerPhase - 1));
+                Vector3d v = GetVector(x, last.VIndex(KnotsPerPhase - 1));
+                _terminal.Evaluate(r, v, f, ref ci);
             }
 
-            private Vector3d Acceleration(double[] x, int phaseIndex, int nodeIndex)
+            private Vector3d Acceleration(double[] x, int phaseIndex, int knot)
             {
                 PsgPhase phase = _problem.Phases[phaseIndex];
                 PhaseLayout layout = _layouts[phaseIndex];
-                Vector3d r = GetVector(x, layout.RIndex(nodeIndex));
+                Vector3d r = GetVector(x, layout.RIndex(knot));
                 double rMag = Math.Max(1e-9, r.magnitude);
                 Vector3d gravity = -r / (rMag * rMag * rMag);
 
                 if (phase.IsCoast) return gravity;
 
-                Vector3d u = GetVector(x, layout.UIndex(nodeIndex));
-                if (u.sqrMagnitude > 0.0) u = u.normalized;
+                Vector3d u = GetControlVector(x, phaseIndex, knot);
+                double mass = Math.Max(1e-6, x[layout.MIndex(knot)]);
+                return gravity + PhaseThrust(phase, rMag) / mass * u;
+            }
 
-                double localTime = x[layout.DurationIndex] * nodeIndex / (NodesPerPhase - 1);
-                double mass = Math.Max(1e-6, PhaseStartMass(phase) - PhaseMassFlow(phase) * localTime);
-                double thrust = PhaseVacuumThrust(phase);
+            private Vector3d GetControlVector(double[] x, int phaseIndex, int knot)
+            {
+                PsgPhase phase = _problem.Phases[phaseIndex];
+                PhaseLayout layout = _layouts[phaseIndex];
 
-                return gravity + thrust / mass * u;
+                return phase.IsUnguided || phase.IsCoast
+                    ? GetVector(x, layout.UIndex(0))
+                    : GetVector(x, layout.UIndex(knot));
+            }
+
+            private void AnalyzeStages(double[] x, out bool[] preciseShutdown, out bool[] terminalStage)
+            {
+                preciseShutdown = new bool[_problem.Phases.Length];
+                terminalStage = new bool[_problem.Phases.Length];
+                int optimizedShutdownIndex = -1;
+                int terminalStageIndex = -1;
+                bool pruningStages = false;
+
+                for (int p = 0; p < _problem.Phases.Length; p++)
+                {
+                    PsgPhase phase = _problem.Phases[p];
+                    double duration = x[_layouts[p].DurationIndex] * _scale.Time;
+                    bool freeBurnTimeLeft = phase.NominalBurnTimeSeconds - duration > 1e-3;
+                    bool prunableStage = pruningStages && duration < 1e-3;
+
+                    if (phase.AllowShutdown && !prunableStage)
+                    {
+                        optimizedShutdownIndex = p;
+                    }
+
+                    if (!phase.AllowShutdown || !prunableStage)
+                    {
+                        terminalStageIndex = p;
+                    }
+
+                    if (phase.AllowShutdown && freeBurnTimeLeft)
+                    {
+                        pruningStages = true;
+                    }
+                }
+
+                if (optimizedShutdownIndex >= 0) preciseShutdown[optimizedShutdownIndex] = true;
+                if (terminalStageIndex >= 0) terminalStage[terminalStageIndex] = true;
+            }
+
+            private void AddControlBounds(double[] bounds, ref int ci, bool lower)
+            {
+                for (int p = 0; p < _problem.Phases.Length; p++)
+                {
+                    PsgPhase phase = _problem.Phases[p];
+                    if (phase.IsCoast && !phase.IsUnguided) continue;
+
+                    double value = lower ? phase.MinimumThrottle : 1.0;
+                    int count = phase.IsUnguided ? 1 : KnotsPerPhase;
+                    for (int k = 0; k < count; k++)
+                    {
+                        bounds[ci++] = value;
+                    }
+                }
+            }
+
+            private void AddPhaseBounds(double[] bounds, ref int ci)
+            {
+                for (int p = 0; p < _problem.Phases.Length; p++)
+                {
+                    int dynamic = (SimpsonNodesPerPhase - 1) * (12 + (_problem.Phases[p].IsCoast ? 0 : 2));
+                    for (int i = 0; i < dynamic; i++) bounds[ci++] = 0.0;
+
+                    bounds[ci++] = 0.0;
+
+                    if (p > 0)
+                    {
+                        for (int i = 0; i < 9; i++) bounds[ci++] = 0.0;
+                        if (_problem.Phases[p].EnforceMassContinuity) bounds[ci++] = 0.0;
+                    }
+                }
+            }
+
+            private void AddTerminalBounds(double[] bounds, ref int ci, double value)
+            {
+                for (int i = 0; i < _terminal.ConstraintCount; i++)
+                {
+                    bounds[ci++] = value;
+                }
             }
 
             private void FreezeInitialState(double[] bounds)
@@ -542,12 +966,33 @@ namespace Blackbird.Guidance
                 SetVector(bounds, first.VIndex(0), _problem.InitialRelativeVelocityMetersPerSecond / _scale.Velocity);
             }
 
-            private double TotalNominalTime()
+            private void FreezePhaseStartMasses(double[] bounds)
+            {
+                for (int p = 0; p < _layouts.Length; p++)
+                {
+                    if (p > 0 && _problem.Phases[p].EnforceMassContinuity) continue;
+                    bounds[_layouts[p].MIndex(0)] = _problem.Phases[p].StartMassKg / _scale.Mass;
+                }
+            }
+
+            private int NextAdjustableBurn(int phaseIndex)
+            {
+                for (int p = phaseIndex + 1; p < _problem.Phases.Length; p++)
+                {
+                    PsgPhase phase = _problem.Phases[p];
+                    if (phase.IsCoast || !phase.AllowShutdown) continue;
+                    return p;
+                }
+
+                return -1;
+            }
+
+            private double TotalInitialDuration()
             {
                 double total = 0.0;
                 for (int i = 0; i < _problem.Phases.Length; i++)
                 {
-                    total += GetInitialPhaseDuration(_problem.Phases[i]);
+                    total += ClampDuration(i, GetInitialPhaseDuration(_problem.Phases[i]));
                 }
 
                 return total;
@@ -560,26 +1005,60 @@ namespace Blackbird.Guidance
                     : Math.Max(0.1, phase.MaximumBurnTimeSeconds);
             }
 
-            private void GetPhaseDurationBounds(int phaseIndex, PsgPhase phase, out double minimum, out double maximum)
+            private double ClampDuration(int phaseIndex, double duration)
             {
-                double nominal = GetInitialPhaseDuration(phase);
-
-                // TODO(MechJeb parity): derive MinT/MaxT from phase shutdown rules and minimum throttle,
-                // then let terminal-stage pruning decide which final phase owns precise shutdown.
-                if (phaseIndex < _problem.Phases.Length - 1)
-                {
-                    minimum = nominal;
-                    maximum = nominal;
-                    return;
-                }
-
-                minimum = Math.Max(0.1, phase.MinimumBurnTimeSeconds);
-                maximum = Math.Max(minimum, nominal);
+                double min;
+                double max;
+                GetPhaseDurationBounds(_problem.Phases[phaseIndex], out min, out max);
+                return OrbitMath.Clamp(duration, min, max);
             }
 
-            private double PhaseStartMass(PsgPhase phase)
+            private void GetPhaseDurationBounds(PsgPhase phase, out double minimum, out double maximum)
             {
-                return phase.StartMassKg / _scale.Mass;
+                minimum = Math.Max(0.0, phase.MinimumBurnTimeSeconds);
+                maximum = phase.MaximumBurnTimeSeconds;
+                if (!OrbitMath.IsFinite(maximum) || maximum <= 0.0)
+                {
+                    maximum = phase.AllowShutdown
+                        ? double.PositiveInfinity
+                        : Math.Max(1.0, phase.NominalBurnTimeSeconds);
+                }
+
+                maximum = Math.Max(minimum + 0.05, maximum);
+            }
+
+            private double GetInitialAttachmentRadius()
+            {
+                double pe = _problem.Target.PeriapsisRadiusMeters;
+                double ap = _problem.Target.ApoapsisRadiusMeters;
+                if (ap < pe)
+                {
+                    double temp = ap;
+                    ap = pe;
+                    pe = temp;
+                }
+
+                double ecc = (ap - pe) / (ap + pe);
+                if (_problem.Target.UseAttachmentRadius || ecc >= 1e-4)
+                {
+                    return OrbitMath.Clamp(_problem.Target.AttachmentRadiusMeters, pe, ap);
+                }
+
+                return pe;
+            }
+
+            private double GetInitialTerminalSpeed(double scaledRadius)
+            {
+                double physicalRadius = scaledRadius * _scale.Length;
+                double pe = _problem.Target.PeriapsisRadiusMeters;
+                double ap = _problem.Target.ApoapsisRadiusMeters;
+                double sma = (pe + ap) * 0.5;
+                return Math.Sqrt(Math.Max(0.0, _problem.BodyGravParameter * (2.0 / physicalRadius - 1.0 / sma))) / _scale.Velocity;
+            }
+
+            private double GetPhaseMassAtFraction(PsgPhase phase, double fraction)
+            {
+                return phase.StartMassKg - (phase.StartMassKg - phase.EndMassKg) * OrbitMath.Clamp(fraction, 0.0, 1.0);
             }
 
             private double PhaseMassFlow(PsgPhase phase)
@@ -590,6 +1069,29 @@ namespace Blackbird.Guidance
             private double PhaseVacuumThrust(PsgPhase phase)
             {
                 return phase.VacuumThrustNewtons * _scale.Time * _scale.Time / (_scale.Length * _scale.Mass);
+            }
+
+            private double PhaseThrust(PsgPhase phase, double scaledRadius)
+            {
+                if (_problem.AtmosphereScaleHeightMeters <= 0.0)
+                {
+                    return PhaseVacuumThrust(phase);
+                }
+
+                double h0 = _problem.AtmosphereScaleHeightMeters / _scale.Length;
+                if (h0 <= 0.0) return PhaseVacuumThrust(phase);
+
+                double initialRadius = Math.Max(1e-9, _problem.InitialRelativePositionMeters.magnitude / _scale.Length);
+                double atmosphereFraction = Math.Exp(-(scaledRadius - initialRadius) / h0);
+                atmosphereFraction = OrbitMath.Clamp(atmosphereFraction, 0.0, 1.0);
+
+                double vexVacuum = phase.ExhaustVelocityVacuumMetersPerSecond / _scale.Velocity;
+                double vexCurrent = phase.ExhaustVelocityCurrentMetersPerSecond > 0.0
+                    ? phase.ExhaustVelocityCurrentMetersPerSecond / _scale.Velocity
+                    : vexVacuum;
+
+                double exhaustVelocity = vexCurrent + (vexVacuum - vexCurrent) * (1.0 - atmosphereFraction);
+                return PhaseMassFlow(phase) * exhaustVelocity;
             }
 
             private static PhaseLayout[] CreateLayouts(PsgPhase[] phases)
@@ -606,68 +1108,30 @@ namespace Blackbird.Guidance
                 return layouts;
             }
 
-            private static int CountConstraints(int phaseCount)
+            private static int CountConstraints(PsgPhase[] phases, PsgTerminal terminal)
             {
-                int dynamic = phaseCount * (NodesPerPhase - 1) * 6;
-                int continuity = Math.Max(0, phaseCount - 1) * 6;
-                int control = phaseCount * NodesPerPhase;
-                int terminal = 6;
-                return dynamic + continuity + control + terminal;
-            }
-
-            private static Vector3d GetTargetAngularMomentum(PsgProblem problem, Scale scale)
-            {
-                Vector3d h = problem.Target.TargetAngularMomentumVector;
-                if (h.sqrMagnitude <= 0.0)
+                int count = 0;
+                for (int p = 0; p < phases.Length; p++)
                 {
-                    Vector3d currentH = Vector3d.Cross(
-                        problem.InitialRelativePositionMeters,
-                        problem.InitialRelativeVelocityMetersPerSecond);
-
-                    double hMagnitude = Math.Sqrt(
-                        problem.BodyGravParameter *
-                        (2.0 * problem.Target.ApoapsisRadiusMeters * problem.Target.PeriapsisRadiusMeters /
-                         (problem.Target.ApoapsisRadiusMeters + problem.Target.PeriapsisRadiusMeters)));
-
-                    h = currentH.sqrMagnitude > 0.0 ? currentH.normalized * hMagnitude : Vector3d.zero;
+                    if (phases[p].IsCoast && !phases[p].IsUnguided) continue;
+                    count += phases[p].IsUnguided ? 1 : KnotsPerPhase;
                 }
 
-                return h / (scale.Length * scale.Velocity);
-            }
-
-            private void AddDynamicBounds(double[] bounds, ref int ci, double value)
-            {
-                for (int i = 0; i < _problem.Phases.Length * (NodesPerPhase - 1) * 6; i++)
+                for (int p = 0; p < phases.Length; p++)
                 {
-                    bounds[ci++] = value;
+                    count += (SimpsonNodesPerPhase - 1) * (12 + (phases[p].IsCoast ? 0 : 2));
+                    count += 1;
+                    if (p > 0)
+                    {
+                        count += 9;
+                        if (phases[p].EnforceMassContinuity) count += 1;
+                    }
                 }
+
+                return count + terminal.ConstraintCount;
             }
 
-            private void AddContinuityBounds(double[] bounds, ref int ci, double value)
-            {
-                for (int i = 0; i < Math.Max(0, _problem.Phases.Length - 1) * 6; i++)
-                {
-                    bounds[ci++] = value;
-                }
-            }
-
-            private void AddControlBounds(double[] bounds, ref int ci, double value)
-            {
-                for (int i = 0; i < _problem.Phases.Length * NodesPerPhase; i++)
-                {
-                    bounds[ci++] = value;
-                }
-            }
-
-            private static void AddTerminalBounds(double[] bounds, ref int ci, double value)
-            {
-                for (int i = 0; i < 6; i++)
-                {
-                    bounds[ci++] = value;
-                }
-            }
-
-            private static void SetConstraintVector(double[] f, ref int ci, Vector3d value)
+            private static void AppendVector(double[] f, ref int ci, Vector3d value)
             {
                 f[ci++] = value.x;
                 f[ci++] = value.y;
@@ -697,60 +1161,22 @@ namespace Blackbird.Guidance
                 for (int i = 0; i < array.Length; i++) array[i] = value;
                 return array;
             }
-
-            private static double MeasureRange(
-                double[] f,
-                double[] lower,
-                double[] upper,
-                int start,
-                int count)
-            {
-                double max = 0.0;
-
-                for (int i = start; i < start + count; i++)
-                {
-                    double value = f[i + 1];
-                    double violation = 0.0;
-
-                    if (value < lower[i])
-                    {
-                        violation = lower[i] - value;
-                    }
-                    else if (value > upper[i])
-                    {
-                        violation = value - upper[i];
-                    }
-
-                    max = Math.Max(max, violation);
-                }
-
-                return max;
-            }
         }
 
         private sealed class ConstraintViolationReport
         {
             public double Maximum { get; set; }
-            public double Dynamic { get; set; }
-            public double Continuity { get; set; }
-            public double Control { get; set; }
-            public double Terminal { get; set; }
+            public double PrimalFeasibility { get; set; }
 
             public string ToStatusString()
             {
-                return string.Format(
-                    "max={0:E1} dyn={1:E1} cont={2:E1} ctrl={3:E1} term={4:E1}",
-                    Maximum,
-                    Dynamic,
-                    Continuity,
-                    Control,
-                    Terminal);
+                return string.Format("pf={0:E1} max={1:E1}", PrimalFeasibility, Maximum);
             }
         }
 
         private sealed class PhaseLayout
         {
-            private const int ValuesPerNode = 9;
+            private const int ValuesPerKnot = 10;
             private readonly int _baseIndex;
 
             public PhaseLayout(int baseIndex)
@@ -765,51 +1191,32 @@ namespace Blackbird.Guidance
 
             public int EndVariableIndex
             {
-                get { return _baseIndex + 1 + NodesPerPhase * ValuesPerNode; }
+                get { return _baseIndex + 1 + KnotsPerPhase * ValuesPerKnot; }
             }
 
-            public int RIndex(int node)
+            public int RIndex(int knot)
             {
-                return NodeIndex(node);
+                return KnotIndex(knot);
             }
 
-            public int VIndex(int node)
+            public int VIndex(int knot)
             {
-                return NodeIndex(node) + 3;
+                return KnotIndex(knot) + 3;
             }
 
-            public int UIndex(int node)
+            public int MIndex(int knot)
             {
-                return NodeIndex(node) + 6;
+                return KnotIndex(knot) + 6;
             }
 
-            private int NodeIndex(int node)
+            public int UIndex(int knot)
             {
-                return _baseIndex + 1 + node * ValuesPerNode;
+                return KnotIndex(knot) + 7;
             }
-        }
 
-        private sealed class Scale
-        {
-            public double Length { get; private set; }
-            public double Velocity { get; private set; }
-            public double Time { get; private set; }
-            public double Mass { get; private set; }
-
-            public static Scale FromProblem(PsgProblem problem)
+            private int KnotIndex(int knot)
             {
-                double length = Math.Max(1.0, problem.InitialRelativePositionMeters.magnitude);
-                double velocity = Math.Sqrt(problem.BodyGravParameter / length);
-                double time = length / velocity;
-                double mass = Math.Max(1.0, problem.InitialMassKg);
-
-                return new Scale
-                {
-                    Length = length,
-                    Velocity = velocity,
-                    Time = time,
-                    Mass = mass
-                };
+                return _baseIndex + 1 + knot * ValuesPerKnot;
             }
         }
     }

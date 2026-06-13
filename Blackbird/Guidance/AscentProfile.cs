@@ -153,7 +153,7 @@ namespace Blackbird.Guidance
             };
         }
 
-        // Fallback-only: creates a smooth altitude-indexed gravity turn for pre-PSG bootstrap commands.
+        // Creates a smooth altitude-indexed gravity turn for pre-PSG bootstrap commands.
         private static AscentProfilePoint[] CreateProfilePoints(
             VesselState vesselState,
             double targetApoapsisAlt,
@@ -196,7 +196,7 @@ namespace Blackbird.Guidance
             double finalAltitude = points[points.Length - 1].AltitudeMeters;
             double circularVelocity = OrbitMath.GetCircularVelocity(vesselState.Body, finalAltitude);
             double nominalVerticalRate = OrbitMath.IsFinite(circularVelocity)
-                ? OrbitMath.Clamp(circularVelocity / 25.0, 120.0, 450.0) // Fallback-only ascent-time heuristic.
+                ? OrbitMath.Clamp(circularVelocity / 25.0, 120.0, 450.0)
                 : 180.0;
 
             return Math.Max(60.0, (finalAltitude - vesselState.AltitudeMeters) / nominalVerticalRate);
@@ -211,8 +211,7 @@ namespace Blackbird.Guidance
             return Math.Max(0.0, vesselState.Body.atmosphereDepth);
         }
 
-        // Fallback-only: chooses where the bootstrap gravity turn begins before PSG owns the thrust vector.
-        // TODO(MechJeb parity): replace altitude-turn dependence with solver-provided early ascent guidance.
+        // Chooses where the bootstrap gravity turn begins before PSG owns the thrust vector.
         private static double GetTurnStartAltitude(VesselState vesselState, double atmosphereTop, double insertionAlt)
         {
             double pressureStart = atmosphereTop > 0.0 ? atmosphereTop * 0.015 : insertionAlt * 0.05;
@@ -232,12 +231,11 @@ namespace Blackbird.Guidance
             return OrbitMath.Clamp(5.0 + coastFraction * 15.0, 2.0, 20.0);
         }
 
-        // Fallback-only: chooses where the bootstrap profile becomes horizontal instead of waiting for apoapsis.
+        // Chooses where the bootstrap profile becomes horizontal instead of waiting for apoapsis.
         private static double GetHorizontalFlightAltitude(double atmosphereTop, double insertionAlt)
         {
             if (atmosphereTop > 0.0)
             {
-                // Fallback-only atmospheric clamps for the bootstrap pitch curve.
                 double atmosphereTarget = atmosphereTop * 0.85;
                 double insertionTarget = insertionAlt * 0.40;
                 return OrbitMath.Clamp(
@@ -246,7 +244,7 @@ namespace Blackbird.Guidance
                     Math.Min(insertionAlt, atmosphereTop));
             }
 
-            return insertionAlt * 0.50; // Fallback-only vacuum midpoint for the bootstrap pitch curve.
+            return insertionAlt * 0.50;
         }
 
         // Solves the curve exponent so pitch at atmosphere edge matches the desired exit pitch.
@@ -271,7 +269,7 @@ namespace Blackbird.Guidance
             return OrbitMath.Clamp(exponent, 0.35, 2.5);
         }
 
-        // Fallback-only: creates altitude samples for stable interpolation before PSG guidance is available.
+        // Creates altitude samples for stable interpolation before PSG guidance is available.
         private static double[] CreateControlAltitudes(double turnStartAlt, double turnEndAlt, double atmosphereTop)
         {
             // These fractions only shape the bootstrap curve; PSG should command from optimized trajectory state.

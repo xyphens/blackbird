@@ -8,7 +8,6 @@ namespace Blackbird.Guidance
 {
     public sealed class LaunchHandler
     {
-        // TODO(UI): expose warp-stop lead time as a setting once launch-window flow stabilizes.
         private const double WarpStopLeadTimeSeconds = 10.0;
         private double _targetUt;
 
@@ -173,7 +172,6 @@ namespace Blackbird.Guidance
             GuidanceMode = gMode;
         }
 
-        // TODO(UI): make the manual/autopilot pitch floor configurable after PSG terminal authority is settled.
         private static double ClampAutopilotPitchCommand(double pitchDeg)
         {
             return Math.Max(-30.0, Math.Min(90.0, pitchDeg));
@@ -258,7 +256,6 @@ namespace Blackbird.Guidance
                 return;
             }
 
-            // TODO(Attitude): add roll-stabilization input after the guidance state machine matches PSG terminal/staging modes.
             if (GuidanceInfo.HasInertialDirection)
             {
                 _attitudeControl.DriveInertial(vessel, state, GuidanceInfo.InertialDirection, 0.0);

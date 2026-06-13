@@ -38,8 +38,7 @@ namespace Blackbird.Planning
 
             PlanetScale.PlanetScaleEnum scale = PlanetScale.GetScale();
 
-            // TODO(Planner): replace coarse altitude stepping with a direct period/phase solve
-            // plus a fine search around the best phasing altitude.
+            // Coarse phasing search used for candidate generation; PSG itself consumes the selected insertion target.
             double initOffset = scale == PlanetScale.PlanetScaleEnum.RSS ? 145000.0 : 70000.0;
             double offsetScalar = scale == PlanetScale.PlanetScaleEnum.RSS ? 5000.0 : 1500.0;
 
