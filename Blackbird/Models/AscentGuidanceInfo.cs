@@ -1,4 +1,5 @@
 using Blackbird.Enums;
+using UnityEngine;
 
 namespace Blackbird.Models
 {
@@ -14,6 +15,8 @@ namespace Blackbird.Models
         public double CommandPitchDeg { get; set; }
         public double CommandHeadingDeg { get; set; }
         public double CommandThrottle { get; set; }
+        public bool HasInertialDirection { get; set; }
+        public Vector3d InertialDirection { get; set; }
 
         public double CurrentPitchDeg { get; set; }
         public double CurrentHeadingDeg { get; set; }
@@ -30,6 +33,9 @@ namespace Blackbird.Models
         public double PeriapsisErrorMeters { get; set; }
         public double GuidanceTimeToGoSeconds { get; set; }
         public double GuidanceVelocityToGoMetersPerSecond { get; set; }
+        public double GuidanceConstraintViolation { get; set; }
+        public int GuidanceOptimizerIterations { get; set; }
+        public string GuidanceOptimizerStatus { get; set; }
 
         public double PredictedApoapsisAlt { get; set; }
         public double PredictedPeriapsisAlt { get; set; }

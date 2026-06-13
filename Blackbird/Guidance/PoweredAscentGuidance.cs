@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using Blackbird.Enums;
 using Blackbird.Mathematics;
 using Blackbird.Models;
@@ -8,27 +9,60 @@ namespace Blackbird.Guidance
 {
     public sealed class PoweredAscentGuidance
     {
-        // FIXME: temporary heuristic tolerances until terminal error is derived from vehicle controllability.
+        // TODO(MechJeb parity): keep this AP/PE box as a fallback guard only.
+        // Nominal PSG cutoff should be owned by terminal guidance: terminal-class target constraints,
+        // next-tick invariant crossing, terminal-stage state, and bounded overburn protection.
         private const double MinimumTerminalToleranceMeters = 500.0;
         private const double MaximumTerminalToleranceMeters = 5000.0;
+        private const double TerminalToleranceFraction = 0.025;
 
-        // FIXME: temporary handoff margin until pitch-program exit is based on AP growth rate and time-to-go.
+        // Fallback-only: used when PSG has no usable solution and the legacy pitch profile must hand off to heuristic insertion guidance.
         private const double PitchProgramApoapsisMarginFraction = 0.12;
+        // TODO(MechJeb parity): replace timer polling with a GuidanceController/PSGGlueBall-style
+        // state machine that separates burning, coasting, terminal, staging, and RCS decisions.
+        private const double SolveIntervalSeconds = 5.0;
+        private const double RetryIntervalSeconds = 2.0;
+        // MechJeb enters terminal guidance around 10s remaining and locks the inertial heading for the final 2s.
+        private const double TerminalSolveHorizonSeconds = 15.0;
+        private const double TerminalSolveIntervalSeconds = 0.75;
+        private const double SolutionStaleSeconds = 20.0;
+        private const double ExpiredSolutionGraceSeconds = 0.25;
+        private const double TerminalGuidanceLockSeconds = 2.0;
 
+        private readonly PsgOptimizer _optimizer = new PsgOptimizer();
         private PoweredGuidancePhase _phase = PoweredGuidancePhase.Unavailable;
         private bool _complete;
         private bool _insertionCutoff;
+        private Task<PsgOptimizationResult> _solveTask;
+        private PsgProblem _pendingProblem;
+        private PsgSolution _solution;
+        private Vector3d _lockedTerminalDirection = Vector3d.zero;
+        private bool _hasLockedTerminalDirection;
+        private double _lastSolveRequestUt = double.NegativeInfinity;
+        private string _optimizerStatus = "PSG idle";
+        private int _optimizerIterations;
+        private double _constraintViolation = double.NaN;
 
         public void Reset()
         {
             _phase = PoweredGuidancePhase.Unavailable;
             _complete = false;
             _insertionCutoff = false;
+            _solveTask = null;
+            _pendingProblem = null;
+            _solution = null;
+            _lockedTerminalDirection = Vector3d.zero;
+            _hasLockedTerminalDirection = false;
+            _lastSolveRequestUt = double.NegativeInfinity;
+            _optimizerStatus = "PSG idle";
+            _optimizerIterations = 0;
+            _constraintViolation = double.NaN;
         }
 
         // Produces the powered-ascent command; LaunchHandler remains responsible for applying it to the vessel.
         public PoweredGuidanceCommand GetCommand(
             VesselState vesselState,
+            LaunchPlan launchPlan,
             AscentProfile ascentProfile,
             double profilePitchDeg,
             double profileHeadingDeg,
@@ -49,12 +83,102 @@ namespace Blackbird.Guidance
                 return CreateUnavailable(profilePitchDeg, profileHeadingDeg, profileThrottle);
             }
 
+            Vector3d initialThrustDirection = GetSurfaceCommandDirection(vesselState, profileHeadingDeg, profilePitchDeg);
+            UpdatePsgSolution(vesselState, launchPlan, ascentProfile, initialThrustDirection);
+
             double apTolerance = GetTerminalTolerance(targetAp);
             double peTolerance = GetTerminalTolerance(targetPe);
-            double velocityToGo = EstimateVelocityToGo(vesselState, ascentProfile);
-            double timeToGo = EstimateTimeToGoSeconds(vesselState, velocityToGo);
+            double velocityToGo = _solution != null && _solution.IsValid
+                ? _solution.VelocityToGo(vesselState.UniversalTime)
+                : EstimateVelocityToGo(vesselState, ascentProfile);
+            double timeToGo = _solution != null && _solution.IsValid
+                ? _solution.TimeToGo(vesselState.UniversalTime)
+                : EstimateTimeToGoSeconds(vesselState, velocityToGo);
 
-            if (_complete || IsOrbitInsideTerminalBox(apError, peError, apTolerance, peTolerance))
+            if (_complete)
+            {
+                _complete = true;
+                _phase = PoweredGuidancePhase.Complete;
+                return CreateCommand(
+                    PoweredGuidancePhase.Complete,
+                    "Insertion target reached",
+                    0.0,
+                    profileHeadingDeg,
+                    0.0,
+                    apError,
+                    peError,
+                    0.0,
+                    0.0,
+                    true);
+            }
+
+            if (_solution != null && _solution.IsValid)
+            {
+                Vector3d relativePosition = vesselState.Position - vesselState.Body.position;
+                if (IsPsgTerminalComplete(
+                    vesselState,
+                    relativePosition,
+                    apError,
+                    peError,
+                    apTolerance,
+                    peTolerance))
+                {
+                    _complete = true;
+                    _phase = PoweredGuidancePhase.Complete;
+                    return CreateCommand(
+                        PoweredGuidancePhase.Complete,
+                        "PSG terminal guidance complete",
+                        0.0,
+                        profileHeadingDeg,
+                        0.0,
+                        apError,
+                        peError,
+                        0.0,
+                        0.0,
+                        true);
+                }
+
+                PsgGuidanceVector guidance = _solution.InertialGuidance(vesselState.UniversalTime);
+                if (guidance != null && guidance.IsValid && !IsSolutionExpired(vesselState.UniversalTime))
+                {
+                    if (timeToGo <= TerminalGuidanceLockSeconds)
+                    {
+                        if (!_hasLockedTerminalDirection)
+                        {
+                            _lockedTerminalDirection = guidance.InertialDirection.normalized;
+                            _hasLockedTerminalDirection = true;
+                        }
+
+                        guidance.InertialDirection = _lockedTerminalDirection;
+                    }
+                    else
+                    {
+                        _hasLockedTerminalDirection = false;
+                        _lockedTerminalDirection = Vector3d.zero;
+                    }
+
+                    double psgPitch;
+                    double psgHeading;
+                    GetPitchHeadingFromInertial(vesselState, guidance.InertialDirection, out psgPitch, out psgHeading);
+
+                    _phase = PoweredGuidancePhase.PoweredGuidance;
+                    return CreateCommand(
+                        PoweredGuidancePhase.PoweredGuidance,
+                        IsSolutionStale(vesselState.UniversalTime) ? "PSG guidance stale" : "PSG guidance",
+                        ClampPitchForControl(psgPitch),
+                        psgHeading,
+                        guidance.Throttle,
+                        apError,
+                        peError,
+                        timeToGo,
+                        velocityToGo,
+                        false,
+                        true,
+                        guidance.InertialDirection);
+                }
+            }
+
+            if (IsOrbitInsideTerminalBox(apError, peError, apTolerance, peTolerance))
             {
                 _complete = true;
                 _phase = PoweredGuidancePhase.Complete;
@@ -107,7 +231,9 @@ namespace Blackbird.Guidance
                 peError,
                 timeToGo,
                 velocityToGo,
-                false);
+                false,
+                false,
+                Vector3d.zero);
         }
 
         // Keeps early flight on the planned gravity turn, then hands over to orbital-element feedback.
@@ -120,13 +246,13 @@ namespace Blackbird.Guidance
         {
             if (_phase == PoweredGuidancePhase.PoweredGuidance || _phase == PoweredGuidancePhase.Terminal)
             {
-                // FIXME: temporary terminal handoff band; replace with a solved guidance convergence check.
+                // Fallback-only: PSG terminal completion is handled before this path.
                 return Math.Abs(apError) <= apTolerance * 2.0
                     ? PoweredGuidancePhase.Terminal
                     : PoweredGuidancePhase.PoweredGuidance;
             }
 
-            // FIXME: temporary vertical-ascent gate; replace with a profile/atmosphere/TWR-derived condition.
+            // Fallback-only: keep the legacy profile vertical until the pitch curve commits to the gravity turn.
             if (profilePitchDeg >= 80.0 && vesselState.AltitudeMeters < GetTurnCommitAltitude(ascentProfile))
             {
                 return PoweredGuidancePhase.VerticalAscent;
@@ -138,13 +264,190 @@ namespace Blackbird.Guidance
                 return PoweredGuidancePhase.PitchProgram;
             }
 
-            // FIXME: temporary terminal handoff band; replace with a solved guidance convergence check.
+            // Fallback-only: PSG terminal completion is handled before this path.
             return Math.Abs(apError) <= apTolerance * 2.0
                 ? PoweredGuidancePhase.Terminal
                 : PoweredGuidancePhase.PoweredGuidance;
         }
 
-        // A PVG-style steering law: chase the target orbit's angular momentum while damping radial motion.
+        private void UpdatePsgSolution(
+            VesselState vesselState,
+            LaunchPlan launchPlan,
+            AscentProfile ascentProfile,
+            Vector3d initialThrustDirection)
+        {
+            if (_solveTask != null && _solveTask.IsCompleted)
+            {
+                PsgOptimizationResult result = _solveTask.Result;
+                PsgProblem completedProblem = _pendingProblem;
+                _solveTask = null;
+                _pendingProblem = null;
+
+                _optimizerStatus = result != null ? result.Status : "PSG solver returned no result";
+                _optimizerIterations = result != null ? result.Iterations : 0;
+                _constraintViolation = result != null ? result.ConstraintViolation : double.NaN;
+                PsgSnapshotLogger.WriteResult(completedProblem, result);
+
+                if (result != null && result.Success && result.Solution != null)
+                {
+                    _solution = result.Solution;
+                    if (_solution.TimeToGo(vesselState.UniversalTime) > TerminalGuidanceLockSeconds)
+                    {
+                        _hasLockedTerminalDirection = false;
+                        _lockedTerminalDirection = Vector3d.zero;
+                    }
+                }
+            }
+
+            if (_solveTask != null) return;
+
+            double interval = GetSolveIntervalSeconds(vesselState.UniversalTime);
+            if (vesselState.UniversalTime - _lastSolveRequestUt < interval) return;
+
+            PsgTarget target = PsgTarget.FromPlan(vesselState, launchPlan, ascentProfile);
+            if (target == null || !target.IsValid)
+            {
+                _optimizerStatus = target != null ? target.ReasonUnavailable : "PSG target unavailable";
+                return;
+            }
+
+            PsgPhase[] phases = PsgPhase.FromPoweredStages(vesselState.PoweredStages);
+            if (phases == null || phases.Length == 0)
+            {
+                _optimizerStatus = "No powered PSG phases";
+                return;
+            }
+
+            PsgProblem problem = PsgProblem.Create(vesselState, target, phases, initialThrustDirection);
+            if (problem == null || !problem.IsValid)
+            {
+                _optimizerStatus = problem != null ? problem.ReasonUnavailable : "PSG problem unavailable";
+                return;
+            }
+
+            PsgSolution warmStart = _solution;
+            _lastSolveRequestUt = vesselState.UniversalTime;
+            _optimizerStatus = "PSG solving";
+            _pendingProblem = problem;
+            PsgSnapshotLogger.Write(problem, "solve requested");
+            _solveTask = Task.Run(() => _optimizer.Solve(problem, warmStart));
+        }
+
+        private bool IsSolutionStale(double universalTime)
+        {
+            return _solution == null ||
+                   !_solution.IsValid ||
+                   universalTime - _solution.CreatedUniversalTime > SolutionStaleSeconds;
+        }
+
+        private bool IsSolutionExpired(double universalTime)
+        {
+            return _solution != null &&
+                   _solution.IsValid &&
+                   universalTime > _solution.FinalUniversalTime + ExpiredSolutionGraceSeconds;
+        }
+
+        private double GetSolveIntervalSeconds(double universalTime)
+        {
+            if (_solution == null || !_solution.IsValid) return RetryIntervalSeconds;
+
+            double timeToGo = _solution.TimeToGo(universalTime);
+            return timeToGo <= TerminalSolveHorizonSeconds
+                ? TerminalSolveIntervalSeconds
+                : SolveIntervalSeconds;
+        }
+
+        private bool IsPsgTerminalComplete(
+            VesselState vesselState,
+            Vector3d relativePosition,
+            double apError,
+            double peError,
+            double apTolerance,
+            double peTolerance)
+        {
+            if (_solution == null || !_solution.IsValid) return false;
+
+            Vector3d terminalPosition;
+            Vector3d terminalVelocity;
+            PredictNextPhysicsState(vesselState, relativePosition, out terminalPosition, out terminalVelocity);
+
+            // MechJeb-style cutoff is angular-momentum crossing against the selected terminal target.
+            // Remaining parity work is in selecting/building that terminal target, not in AP/PE tuning here.
+            return _solution.TerminalGuidanceSatisfied(terminalPosition, terminalVelocity);
+        }
+
+        private static void PredictNextPhysicsState(
+            VesselState vesselState,
+            Vector3d relativePosition,
+            out Vector3d predictedPosition,
+            out Vector3d predictedVelocity)
+        {
+            predictedPosition = relativePosition;
+            predictedVelocity = vesselState != null ? vesselState.OrbitalVelocity : Vector3d.zero;
+
+            Vessel vessel = vesselState != null ? vesselState.Vessel : null;
+            if (vessel == null) return;
+
+            // Mirrors MechJeb's terminal cutoff prediction for the next physics tick. RCS/staging-specific
+            // two-tick handling belongs with the terminal state machine once it exists.
+            double dt = Math.Max(0.0, TimeWarp.fixedDeltaTime);
+            Vector3d acceleration = vessel.acceleration_immediate;
+
+            predictedPosition = relativePosition + vesselState.OrbitalVelocity * dt + 0.5 * acceleration * dt * dt;
+            predictedVelocity = vesselState.OrbitalVelocity + acceleration * dt;
+        }
+
+        private static Vector3d GetSurfaceCommandDirection(
+            VesselState vesselState,
+            double headingDeg,
+            double pitchDeg)
+        {
+            if (vesselState == null || vesselState.Body == null) return Vector3d.zero;
+
+            Vector3d up = (vesselState.Position - vesselState.Body.position).normalized;
+            Vector3d north = Vector3d.Exclude(up, vesselState.Body.transform.up).normalized;
+            if (north.sqrMagnitude <= 0.0) return up;
+            Vector3d east = Vector3d.Cross(up, north).normalized;
+
+            double headingRad = headingDeg * Math.PI / 180.0;
+            double pitchRad = pitchDeg * Math.PI / 180.0;
+            Vector3d horizontal = north * Math.Cos(headingRad) + east * Math.Sin(headingRad);
+
+            return (horizontal * Math.Cos(pitchRad) + up * Math.Sin(pitchRad)).normalized;
+        }
+
+        private static void GetPitchHeadingFromInertial(
+            VesselState vesselState,
+            Vector3d inertialDirection,
+            out double pitchDeg,
+            out double headingDeg)
+        {
+            pitchDeg = 90.0;
+            headingDeg = 90.0;
+
+            if (vesselState == null || vesselState.Body == null || inertialDirection.sqrMagnitude <= 0.0) return;
+
+            Vector3d up = (vesselState.Position - vesselState.Body.position).normalized;
+            Vector3d north = Vector3d.Exclude(up, vesselState.Body.transform.up).normalized;
+            if (north.sqrMagnitude <= 0.0) return;
+            Vector3d east = Vector3d.Cross(up, north).normalized;
+            Vector3d direction = inertialDirection.normalized;
+            Vector3d horizontal = Vector3d.Exclude(up, direction);
+
+            pitchDeg = Math.Asin(OrbitMath.Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)) * 180.0 / Math.PI;
+
+            if (horizontal.sqrMagnitude > 0.0)
+            {
+                Vector3d horizontalDirection = horizontal.normalized;
+                headingDeg = OrbitMath.NormalizeDegrees(
+                    Math.Atan2(
+                        Vector3d.Dot(horizontalDirection, east),
+                        Vector3d.Dot(horizontalDirection, north)) *
+                    180.0 / Math.PI);
+            }
+        }
+
+        // Fallback-only steering: chase the target orbit's angular momentum while damping radial motion.
         private static double GetPoweredGuidancePitchDeg(
             VesselState vesselState,
             AscentProfile ascentProfile,
@@ -156,7 +459,7 @@ namespace Blackbird.Guidance
             double targetOrbitPitch = GetTargetOrbitPitchDeg(vesselState, ascentProfile);
             double elementPitch = GetOrbitalElementCorrectionPitchDeg(vesselState, ascentProfile, apError, peError, apTolerance, peTolerance);
 
-            // FIXME: temporary blend/clamp; replace with solved thrust-vector direction from the guidance law.
+            // Fallback-only: PSG supplies the solved thrust-vector direction when available.
             return OrbitMath.Clamp(targetOrbitPitch * 0.65 + elementPitch * 0.35, -12.0, 28.0);
         }
 
@@ -185,7 +488,7 @@ namespace Blackbird.Guidance
                 return 0.0;
             }
 
-            // FIXME: temporary floor to avoid near-zero denominator jitter in early guidance.
+            // Fallback-only: avoid near-zero denominator jitter in early heuristic guidance.
             double forwardToGo = Math.Max(50.0, Math.Abs(horizontalToGo));
             return Math.Atan2(radialToGo, forwardToGo) * 180.0 / Math.PI;
         }
@@ -204,7 +507,7 @@ namespace Blackbird.Guidance
 
             double pitch = 0.0;
 
-            // FIXME: temporary proportional gains for AP/PE shaping; replace with PVG terminal constraints.
+            // Fallback-only: proportional AP/PE shaping when no PSG vector is available.
             pitch += OrbitMath.Clamp(apError / apScale, -1.0, 1.0) * 18.0;
 
             if (peError > peTolerance)
@@ -212,7 +515,7 @@ namespace Blackbird.Guidance
                 pitch -= OrbitMath.Clamp(peError / peScale, 0.0, 1.0) * 5.0;
             }
 
-            // FIXME: temporary descent guard to prevent digging into the atmosphere during missed insertions.
+            // Fallback-only: descent guard to prevent digging into the atmosphere during missed insertions.
             if (vesselState.VerticalSpeed < -5.0 && vesselState.AltitudeMeters < ascentProfile.TargetPeriapsisAlt)
             {
                 pitch += 6.0;
@@ -221,7 +524,7 @@ namespace Blackbird.Guidance
             return OrbitMath.Clamp(pitch, -12.0, 28.0);
         }
 
-        // Uses the target insertion altitude as a radial-speed schedule instead of coasting to apoapsis.
+        // Fallback-only radial-speed schedule instead of coasting to apoapsis.
         private static double GetDesiredRadialSpeed(VesselState vesselState, AscentProfile ascentProfile)
         {
             double targetRadius = vesselState.BodyRadius +
@@ -229,7 +532,7 @@ namespace Blackbird.Guidance
             double currentRadius = (vesselState.Position - vesselState.Body.position).magnitude;
             double altitudeError = targetRadius - currentRadius;
 
-            // FIXME: temporary radial-speed schedule; replace with time-to-go/radius solution.
+            // Fallback-only: PSG supplies time-to-go/radius behavior when available.
             return OrbitMath.Clamp(altitudeError / 45.0, -75.0, 220.0);
         }
 
@@ -277,7 +580,7 @@ namespace Blackbird.Guidance
 
         private static double GetTurnCommitAltitude(AscentProfile ascentProfile)
         {
-            // FIXME: temporary fallback/offset until turn start is generated by the ascent solver.
+            // Fallback-only: turn start comes from the ascent profile while PSG is unavailable.
             if (ascentProfile == null || ascentProfile.Points == null || ascentProfile.Points.Length == 0) return 1000.0;
 
             return Math.Max(1000.0, ascentProfile.Points[0].AltitudeMeters + 500.0);
@@ -285,8 +588,12 @@ namespace Blackbird.Guidance
 
         private static double GetTerminalTolerance(double targetAltitude)
         {
-            // FIXME: temporary percentage tolerance; derive from minimum controllable impulse and orbit noise.
-            return OrbitMath.Clamp(Math.Abs(targetAltitude) * 0.025, MinimumTerminalToleranceMeters, MaximumTerminalToleranceMeters);
+            // TODO(MechJeb parity): remove this from nominal PSG completion once terminal guidance owns cutoff.
+            // It should remain only as a fallback/emergency guard for non-PSG insertion guidance.
+            return OrbitMath.Clamp(
+                Math.Abs(targetAltitude) * TerminalToleranceFraction,
+                MinimumTerminalToleranceMeters,
+                MaximumTerminalToleranceMeters);
         }
 
         private static double GetInertialRadialSpeed(VesselState vesselState)
@@ -376,6 +683,73 @@ namespace Blackbird.Guidance
             double velocityToGo,
             bool isComplete)
         {
+            return CreateCommand(
+                phase,
+                status,
+                pitchDeg,
+                headingDeg,
+                throttle,
+                apError,
+                peError,
+                timeToGo,
+                velocityToGo,
+                isComplete,
+                false,
+                Vector3d.zero,
+                string.Empty,
+                0,
+                double.NaN);
+        }
+
+        private PoweredGuidanceCommand CreateCommand(
+            PoweredGuidancePhase phase,
+            string status,
+            double pitchDeg,
+            double headingDeg,
+            double throttle,
+            double apError,
+            double peError,
+            double timeToGo,
+            double velocityToGo,
+            bool isComplete,
+            bool hasInertialDirection,
+            Vector3d inertialDirection)
+        {
+            return CreateCommand(
+                phase,
+                status,
+                pitchDeg,
+                headingDeg,
+                throttle,
+                apError,
+                peError,
+                timeToGo,
+                velocityToGo,
+                isComplete,
+                hasInertialDirection,
+                inertialDirection,
+                _optimizerStatus,
+                _optimizerIterations,
+                _constraintViolation);
+        }
+
+        private static PoweredGuidanceCommand CreateCommand(
+            PoweredGuidancePhase phase,
+            string status,
+            double pitchDeg,
+            double headingDeg,
+            double throttle,
+            double apError,
+            double peError,
+            double timeToGo,
+            double velocityToGo,
+            bool isComplete,
+            bool hasInertialDirection,
+            Vector3d inertialDirection,
+            string optimizerStatus,
+            int optimizerIterations,
+            double constraintViolation)
+        {
             return new PoweredGuidanceCommand
             {
                 Phase = phase,
@@ -383,10 +757,15 @@ namespace Blackbird.Guidance
                 PitchDeg = pitchDeg,
                 HeadingDeg = OrbitMath.NormalizeDegrees(headingDeg),
                 Throttle = OrbitMath.Clamp(throttle, 0.0, 1.0),
+                HasInertialDirection = hasInertialDirection,
+                InertialDirection = hasInertialDirection ? inertialDirection.normalized : Vector3d.zero,
                 ApoapsisErrorMeters = apError,
                 PeriapsisErrorMeters = peError,
                 TimeToGoSeconds = timeToGo,
                 VelocityToGoMetersPerSecond = velocityToGo,
+                OptimizerStatus = optimizerStatus,
+                OptimizerIterations = optimizerIterations,
+                SolutionConstraintViolation = constraintViolation,
                 IsComplete = isComplete
             };
         }

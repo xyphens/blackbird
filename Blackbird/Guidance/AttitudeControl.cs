@@ -100,6 +100,38 @@ namespace Blackbird.Guidance
             ApplyActuation(state, actuation);
         }
 
+        public void DriveInertial(
+            Vessel vessel,
+            FlightCtrlState state,
+            Vector3d inertialDirection,
+            double rollDeg)
+        {
+            if (vessel == null || state == null) return;
+            if (vessel.mainBody == null || inertialDirection.sqrMagnitude <= 0.0) return;
+
+            Vector3d position = vessel.GetWorldPos3D();
+            Vector3d up = (position - vessel.mainBody.position).normalized;
+            Vector3d north = Vector3d.Exclude(up, vessel.mainBody.transform.up).normalized;
+            if (north.sqrMagnitude <= 0.0) north = vessel.north;
+            Vector3d east = Vector3d.Cross(up, north).normalized;
+            Vector3d direction = inertialDirection.normalized;
+            Vector3d horizontal = Vector3d.Exclude(up, direction);
+
+            double pitchDeg = Math.Asin(Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)) * 180.0 / Math.PI;
+            double headingDeg = 0.0;
+
+            if (horizontal.sqrMagnitude > 0.0)
+            {
+                Vector3d horizontalDirection = horizontal.normalized;
+                double northComponent = Vector3d.Dot(horizontalDirection, north);
+                double eastComponent = Vector3d.Dot(horizontalDirection, east);
+                headingDeg = Math.Atan2(eastComponent, northComponent) * 180.0 / Math.PI;
+                if (headingDeg < 0.0) headingDeg += 360.0;
+            }
+
+            Drive(vessel, state, headingDeg, pitchDeg, rollDeg);
+        }
+
         private Vector3d UpdatePredictionPI(
             Vessel vessel,
             QuaternionD requestedAttitude,

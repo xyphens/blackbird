@@ -2,7 +2,7 @@
 
 namespace Blackbird.Models
 {
-    // todo: fill out standard gravity m/s for all bodies in stock/RSS
+    // TODO(Body model): populate optional stock/RSS reference constants for diagnostics and offline tests.
     internal class BodyReferences
     {
     }

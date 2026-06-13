@@ -71,6 +71,15 @@
     <Compile Include="Guidance\LaunchGuidanceState.cs" />
     <Compile Include="Guidance\LaunchHandler.cs" />
     <Compile Include="Guidance\PIDTranslation.cs" />
+    <Compile Include="Guidance\PsgBodyModel.cs" />
+    <Compile Include="Guidance\PsgInitialState.cs" />
+    <Compile Include="Guidance\PsgOptimizationResult.cs" />
+    <Compile Include="Guidance\PsgOptimizer.cs" />
+    <Compile Include="Guidance\PsgPhase.cs" />
+    <Compile Include="Guidance\PsgProblem.cs" />
+    <Compile Include="Guidance\PsgSolution.cs" />
+    <Compile Include="Guidance\PsgSnapshotLogger.cs" />
+    <Compile Include="Guidance\PsgTarget.cs" />
     <Compile Include="Guidance\PoweredAscentGuidance.cs" />
     <Compile Include="Helpers\Helpers.cs" />
     <Compile Include="Models\AscentGuidanceInfo.cs" />
@@ -104,6 +113,7 @@
     <Compile Include="Trajectory\PrincipiaTrajectoryProvider.cs" />
     <Compile Include="Trajectory\StockTrajectoryProvider.cs" />
     <Compile Include="Trajectory\TrajectoryProvider.cs" />
+    <Compile Include="ThirdParty\alglib\*.cs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Properties\Resources.resx">

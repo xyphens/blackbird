@@ -34,6 +34,7 @@ namespace Blackbird.Guidance
             double profileThrottle = GetProfileThrottle(vesselState, ascentProfile);
             PoweredGuidanceCommand poweredCommand = _poweredGuidance.GetCommand(
                 vesselState,
+                plan,
                 ascentProfile,
                 profilePitch,
                 profileHeading,
@@ -83,6 +84,8 @@ namespace Blackbird.Guidance
                 CommandPitchDeg = commandPitch,
                 CommandHeadingDeg = commandHeading,
                 CommandThrottle = commandThrottle,
+                HasInertialDirection = poweredCommand != null && poweredCommand.HasInertialDirection,
+                InertialDirection = poweredCommand != null ? poweredCommand.InertialDirection : Vector3d.zero,
 
                 CurrentPitchDeg = currentPitch,
                 CurrentHeadingDeg = currentHeading,
@@ -101,6 +104,15 @@ namespace Blackbird.Guidance
                 GuidanceVelocityToGoMetersPerSecond = poweredCommand != null
                     ? poweredCommand.VelocityToGoMetersPerSecond
                     : double.NaN,
+                GuidanceConstraintViolation = poweredCommand != null
+                    ? poweredCommand.SolutionConstraintViolation
+                    : double.NaN,
+                GuidanceOptimizerIterations = poweredCommand != null
+                    ? poweredCommand.OptimizerIterations
+                    : 0,
+                GuidanceOptimizerStatus = poweredCommand != null
+                    ? poweredCommand.OptimizerStatus
+                    : string.Empty,
 
                 PredictedApoapsisAlt = ascentProfile != null ? ascentProfile.PredictedApoapsisAlt : double.NaN,
                 PredictedPeriapsisAlt = ascentProfile != null ? ascentProfile.PredictedPeriapsisAlt : double.NaN,

@@ -38,7 +38,8 @@ namespace Blackbird.Planning
 
             PlanetScale.PlanetScaleEnum scale = PlanetScale.GetScale();
 
-            // todo: use more precise starting values
+            // TODO(Planner): replace coarse altitude stepping with a direct period/phase solve
+            // plus a fine search around the best phasing altitude.
             double initOffset = scale == PlanetScale.PlanetScaleEnum.RSS ? 145000.0 : 70000.0;
             double offsetScalar = scale == PlanetScale.PlanetScaleEnum.RSS ? 5000.0 : 1500.0;
 

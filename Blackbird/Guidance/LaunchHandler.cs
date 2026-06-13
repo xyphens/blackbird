@@ -8,7 +8,7 @@ namespace Blackbird.Guidance
 {
     public sealed class LaunchHandler
     {
-        // TODO: lower the lead time or make it an input
+        // TODO(UI): expose warp-stop lead time as a setting once launch-window flow stabilizes.
         private const double WarpStopLeadTimeSeconds = 10.0;
         private double _targetUt;
 
@@ -173,7 +173,7 @@ namespace Blackbird.Guidance
             GuidanceMode = gMode;
         }
 
-        // todo: possibly make the floor an input
+        // TODO(UI): make the manual/autopilot pitch floor configurable after PSG terminal authority is settled.
         private static double ClampAutopilotPitchCommand(double pitchDeg)
         {
             return Math.Max(-30.0, Math.Min(90.0, pitchDeg));
@@ -248,16 +248,39 @@ namespace Blackbird.Guidance
             if (State != LaunchGuidanceState.GuidingAscent) return;
             if (GuidanceMode == GuidanceMode.None || GuidanceInfo == null) return;
 
-
-            // todo: add input handling for roll stabilization
-            _attitudeControl.Drive(vessel, state, GuidanceInfo.CommandHeadingDeg, GuidanceInfo.CommandPitchDeg, 0.0);
-
-            if (GuidanceMode == GuidanceMode.Autopilot)
+            if (IsPrelaunchHold(vessel))
             {
-                float throttle = (float)(Math.Max(0.0, Math.Min(1.0, GuidanceInfo.CommandThrottle)));
-                state.mainThrottle = throttle;
-                Debug.Log($"Setting throttle: {state.mainThrottle}");
+                _attitudeControl.Reset();
+                state.pitch = state.pitchTrim;
+                state.yaw = state.yawTrim;
+                state.roll = state.rollTrim;
+                ApplyAutopilotThrottle(state);
+                return;
             }
+
+            // TODO(Attitude): add roll-stabilization input after the guidance state machine matches PSG terminal/staging modes.
+            if (GuidanceInfo.HasInertialDirection)
+            {
+                _attitudeControl.DriveInertial(vessel, state, GuidanceInfo.InertialDirection, 0.0);
+            }
+            else
+            {
+                _attitudeControl.Drive(vessel, state, GuidanceInfo.CommandHeadingDeg, GuidanceInfo.CommandPitchDeg, 0.0);
+            }
+
+            ApplyAutopilotThrottle(state);
+        }
+
+        private void ApplyAutopilotThrottle(FlightCtrlState state)
+        {
+            if (GuidanceMode != GuidanceMode.Autopilot) return;
+
+            state.mainThrottle = (float)(Math.Max(0.0, Math.Min(1.0, GuidanceInfo.CommandThrottle)));
+        }
+
+        private static bool IsPrelaunchHold(Vessel vessel)
+        {
+            return vessel != null && vessel.situation == Vessel.Situations.PRELAUNCH;
         }
     }
 }

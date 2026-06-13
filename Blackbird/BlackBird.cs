@@ -578,6 +578,9 @@ namespace Blackbird
             GUILayout.Label($"PE Error: {guidanceInfo.PeriapsisErrorMeters / 1000.0:F1} km");
             GUILayout.Label($"Guidance vgo: {guidanceInfo.GuidanceVelocityToGoMetersPerSecond:F0} m/s");
             GUILayout.Label($"Guidance tgo: {guidanceInfo.GuidanceTimeToGoSeconds:F1} s");
+            GUILayout.Label($"PSG: {guidanceInfo.GuidanceOptimizerStatus}");
+            GUILayout.Label($"PSG iters: {guidanceInfo.GuidanceOptimizerIterations}");
+            GUILayout.Label($"PSG violation: {guidanceInfo.GuidanceConstraintViolation:E2}");
             GUILayout.Label($"Predicted AP: {guidanceInfo.PredictedApoapsisAlt / 1000.0:F0} km");
             GUILayout.Label($"Predicted PE: {guidanceInfo.PredictedPeriapsisAlt / 1000.0:F0} km");
             GUILayout.Label($"Remaining dV: {guidanceInfo.EstimatedRemainingDeltaV:F0} m/s");

@@ -11,7 +11,8 @@ namespace Blackbird.Planning
 {
     public static class LaunchPlanner
     {
-        public static double GetPhasingOffset(Vessel active) // fixme: remove param
+        // TODO(Planner): remove active parameter once callers no longer rely on the old signature.
+        public static double GetPhasingOffset(Vessel active)
         {
             return PlanetScale.GetScale() == PlanetScale.PlanetScaleEnum.RSS ? 50000 : 30000;
         }
@@ -38,6 +39,7 @@ namespace Blackbird.Planning
             {
                 ActiveOrbit = activeOrbit,
                 TargetOrbit = targetOrbit,
+                TargetOrbitNormal = TrajectoryProvider.GetOrbitNormal(target),
                 LaunchWindow = lwi,
                 PhaseAngleDeg = phaseAngleDeg,
                 DistanceMeters = Vector3d.Distance(TrajectoryProvider.GetPosition(active), TrajectoryProvider.GetPosition(target)),

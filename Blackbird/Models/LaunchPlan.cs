@@ -1,5 +1,6 @@
 using Blackbird.Enums;
 using Blackbird.Guidance;
+using UnityEngine;
 
 namespace Blackbird.Models
 {
@@ -12,6 +13,7 @@ namespace Blackbird.Models
 
         public OrbitInfo ActiveOrbit { get; set; }
         public OrbitInfo TargetOrbit { get; set; }
+        public Vector3d TargetOrbitNormal { get; set; }
         // expose launch window stats (valid window, time away, etc)
         public LaunchWindowInfo LaunchWindow { get; set; }
 
