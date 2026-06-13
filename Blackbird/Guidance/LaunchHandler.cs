@@ -26,6 +26,7 @@ namespace Blackbird.Guidance
         {
             CurrentPlan = plan;
             State = plan != null ? LaunchGuidanceState.PlanReady : LaunchGuidanceState.Idle;
+            _ascentGuidance.Reset();
         }
         private readonly AscentGuidance _ascentGuidance = new AscentGuidance();
         public AscentGuidanceInfo GuidanceInfo { get; private set; }
@@ -48,7 +49,10 @@ namespace Blackbird.Guidance
         {
             if (State != LaunchGuidanceState.PlanAccepted || CurrentPlan == null) return;
 
-            double timeToLaunch = CurrentPlan.LaunchWindow.TimeToPlaneCrossingSeconds;
+            LaunchCandidate selectedCandidate = CurrentPlan.SelectedCandidate;
+            if (selectedCandidate == null || !selectedCandidate.IsValid) return;
+
+            double timeToLaunch = selectedCandidate.SecondsUntilLaunch;
 
             // already close to launch time
             if (timeToLaunch <= WarpStopLeadTimeSeconds)
@@ -57,9 +61,7 @@ namespace Blackbird.Guidance
                 return;
             }
 
-            _targetUt =
-                Planetarium.GetUniversalTime() +
-                timeToLaunch;
+            _targetUt = selectedCandidate.LaunchUt;
 
             State = LaunchGuidanceState.WarpingToLaunch;
         }
@@ -90,7 +92,9 @@ namespace Blackbird.Guidance
         {
             if (State != LaunchGuidanceState.AwaitingLaunch &&
                 State != LaunchGuidanceState.PlanAccepted) return;
+            if (CurrentPlan == null || CurrentPlan.SelectedCandidate == null || !CurrentPlan.SelectedCandidate.IsValid) return;
 
+            _ascentGuidance.Reset();
             State = LaunchGuidanceState.GuidingAscent;
         }
 
@@ -130,6 +134,17 @@ namespace Blackbird.Guidance
         {
             if (GuidanceMode == gMode) return;
 
+            if (vessel != null && CurrentPlan != null)
+            {
+                GuidanceInfo =
+                    _ascentGuidance.GetGuidance(
+                        vessel,
+                        CurrentPlan,
+                        ManualPitchCommandDeg,
+                        ManualHeadingCommandDeg,
+                        gMode);
+            }
+
             if (vessel == null || GuidanceInfo == null)
             {
                 GuidanceMode = gMode;
@@ -148,11 +163,12 @@ namespace Blackbird.Guidance
 
             if (gMode == GuidanceMode.Autopilot)
             {
-                ManualPitchCommandDeg = ClampAutopilotPitchCommand(GuidanceInfo.TargetPitchDeg);
-                ManualHeadingCommandDeg = OrbitMath.NormalizeDegrees(GuidanceInfo.TargetAzimuthDeg);
+                ManualPitchCommandDeg = ClampAutopilotPitchCommand(GuidanceInfo.ProfilePitchDeg);
+                ManualHeadingCommandDeg = OrbitMath.NormalizeDegrees(GuidanceInfo.ProfileHeadingDeg);
             }
 
             if (GuidanceMode != gMode) _attitudeControl.Reset();
+            if (GuidanceMode != gMode) _ascentGuidance.Reset();
 
             GuidanceMode = gMode;
         }
@@ -177,6 +193,8 @@ namespace Blackbird.Guidance
             {
                 State = LaunchGuidanceState.Idle;
             }
+
+            _ascentGuidance.Reset();
         }
 
         public void Reset()
@@ -185,6 +203,7 @@ namespace Blackbird.Guidance
             CurrentPlan = null;
             _targetUt = 0.0;
             State = LaunchGuidanceState.Idle;
+            _ascentGuidance.Reset();
         }
     
         // pitch command
@@ -229,8 +248,16 @@ namespace Blackbird.Guidance
             if (State != LaunchGuidanceState.GuidingAscent) return;
             if (GuidanceMode == GuidanceMode.None || GuidanceInfo == null) return;
 
+
             // todo: add input handling for roll stabilization
             _attitudeControl.Drive(vessel, state, GuidanceInfo.CommandHeadingDeg, GuidanceInfo.CommandPitchDeg, 0.0);
+
+            if (GuidanceMode == GuidanceMode.Autopilot)
+            {
+                float throttle = (float)(Math.Max(0.0, Math.Min(1.0, GuidanceInfo.CommandThrottle)));
+                state.mainThrottle = throttle;
+                Debug.Log($"Setting throttle: {state.mainThrottle}");
+            }
         }
     }
 }

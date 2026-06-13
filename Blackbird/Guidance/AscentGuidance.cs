@@ -1,142 +1,184 @@
-﻿using System;
+using System;
+using Blackbird.Enums;
 using Blackbird.Mathematics;
 using Blackbird.Models;
-using Blackbird.Enums;
+using Blackbird.Trajectory;
 
 namespace Blackbird.Guidance
 {
     public sealed class AscentGuidance
     {
-        // TODO: hard-coded for now, but will be user inputs eventually
-        private static readonly PitchProfilePoint[] RssPitchProfile =
-        {
-            new PitchProfilePoint { AltitudeMeters = 0.0, PitchDegrees = 90.0 },
-            new PitchProfilePoint { AltitudeMeters = 1000.0, PitchDegrees = 85.0 },
-            new PitchProfilePoint { AltitudeMeters = 5000.0, PitchDegrees = 70.0 },
-            new PitchProfilePoint { AltitudeMeters = 10000.0, PitchDegrees = 55.0 },
-            new PitchProfilePoint { AltitudeMeters = 20000.0, PitchDegrees = 35.0 },
-            new PitchProfilePoint { AltitudeMeters = 35000.0, PitchDegrees = 20.0 },
-            new PitchProfilePoint { AltitudeMeters = 50000.0, PitchDegrees = 10.0 },
-            new PitchProfilePoint { AltitudeMeters = 70000.0, PitchDegrees = 0.0 }
-        };
+        private readonly PoweredAscentGuidance _poweredGuidance = new PoweredAscentGuidance();
 
-         private static readonly PitchProfilePoint[] StockPitchProfile =
-         {
-            new PitchProfilePoint { AltitudeMeters = 0.0, PitchDegrees = 90.0 },
-            new PitchProfilePoint { AltitudeMeters = 500.0, PitchDegrees = 85.0 },
-            new PitchProfilePoint { AltitudeMeters = 1500.0, PitchDegrees = 75.0 },
-            new PitchProfilePoint { AltitudeMeters = 5000.0, PitchDegrees = 55.0 },
-            new PitchProfilePoint { AltitudeMeters = 10000.0, PitchDegrees = 35.0 },
-            new PitchProfilePoint { AltitudeMeters = 20000.0, PitchDegrees = 15.0 },
-            new PitchProfilePoint { AltitudeMeters = 35000.0, PitchDegrees = 5.0 },
-            new PitchProfilePoint { AltitudeMeters = 45000.0, PitchDegrees = 0.0 }
-        };
-        public AscentGuidanceInfo GetGuidance(Vessel vessel, LaunchPlan plan, double manualPitchCommandDeg, double manualHeadingCommandDeg, GuidanceMode guidanceMode)
+        public void Reset()
+        {
+            _poweredGuidance.Reset();
+        }
+
+        // Produces current flight commands from the selected launch profile and guidance mode.
+        public AscentGuidanceInfo GetGuidance(
+            Vessel vessel,
+            LaunchPlan plan,
+            double manualPitchCommandDeg,
+            double manualHeadingCommandDeg,
+            GuidanceMode guidanceMode)
         {
             if (vessel == null || plan == null) return null;
 
-            double targetAzimuth = double.IsNaN(plan.LaunchAzimuthDeg) ? GetFallbackLaunchHeading(vessel, plan) : plan.LaunchAzimuthDeg;
-            double targetPitch = GetTargetPitchDeg(vessel.altitude, plan);
+            VesselState vesselState = VesselState.FromVessel(vessel);
+            LaunchCandidate selectedCandidate = plan.SelectedCandidate;
+            AscentProfile ascentProfile = selectedCandidate != null ? selectedCandidate.AscentProfile : plan.AscentProfile;
+
+            double profilePitch = GetProfilePitchDeg(vesselState, ascentProfile);
+            double profileHeading = GetProfileHeadingDeg(vessel, plan, vesselState, ascentProfile);
+            double profileThrottle = GetProfileThrottle(vesselState, ascentProfile);
+            PoweredGuidanceCommand poweredCommand = _poweredGuidance.GetCommand(
+                vesselState,
+                ascentProfile,
+                profilePitch,
+                profileHeading,
+                profileThrottle);
+            string guidancePhase = poweredCommand != null ? poweredCommand.Status : "Unavailable";
 
             double currentHeading = GetCurrentHeadingDeg(vessel);
             double currentPitch = GetCurrentPitchDeg(vessel);
 
-            double commandHeading = 0.0;
-            double commandPitch = 0.0;
+            double commandHeading;
+            double commandPitch;
+            double commandThrottle = vessel.ctrlState != null ? vessel.ctrlState.mainThrottle : 0.0;
 
-            // heading guidance
-            if (guidanceMode == GuidanceMode.Autopilot) {
-                commandHeading = OrbitMath.NormalizeDegrees(targetAzimuth);
-                commandPitch = Math.Max(-30.0, Math.Min(90.0, targetPitch));  // allows autopilot to dip below horizon for circ.
-            } else if (guidanceMode == GuidanceMode.Guidance)
+            if (guidanceMode == GuidanceMode.Autopilot)
+            {
+                commandHeading = poweredCommand != null
+                    ? poweredCommand.HeadingDeg
+                    : OrbitMath.NormalizeDegrees(profileHeading);
+                commandPitch = poweredCommand != null
+                    ? ClampPitchForAutopilot(poweredCommand.PitchDeg)
+                    : ClampPitchForAutopilot(profilePitch);
+                commandThrottle = poweredCommand != null ? poweredCommand.Throttle : profileThrottle;
+            }
+            else if (guidanceMode == GuidanceMode.Guidance)
             {
                 commandHeading = manualHeadingCommandDeg;
                 commandPitch = manualPitchCommandDeg;
-            } else
+            }
+            else
             {
                 commandHeading = currentHeading;
                 commandPitch = currentPitch;
             }
 
             double headingError = OrbitMath.DeltaDegrees(currentHeading, commandHeading);
-
-            double targetLan = plan.TargetOrbit.LanDeg;
-            double currentLan = vessel.orbit.LAN;
-
-            double lanError = OrbitMath.DeltaDegrees(currentLan, targetLan);
             double pitchError = OrbitMath.DeltaDegrees(currentPitch, commandPitch);
 
             return new AscentGuidanceInfo
             {
-                TargetAzimuthDeg = targetAzimuth,
-                CurrentHeadingDeg = currentHeading,
+                GuidanceMode = guidanceMode,
+                GuidancePhase = guidancePhase,
+
+                ProfilePitchDeg = profilePitch,
+                ProfileHeadingDeg = profileHeading,
+                ProfileThrottle = profileThrottle,
+
+                CommandPitchDeg = commandPitch,
                 CommandHeadingDeg = commandHeading,
+                CommandThrottle = commandThrottle,
+
+                CurrentPitchDeg = currentPitch,
+                CurrentHeadingDeg = currentHeading,
+
+                PitchErrorDeg = pitchError,
                 HeadingErrorDeg = headingError,
 
-                TargetLanDeg = targetLan,
-                CurrentLanDeg = currentLan,
-                LanErrorDeg = lanError,
-
+                PitchInstruction = "Pitch towards " + commandPitch.ToString("F1") + "°",
                 HeadingInstruction = "Head towards " + commandHeading.ToString("F1") + "°",
 
-                TargetPitchDeg = targetPitch,
-                CommandPitchDeg = commandPitch,
-                CurrentPitchDeg = currentPitch,
-                PitchErrorDeg = pitchError,
+                TargetApoapsisAlt = ascentProfile != null ? ascentProfile.TargetApoapsisAlt : plan.RecommendedApAlt,
+                TargetPeriapsisAlt = ascentProfile != null ? ascentProfile.TargetPeriapsisAlt : plan.RecommendedPeAlt,
+                ApoapsisErrorMeters = poweredCommand != null ? poweredCommand.ApoapsisErrorMeters : double.NaN,
+                PeriapsisErrorMeters = poweredCommand != null ? poweredCommand.PeriapsisErrorMeters : double.NaN,
+                GuidanceTimeToGoSeconds = poweredCommand != null ? poweredCommand.TimeToGoSeconds : double.NaN,
+                GuidanceVelocityToGoMetersPerSecond = poweredCommand != null
+                    ? poweredCommand.VelocityToGoMetersPerSecond
+                    : double.NaN,
 
-                GuidanceMode = guidanceMode,
-                PitchInstruction = "Pitch towards " + commandPitch.ToString("F1") + "°",
+                PredictedApoapsisAlt = ascentProfile != null ? ascentProfile.PredictedApoapsisAlt : double.NaN,
+                PredictedPeriapsisAlt = ascentProfile != null ? ascentProfile.PredictedPeriapsisAlt : double.NaN,
+
+                EstimatedDeltaVUsed = selectedCandidate != null ? selectedCandidate.EstimatedDeltaVUsed : double.NaN,
+                EstimatedRemainingDeltaV = selectedCandidate != null
+                    ? selectedCandidate.EstimatedRemainingDeltaV
+                    : vesselState.RemainingDeltaV,
+                EstimatedInsertionTimeSeconds = selectedCandidate != null
+                    ? selectedCandidate.EstimatedInsertionTimeSeconds
+                    : double.NaN,
+                EstimatedOrbitsToRendezvous = selectedCandidate != null
+                    ? selectedCandidate.EstimatedOrbitsToRendezvous
+                    : double.NaN,
+
+                PlaneErrorDeg = selectedCandidate != null ? selectedCandidate.PlaneErrorDeg : double.NaN,
+                PhaseErrorDeg = selectedCandidate != null ? selectedCandidate.PhaseErrorDeg : double.NaN,
+                RelativeDistanceMeters = selectedCandidate != null ? selectedCandidate.RelativeDistanceMeters : double.NaN
             };
         }
 
-        // altitude is in meters
-        private static double GetTargetPitchDeg(double altitude, LaunchPlan plan) {
-            
-            PitchProfilePoint[] profile = plan.ScaleLabel == PlanetScale.PlanetScaleEnum.RSS ? RssPitchProfile : StockPitchProfile;
-            return InterpolatePitchProfile(altitude, profile);
-        }
-
-        private static double InterpolatePitchProfile(
-            double altitudeMeters,
-            PitchProfilePoint[] profile)
+        // Reads the selected profile throttle, falling back to full thrust before insertion.
+        private static double GetProfileThrottle(VesselState vesselState, AscentProfile ascentProfile)
         {
-            if (altitudeMeters <= profile[0].AltitudeMeters)
-            {
-                return profile[0].PitchDegrees;
-            }
+            if (vesselState == null || ascentProfile == null) return 1.0;
 
-            for (int i = 0; i < profile.Length - 1; i++)
-            {
-                PitchProfilePoint a = profile[i];
-                PitchProfilePoint b = profile[i + 1];
-
-                if (altitudeMeters >= a.AltitudeMeters &&
-                    altitudeMeters <= b.AltitudeMeters)
-                {
-                    double t =
-                        (altitudeMeters - a.AltitudeMeters) /
-                        (b.AltitudeMeters - a.AltitudeMeters);
-
-                    return a.PitchDegrees +
-                        ((b.PitchDegrees - a.PitchDegrees) * t);
-                }
-            }
-
-            return profile[profile.Length - 1].PitchDegrees;
+            double throttle = ascentProfile.GetThrottleAtAltitude(vesselState.AltitudeMeters);
+            return OrbitMath.IsFinite(throttle) ? OrbitMath.Clamp(throttle, 0.0, 1.0) : 1.0;
         }
-        private static double GetCurrentPitchDeg(Vessel vessel) { 
-            Vector3d up = (vessel.GetWorldPos3D() - vessel.mainBody.position).normalized;
+
+        // Reads the selected profile pitch, falling back to vertical hold if no profile is available.
+        private static double GetProfilePitchDeg(VesselState vesselState, AscentProfile ascentProfile)
+        {
+            if (vesselState == null || ascentProfile == null) return 90.0;
+
+            double pitch = ascentProfile.GetPitchAtAltitude(vesselState.AltitudeMeters);
+            return OrbitMath.IsFinite(pitch) ? pitch : 90.0;
+        }
+
+        // Reads the selected profile heading, falling back to launch azimuth/current heading if needed.
+        private static double GetProfileHeadingDeg(
+            Vessel vessel,
+            LaunchPlan plan,
+            VesselState vesselState,
+            AscentProfile ascentProfile)
+        {
+            if (vesselState != null && ascentProfile != null)
+            {
+                double heading = ascentProfile.GetHeadingAtAltitude(vesselState.AltitudeMeters);
+                if (OrbitMath.IsFinite(heading)) return heading;
+            }
+
+            return double.IsNaN(plan.LaunchAzimuthDeg)
+                ? GetFallbackLaunchHeading(vessel, plan)
+                : plan.LaunchAzimuthDeg;
+        }
+
+        // Keeps autopilot pitch commands within the range the attitude controller can sensibly track.
+        private static double ClampPitchForAutopilot(double pitchDeg)
+        {
+            return Math.Max(-30.0, Math.Min(90.0, pitchDeg));
+        }
+
+        // Computes vessel pitch relative to the local horizon.
+        private static double GetCurrentPitchDeg(Vessel vessel)
+        {
+            Vector3d up = (TrajectoryProvider.GetPosition(vessel) - vessel.mainBody.position).normalized;
             Vector3d forward = vessel.ReferenceTransform.up.normalized;
             double angleFromUp = Vector3d.Angle(forward, up);
             return 90.0 - angleFromUp;
         }
 
-        private static double GetFallbackLaunchHeading(Vessel vessel, LaunchPlan plan) { 
-            if (vessel == null || plan == null) return double.NaN;
+        // Computes a usable launch heading when the selected plan does not provide one.
+        private static double GetFallbackLaunchHeading(Vessel vessel, LaunchPlan plan)
+        {
+            if (vessel == null || plan == null || plan.TargetOrbit == null) return double.NaN;
 
-            double inclination = plan.TargetOrbit.InclinationDeg;
-            double latitude = vessel.latitude;
-            double azimuth = OrbitMath.GetLaunchAzimuth(inclination, latitude);
+            double azimuth = OrbitMath.GetLaunchAzimuth(plan.TargetOrbit.InclinationDeg, vessel.latitude);
 
             if (!double.IsNaN(azimuth)) return azimuth;
 
@@ -147,9 +189,10 @@ namespace Blackbird.Guidance
             return 90.0;
         }
 
+        // Computes current vessel compass heading from local north/east axes.
         private static double GetCurrentHeadingDeg(Vessel vessel)
         {
-            Vector3d up = (vessel.GetWorldPos3D() - vessel.mainBody.position).normalized;
+            Vector3d up = (TrajectoryProvider.GetPosition(vessel) - vessel.mainBody.position).normalized;
             Vector3d north = Vector3d.Exclude(up, vessel.mainBody.transform.up).normalized;
             Vector3d east = Vector3d.Cross(up, north);
             Vector3d forward = Vector3d.Exclude(up, vessel.ReferenceTransform.up).normalized;

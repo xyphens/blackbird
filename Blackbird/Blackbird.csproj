@@ -34,6 +34,9 @@
     <Reference Include="Assembly-CSharp">
       <HintPath>D:\SteamLibrary\steamapps\common\Kerbal Space Program\KSP_x64_Data\Managed\Assembly-CSharp.dll</HintPath>
     </Reference>
+    <Reference Include="ksp_plugin_adapter">
+      <HintPath>D:\SteamLibrary\steamapps\common\Kerbal Space Program\GameData\Principia\ksp_plugin_adapter.dll</HintPath>
+    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="System.Xml.Linq" />
@@ -62,23 +65,28 @@
     <Compile Include="Guidance\AscentGuidance.cs" />
     <Compile Include="Guidance\AscentProfile.cs" />
     <Compile Include="Enums\AssistantMode.cs" />
+    <Compile Include="Enums\PoweredGuidancePhase.cs" />
     <Compile Include="Guidance\AttitudeControl.cs" />
     <Compile Include="Guidance\DirectionTracking.cs" />
     <Compile Include="Guidance\LaunchGuidanceState.cs" />
     <Compile Include="Guidance\LaunchHandler.cs" />
     <Compile Include="Guidance\PIDTranslation.cs" />
+    <Compile Include="Guidance\PoweredAscentGuidance.cs" />
     <Compile Include="Helpers\Helpers.cs" />
     <Compile Include="Models\AscentGuidanceInfo.cs" />
-    <Compile Include="Models\AscentPrediction.cs" />
     <Compile Include="Models\BodyReferences.cs" />
     <Compile Include="Models\InsertionTarget.cs" />
+    <Compile Include="Models\LaunchCandidate.cs" />
     <Compile Include="Models\LaunchPlan.cs" />
     <Compile Include="Models\LaunchLocation.cs" />
     <Compile Include="Models\LaunchWindowInfo.cs" />
     <Compile Include="Models\PhasingOrbit.cs" />
     <Compile Include="Models\PhasingRecommendation.cs" />
     <Compile Include="Models\PitchProfilePoint.cs" />
-    <Compile Include="Planning\AscentPredictor.cs" />
+    <Compile Include="Models\PoweredStageInfo.cs" />
+    <Compile Include="Models\PoweredGuidanceCommand.cs" />
+    <Compile Include="Models\TrajectoryState.cs" />
+    <Compile Include="Models\VesselState.cs" />
     <Compile Include="Planning\PhasingRecommendationCalculator.cs" />
     <Compile Include="Models\PhasingRecommendationMode.cs" />
     <Compile Include="Planning\LaunchPlanner.cs" />
@@ -87,7 +95,21 @@
     <Compile Include="Math\OrbitMath.cs" />
     <Compile Include="Enums\PlanetScale.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Properties\Resources.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>Resources.resx</DependentUpon>
+    </Compile>
+    <Compile Include="Trajectory\ITrajectoryProvider.cs" />
+    <Compile Include="Trajectory\PrincipiaTrajectoryProvider.cs" />
+    <Compile Include="Trajectory\StockTrajectoryProvider.cs" />
+    <Compile Include="Trajectory\TrajectoryProvider.cs" />
   </ItemGroup>
-  <ItemGroup />
+  <ItemGroup>
+    <EmbeddedResource Include="Properties\Resources.resx">
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

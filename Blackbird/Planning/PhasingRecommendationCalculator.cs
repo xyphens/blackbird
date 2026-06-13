@@ -39,9 +39,8 @@ namespace Blackbird.Planning
             PlanetScale.PlanetScaleEnum scale = PlanetScale.GetScale();
 
             // todo: use more precise starting values
-            double initOffset = scale == PlanetScale.PlanetScaleEnum.RSS ? 150000.0 : 70000.0;
+            double initOffset = scale == PlanetScale.PlanetScaleEnum.RSS ? 145000.0 : 70000.0;
             double offsetScalar = scale == PlanetScale.PlanetScaleEnum.RSS ? 5000.0 : 1500.0;
-            double candidateThreshold = scale == PlanetScale.PlanetScaleEnum.RSS ? 145000.0 : 70000.0;
 
             for (double offset = -initOffset; offset <= initOffset; offset += offsetScalar)
             {
@@ -49,7 +48,7 @@ namespace Blackbird.Planning
 
                 double candidateAltitude = targetAltitude + offset;
 
-                if (candidateAltitude < candidateThreshold) continue;
+                if (candidateAltitude < initOffset) continue;
 
                 PhasingRecommendation candidate = EvaluateCircularCandidate(
                                                         body, 

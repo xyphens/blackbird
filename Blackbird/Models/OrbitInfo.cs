@@ -16,6 +16,8 @@ namespace Blackbird.Models
 
         public double SemiMajorAxis { get; set; }
         public double PeriodSeconds { get; set; }
+        public double TimeToApoapsisSeconds { get; set; }
+        public double TimeToPeriapsisSeconds { get; set; }
 
         public double Eccentricity { get; set; }
 
@@ -34,6 +36,8 @@ namespace Blackbird.Models
                 PeriapsisAlt = orbit.PeA,
                 SemiMajorAxis = orbit.semiMajorAxis,
                 PeriodSeconds = orbit.period,
+                TimeToApoapsisSeconds = orbit.timeToAp,
+                TimeToPeriapsisSeconds = orbit.timeToPe,
                 Eccentricity = orbit.eccentricity
             };
         }

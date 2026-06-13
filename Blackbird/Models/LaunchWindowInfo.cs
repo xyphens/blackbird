@@ -81,7 +81,7 @@ namespace Blackbird.Models
                     targetOrbit.InclinationDeg,
                     launchLocation.LatitudeDeg);
 
-            double descAzimuth = double.IsNaN(ascAzimuth) ? double.NaN : OrbitMath.NormalizeDegrees(360.0 - ascAzimuth);
+            double descAzimuth = double.IsNaN(ascAzimuth) ? double.NaN : OrbitMath.NormalizeDegrees(180.0 - ascAzimuth);
 
             bool useAscending = timeToAsc <= timeToDesc;
 

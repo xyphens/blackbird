@@ -70,3 +70,8 @@ C:\Users\David\source\repos\Blackbird\Blackbird\obj\Release\Blackbird.csproj.Cor
 C:\Users\David\source\repos\Blackbird\Blackbird\obj\Release\Blackbird.csproj.Up2Date
 C:\Users\David\source\repos\Blackbird\Blackbird\obj\Release\Blackbird.dll
 C:\Users\David\source\repos\Blackbird\Blackbird\obj\Release\Blackbird.pdb
+C:\Users\David\source\repos\Blackbird\Blackbird\bin\Release\ksp_plugin_adapter.dll
+C:\Users\David\source\repos\Blackbird\Blackbird\bin\Release\ksp_plugin_adapter.pdb
+C:\Users\David\source\repos\Blackbird\Blackbird\bin\Release\ksp_plugin_adapter.dll.config
+C:\Users\David\source\repos\Blackbird\Blackbird\obj\Release\Blackbird.Properties.Resources.resources
+C:\Users\David\source\repos\Blackbird\Blackbird\obj\Release\Blackbird.csproj.GenerateResource.cache

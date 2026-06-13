@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using Blackbird.Trajectory;
 using UnityEngine;
 
 namespace Blackbird.Models
@@ -49,14 +50,14 @@ namespace Blackbird.Models
             };
         }
 
-        // create an insertion target from a target's orbit
+        // Create an insertion target from the active trajectory provider's target orbit summary.
         public static InsertionTarget FromTargetOrbit(Vessel target)
         {
-            if (target == null || target.orbit == null) return null;
+            if (target == null) return null;
             return new InsertionTarget
             {
-                ApoapsisAlt = target.orbit.ApA,
-                PeriapsisAlt = target.orbit.PeA
+                ApoapsisAlt = TrajectoryProvider.GetApoapsisAlt(target),
+                PeriapsisAlt = TrajectoryProvider.GetPeriapsisAlt(target)
             };
         }
     }
