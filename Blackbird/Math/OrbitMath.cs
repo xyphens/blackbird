@@ -177,8 +177,8 @@ namespace Blackbird.Mathematics
             Vector3d east = Vector3d.Cross(up, north).normalized;
             Vector3d normal = orbitNormal.normalized;
             Vector3d direction = ascending
-                ? Vector3d.Cross(up, normal)
-                : Vector3d.Cross(normal, up);
+                ? Vector3d.Cross(normal, up)
+                : Vector3d.Cross(up, normal);
 
             direction = Vector3d.Exclude(up, direction).normalized;
             if (direction.sqrMagnitude <= 0.0) return double.NaN;

@@ -69,7 +69,7 @@ namespace Blackbird.Guidance
                 return CreateUnavailable(profilePitchDeg, profileHeadingDeg, profileThrottle);
             }
 
-            Vector3d initialThrustDirection = GetSurfaceCommandDirection(vesselState, profileHeadingDeg, profilePitchDeg);
+            Vector3d initialThrustDirection = GetCurrentThrustDirection(vesselState, profileHeadingDeg, profilePitchDeg);
             UpdatePsgSolution(vesselState, launchPlan, ascentProfile, initialThrustDirection);
             PinSolutionToGroundedTime(vesselState);
 
@@ -99,9 +99,8 @@ namespace Blackbird.Guidance
             if (_solution != null && _solution.IsValid)
             {
                 bool isExpired = IsSolutionExpired(vesselState.UniversalTime);
-                Vector3d relativePosition = vesselState.Position - vesselState.Body.position;
 
-                if (IsPsgTerminalComplete(vesselState, relativePosition))
+                if (IsPsgTerminalComplete(vesselState))
                 {
                     _complete = true;
                     _phase = PoweredGuidancePhase.Complete;
@@ -140,21 +139,8 @@ namespace Blackbird.Guidance
                 {
                     if (!isExpired)
                     {
-                        if (timeToGo <= TerminalGuidanceLockSeconds)
-                        {
-                            if (!_hasLockedTerminalDirection)
-                            {
-                                _lockedTerminalDirection = guidance.InertialDirection.normalized;
-                                _hasLockedTerminalDirection = true;
-                            }
-
-                            guidance.InertialDirection = _lockedTerminalDirection;
-                        }
-                        else
-                        {
-                            _hasLockedTerminalDirection = false;
-                            _lockedTerminalDirection = Vector3d.zero;
-                        }
+                        _lockedTerminalDirection = guidance.InertialDirection.normalized;
+                        _hasLockedTerminalDirection = true;
                     }
                     else if (_hasLockedTerminalDirection)
                     {
@@ -303,34 +289,26 @@ namespace Blackbird.Guidance
                 : SolveIntervalSeconds;
         }
 
-        private bool IsPsgTerminalComplete(VesselState vesselState, Vector3d relativePosition)
+        private bool IsPsgTerminalComplete(VesselState vesselState)
         {
             if (_solution == null || !_solution.IsValid) return false;
+            if (IsSolutionExpired(vesselState.UniversalTime)) return false;
 
-            Vector3d terminalPosition;
-            Vector3d terminalVelocity;
-            PredictNextPhysicsState(vesselState, relativePosition, out terminalPosition, out terminalVelocity);
+            if (vesselState.UniversalTime >= _solution.FinalUniversalTime) return true;
 
-            return _solution.TerminalGuidanceSatisfied(terminalPosition, terminalVelocity, vesselState.UniversalTime);
+            Vector3d relativePosition = vesselState.Position - vesselState.Body.position;
+            return _solution.TerminalGuidanceSatisfied(relativePosition, vesselState.OrbitalVelocity);
         }
 
-        private static void PredictNextPhysicsState(
-            VesselState vesselState,
-            Vector3d relativePosition,
-            out Vector3d predictedPosition,
-            out Vector3d predictedVelocity)
+        private Vector3d GetCurrentThrustDirection(VesselState vesselState, double profileHeadingDeg, double profilePitchDeg)
         {
-            predictedPosition = relativePosition;
-            predictedVelocity = vesselState != null ? vesselState.OrbitalVelocity : Vector3d.zero;
-
-            Vessel vessel = vesselState != null ? vesselState.Vessel : null;
-            if (vessel == null) return;
-
-            double dt = Math.Max(0.0, TimeWarp.fixedDeltaTime);
-            Vector3d acceleration = vessel.acceleration_immediate;
-
-            predictedPosition = relativePosition + vesselState.OrbitalVelocity * dt + 0.5 * acceleration * dt * dt;
-            predictedVelocity = vesselState.OrbitalVelocity + acceleration * dt;
+            if (_solution != null && _solution.IsValid)
+            {
+                PsgGuidanceVector guidance = _solution.InertialGuidance(vesselState.UniversalTime);
+                if (guidance != null && guidance.IsValid && guidance.InertialDirection.sqrMagnitude > 0.0)
+                    return guidance.InertialDirection.normalized;
+            }
+            return GetSurfaceCommandDirection(vesselState, profileHeadingDeg, profilePitchDeg);
         }
 
         private static Vector3d GetSurfaceCommandDirection(

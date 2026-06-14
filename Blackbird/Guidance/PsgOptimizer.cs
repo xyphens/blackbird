@@ -970,6 +970,13 @@ namespace Blackbird.Guidance
                 PhaseLayout first = _layouts[0];
                 SetVector(bounds, first.RIndex(0), _problem.InitialRelativePositionMeters / _scale.Length);
                 SetVector(bounds, first.VIndex(0), _problem.InitialRelativeVelocityMetersPerSecond / _scale.Velocity);
+
+                if (_problem.InitialThrustDirection.sqrMagnitude > 0.0
+                    && _problem.Phases.Length > 0
+                    && !_problem.Phases[0].IsCoast)
+                {
+                    SetVector(bounds, first.UIndex(0), _problem.InitialThrustDirection.normalized);
+                }
             }
 
             private void FreezePhaseStartMasses(double[] bounds)
