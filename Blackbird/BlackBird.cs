@@ -22,7 +22,6 @@ namespace Blackbird
         private bool _showAdvancedDetails;
         private Vessel _flyByWireVessel;
 
-
         private readonly string[] _guidanceModeLabels =
         {
             "None",
@@ -49,6 +48,7 @@ namespace Blackbird
         public void Start()
         {
             Debug.Log("[BlackBird] Loaded");
+            _planner.Initialize(_launchHandler);
             GameEvents.onGUIApplicationLauncherReady.Add(AddToolbarButton);
             GameEvents.onGUIApplicationLauncherDestroyed.Add(RemoveToolbarButton);
         }
@@ -629,54 +629,54 @@ namespace Blackbird
             GUILayout.Label($"Plane Error: {guidanceInfo.PlaneErrorDeg:F2}°");
         }
 
-        private void ShowPhasingRecommendation(
-            PhasingRecommendation recommendation,
-            LaunchPlan launchPlan)
-        {
-            GUILayout.Space(10);
-            GUILayout.Label("[Phasing Recommendation]");
+        //private void ShowPhasingRecommendation(
+        //    PhasingRecommendation recommendation,
+        //    LaunchPlan launchPlan)
+        //{
+        //    GUILayout.Space(10);
+        //    GUILayout.Label("[Phasing Recommendation]");
 
-            if (recommendation == null)
-            {
-                GUILayout.Label("Unavailable");
-                return;
-            }
+        //    if (recommendation == null)
+        //    {
+        //        GUILayout.Label("Unavailable");
+        //        return;
+        //    }
 
-            if (!recommendation.HasRecommendation)
-            {
-                GUILayout.Label("Unavailable");
-                GUILayout.Label(recommendation.ReasonUnavailable);
-                return;
-            }
+        //    if (!recommendation.HasRecommendation)
+        //    {
+        //        GUILayout.Label("Unavailable");
+        //        GUILayout.Label(recommendation.ReasonUnavailable);
+        //        return;
+        //    }
 
-            GUILayout.Label($"Mode: {recommendation.Mode}");
-            GUILayout.Label($"Apoapsis: {recommendation.ApoapsisAlt / 1000.0:N0} km");
-            GUILayout.Label($"Periapsis: {recommendation.PeriapsisAlt / 1000.0:N0} km");
-            GUILayout.Label($"Rendezvous: {BlackbirdHelpers.FormatDuration(recommendation.EstimatedTimeToRendezvousSeconds)}");
-            GUILayout.Label($"Rendezvous Orbits: {recommendation.EstimatedOrbitsToRendezvous:N1}");
-        }
+        //    GUILayout.Label($"Mode: {recommendation.Mode}");
+        //    GUILayout.Label($"Apoapsis: {recommendation.ApoapsisAlt / 1000.0:N0} km");
+        //    GUILayout.Label($"Periapsis: {recommendation.PeriapsisAlt / 1000.0:N0} km");
+        //    GUILayout.Label($"Rendezvous: {BlackbirdHelpers.FormatDuration(recommendation.EstimatedTimeToRendezvousSeconds)}");
+        //    GUILayout.Label($"Rendezvous Orbits: {recommendation.EstimatedOrbitsToRendezvous:N1}");
+        //}
 
-        private void DrawLaunchRecommendation(LaunchPlan launchPlan)
-        {
-            GUILayout.Space(10);
-            GUILayout.Label("[Launch Recommendation]");
-            GUILayout.Label(
-                double.IsNaN(launchPlan.LaunchAzimuthDeg)
-                    ? "Azimuth: unavailable"
-                    : $"Azimuth: {launchPlan.LaunchAzimuthDeg:F1}°");
-            GUILayout.Label($"Apoapsis: {launchPlan.RecommendedApAlt / 1000:F0} km");
-            GUILayout.Label($"Periapsis: {launchPlan.RecommendedPeAlt / 1000:F0} km");
-        }
+        //private void DrawLaunchRecommendation(LaunchPlan launchPlan)
+        //{
+        //    GUILayout.Space(10);
+        //    GUILayout.Label("[Launch Recommendation]");
+        //    GUILayout.Label(
+        //        double.IsNaN(launchPlan.LaunchAzimuthDeg)
+        //            ? "Azimuth: unavailable"
+        //            : $"Azimuth: {launchPlan.LaunchAzimuthDeg:F1}°");
+        //    GUILayout.Label($"Apoapsis: {launchPlan.RecommendedApAlt / 1000:F0} km");
+        //    GUILayout.Label($"Periapsis: {launchPlan.RecommendedPeAlt / 1000:F0} km");
+        //}
 
-        private void DrawLaunchWindowSummary(LaunchPlan launchPlan)
-        {
-            GUILayout.Space(10);
-            GUILayout.Label("[Launch Window]");
-            GUILayout.Label($"Current Node: {launchPlan.LaunchWindow.NodeName}");
-            GUILayout.Label(
-                "Launch In: " +
-                BlackbirdHelpers.FormatDuration(GetDisplayedLaunchCountdownSeconds(launchPlan)));
-        }
+        //private void DrawLaunchWindowSummary(LaunchPlan launchPlan)
+        //{
+        //    GUILayout.Space(10);
+        //    GUILayout.Label("[Launch Window]");
+        //    GUILayout.Label($"Current Node: {launchPlan.LaunchWindow.NodeName}");
+        //    GUILayout.Label(
+        //        "Launch In: " +
+        //        BlackbirdHelpers.FormatDuration(GetDisplayedLaunchCountdownSeconds(launchPlan)));
+        //}
 
         // Uses live handler countdown after a plan is accepted, otherwise shows the computed window.
         private double GetDisplayedLaunchCountdownSeconds(LaunchPlan launchPlan)

@@ -195,6 +195,50 @@ namespace Blackbird.Guidance
             _ascentGuidance.Reset();
         }
 
+        public void ConstructLaunchPlan(Vessel vessel, double apoapsisAlt, double periapsisAlt, double headingDeg, double launchUt = double.NaN)
+        {
+            if (vessel == null) return;
+
+            VesselState vs = VesselState.FromVessel(vessel);
+            double lt = double.IsNaN(launchUt) ? Planetarium.GetUniversalTime() : launchUt;
+            double secondsUntilLaunch = Math.Max(0.0, lt - vs.UniversalTime);
+
+            double alt = (apoapsisAlt + periapsisAlt) * 0.5;
+            double circVel = OrbitMath.GetCircularVelocity(vessel.mainBody, alt);
+            double estimatedDv = OrbitMath.IsFinite(circVel) ? circVel : 0.0;
+            double remainingDv = vs.RemainingDeltaV - estimatedDv;
+
+            AscentProfile profile = AscentProfileSolver.Create(vs, apoapsisAlt, periapsisAlt, headingDeg, remainingDv);
+
+            LaunchCandidate candidate = new LaunchCandidate
+            {
+                IsValid = profile.IsValid,
+                ReasonUnavailable = string.Empty,
+                LaunchUt = lt,
+                SecondsUntilLaunch = secondsUntilLaunch,
+                InsertionApoapsisAlt = apoapsisAlt,
+                InsertionPeriapsisAlt = periapsisAlt,
+                LaunchHeadingDeg = headingDeg,
+                EstimatedInsertionTimeSeconds = profile.EstimatedTimeToInsertionSeconds,
+                EstimatedOrbitsToRendezvous = double.PositiveInfinity,
+                EstimatedDeltaVUsed = estimatedDv,
+                EstimatedRemainingDeltaV = remainingDv,
+                PlaneErrorDeg = double.NaN,
+                PhaseErrorDeg = double.NaN,
+                RelativeDistanceMeters = double.NaN,
+                Score = 0.0,
+                AscentProfile = profile,
+                PhasingRecommendation = null
+            };
+
+            SetPlan(new LaunchPlan
+            {
+                InsertionTarget = new InsertionTarget { ApoapsisAlt = apoapsisAlt, PeriapsisAlt = periapsisAlt, Heading = headingDeg },
+                Candidates = new[] { candidate },
+                SelectedCandidateIndex = 0
+            });
+        }
+
         public void Reset()
         {
             TimeWarp.SetRate(0, true);
