@@ -57,6 +57,7 @@ namespace Blackbird.Planning
             };
         }
 
+
         // Replaces inclination-only launch azimuths with headings derived from the target orbit plane.
         private static void ApplyPlaneDerivedHeadings(Vessel active, Vessel target, LaunchWindowInfo launchWindow)
         {

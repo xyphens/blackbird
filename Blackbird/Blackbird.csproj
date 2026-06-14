@@ -51,6 +51,9 @@
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>D:\SteamLibrary\steamapps\common\Kerbal Space Program\KSP_x64_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
     </Reference>
+    <Reference Include="UnityEngine.AnimationModule">
+      <HintPath>D:\SteamLibrary\steamapps\common\Kerbal Space Program\KSP_x64_Data\Managed\UnityEngine.AnimationModule.dll</HintPath>
+    </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
       <HintPath>D:\SteamLibrary\steamapps\common\Kerbal Space Program\KSP_x64_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
     </Reference>
@@ -71,16 +74,6 @@
     <Compile Include="Guidance\LaunchGuidanceState.cs" />
     <Compile Include="Guidance\LaunchHandler.cs" />
     <Compile Include="Guidance\PIDTranslation.cs" />
-    <Compile Include="Guidance\PsgBodyModel.cs" />
-    <Compile Include="Guidance\PsgInitialState.cs" />
-    <Compile Include="Guidance\PsgOptimizationResult.cs" />
-    <Compile Include="Guidance\PsgOptimizer.cs" />
-    <Compile Include="Guidance\PsgPhase.cs" />
-    <Compile Include="Guidance\PsgProblem.cs" />
-    <Compile Include="Guidance\PsgSolution.cs" />
-    <Compile Include="Guidance\PsgSnapshotLogger.cs" />
-    <Compile Include="Guidance\PsgTarget.cs" />
-    <Compile Include="Guidance\PsgTerminal.cs" />
     <Compile Include="Guidance\PoweredAscentGuidance.cs" />
     <Compile Include="Helpers\Helpers.cs" />
     <Compile Include="Models\AscentGuidanceInfo.cs" />
@@ -101,6 +94,8 @@
     <Compile Include="Models\PhasingRecommendationMode.cs" />
     <Compile Include="Planning\LaunchPlanner.cs" />
     <Compile Include="BlackBird.cs" />
+    <Compile Include="Modules\GuidanceComputer.cs" />
+    <Compile Include="Modules\Planner.cs" />
     <Compile Include="Models\OrbitInfo.cs" />
     <Compile Include="Math\OrbitMath.cs" />
     <Compile Include="Enums\PlanetScale.cs" />
@@ -110,6 +105,16 @@
       <DesignTime>True</DesignTime>
       <DependentUpon>Resources.resx</DependentUpon>
     </Compile>
+    <Compile Include="PSG\Models\PsgBodyModel.cs" />
+    <Compile Include="PSG\PsgInitialState.cs" />
+    <Compile Include="PSG\Models\PsgOptimizationResult.cs" />
+    <Compile Include="PSG\PsgOptimizer.cs" />
+    <Compile Include="PSG\PsgPhase.cs" />
+    <Compile Include="PSG\PsgProblem.cs" />
+    <Compile Include="PSG\PsgSnapshotLogger.cs" />
+    <Compile Include="PSG\PsgSolution.cs" />
+    <Compile Include="PSG\PsgTarget.cs" />
+    <Compile Include="PSG\PsgTerminal.cs" />
     <Compile Include="Trajectory\ITrajectoryProvider.cs" />
     <Compile Include="Trajectory\PrincipiaTrajectoryProvider.cs" />
     <Compile Include="Trajectory\StockTrajectoryProvider.cs" />
@@ -123,4 +128,8 @@
     </EmbeddedResource>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <PropertyGroup>
+    <PostBuildEvent>copy "$(TargetPath)" "D:\SteamLibrary\steamapps\common\Kerbal Space Program\GameData\BlackBird\$(TargetFileName)"
+xcopy "$(SolutionDir)GameData\Blackbird\Textures" "D:\SteamLibrary\steamapps\common\Kerbal Space Program\GameData\BlackBird\Textures\" /E /I /Y</PostBuildEvent>
+  </PropertyGroup>
 </Project>

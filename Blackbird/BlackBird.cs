@@ -7,6 +7,8 @@ using Blackbird.Planning;
 using Blackbird.Guidance;
 using Blackbird.Enums;
 using Blackbird.Trajectory;
+using KSP.UI.Screens;
+using Blackbird.Modules;
 
 namespace Blackbird
 {
@@ -32,10 +34,23 @@ namespace Blackbird
         private readonly LaunchHandler _launchHandler = new LaunchHandler();
         private LaunchPlan _currentPlan;
         private LaunchPlan _selectedPlan;
+        private LaunchPlan _cachedLaunchPlan;
+        private double _lastPlanComputeTime = double.NegativeInfinity;
+        private const double PlanRecomputeIntervalSeconds = 2.0;
+
+        private bool _showWindow = false;
+        private ApplicationLauncherButton _toolbarButton;
+        private Texture2D _toolbarIcon;
+        private bool _toolbarIconOwned;
+
+        private readonly Planner _planner = new Planner();
+        private readonly GuidanceComputer _guidanceComputer = new GuidanceComputer();
 
         public void Start()
         {
             Debug.Log("[BlackBird] Loaded");
+            GameEvents.onGUIApplicationLauncherReady.Add(AddToolbarButton);
+            GameEvents.onGUIApplicationLauncherDestroyed.Add(RemoveToolbarButton);
         }
 
         public void Update()
@@ -67,29 +82,41 @@ namespace Blackbird
                 _flyByWireVessel.OnFlyByWire -= OnFlyByWire;
                 _flyByWireVessel = null;
             }
+            GameEvents.onGUIApplicationLauncherReady.Remove(AddToolbarButton);
+            GameEvents.onGUIApplicationLauncherDestroyed.Remove(RemoveToolbarButton);
+            RemoveToolbarButton();
         }
 
         private void OnGUI()
         {
+            if (!_showWindow) return;
             _windowRect = GUILayout.Window(
                 12345,
                 _windowRect,
-                DrawWindow,
+                DrawMainMenu,
                 "Rendezvous Assistant");
+            _planner.Draw();
+            _guidanceComputer.Draw();
         }
 
-        private void DrawWindow(int windowId)
+        private void DrawMainMenu(int _windowId)
         {
-            Vessel vessel = FlightGlobals.ActiveVessel;
-            if (vessel == null)
+            if (GUI.Button(new Rect(_windowRect.width - 22, 2, 18, 18), "x"))
             {
-                return;
+                _showWindow = false;
+                _toolbarButton?.SetFalse(false);
             }
 
-            GUILayout.Label($"Active: {vessel.vesselName}");
-            GUILayout.Label($"Altitude: {vessel.altitude:N0} m");
-            GUILayout.Label($"Apoapsis: {FormatKm(TrajectoryProvider.GetApoapsisAlt(vessel))} km");
-            GUILayout.Label($"Periapsis: {FormatKm(TrajectoryProvider.GetPeriapsisAlt(vessel))} km");
+            Vessel vessel = FlightGlobals.ActiveVessel;
+            if (vessel == null) return;
+
+            DrawModuleToggles();
+            GUILayout.Space(5);
+
+            GUILayout.Label($"Active: {vessel.vesselName}"); // remove
+            GUILayout.Label($"Altitude: {vessel.altitude:N0} m"); // guidance computer
+            GUILayout.Label($"Apoapsis: {FormatKm(TrajectoryProvider.GetApoapsisAlt(vessel))} km"); // guidance computer
+            GUILayout.Label($"Periapsis: {FormatKm(TrajectoryProvider.GetPeriapsisAlt(vessel))} km"); // guidance computer
 
             ITargetable target = FlightGlobals.fetch.VesselTarget;
 
@@ -104,15 +131,21 @@ namespace Blackbird
                 }
 
                 InsertionTarget insertionTarget = DrawInsertionTargetInputs(targetVessel);
-                LaunchLocation launchLocation = LaunchLocation.FromVessel(vessel);
-                LaunchPlan launchPlan = LaunchPlanner.Create(
-                    vessel,
-                    targetVessel,
-                    insertionTarget,
-                    launchLocation);
 
-                SyncLaunchPlan(launchPlan);
-                LaunchPlan displayPlan = GetDisplayPlan(launchPlan);
+                bool planActive =
+                    _launchHandler.State == LaunchGuidanceState.Idle ||
+                    _launchHandler.State == LaunchGuidanceState.PlanReady;
+
+                double now = Planetarium.GetUniversalTime();
+                if (planActive && (now - _lastPlanComputeTime >= PlanRecomputeIntervalSeconds || _cachedLaunchPlan == null))
+                {
+                    _lastPlanComputeTime = now;
+                    LaunchLocation launchLocation = LaunchLocation.FromVessel(vessel);
+                    _cachedLaunchPlan = LaunchPlanner.Create(vessel, targetVessel, insertionTarget, launchLocation);
+                    SyncLaunchPlan(_cachedLaunchPlan);
+                }
+
+                LaunchPlan displayPlan = GetDisplayPlan(_cachedLaunchPlan);
 
                 DrawPlanSelector();
                 DrawLaunchPlanSummary(displayPlan, targetVessel);
@@ -141,6 +174,14 @@ namespace Blackbird
             }
 
             GUI.DragWindow();
+        }
+
+        private void DrawModuleToggles()
+        {
+            GUILayout.BeginHorizontal();
+            _planner.IsVisible = GUILayout.Toggle(_planner.IsVisible, "Planner");
+            _guidanceComputer.IsVisible = GUILayout.Toggle(_guidanceComputer.IsVisible, "Guidance Computer");
+            GUILayout.EndHorizontal();
         }
 
         private void SyncLaunchPlan(LaunchPlan launchPlan)
@@ -731,6 +772,57 @@ namespace Blackbird
             GUILayout.Label($"Time to Asc: {launchPlan.LaunchWindow.TimeToAscendingNodeSeconds:F0}s");
             GUILayout.Label($"Time to Desc: {launchPlan.LaunchWindow.TimeToDescendingNodeSeconds:F0}s");
             GUILayout.Label($"Selected Offset: {launchPlan.LaunchWindow.PlaneOffsetDeg:F2}°");
+        }
+
+        private void AddToolbarButton()
+        {
+            if (_toolbarButton != null) return;
+
+            Texture2D dbIcon = GameDatabase.Instance.GetTexture("BlackBird/Textures/toolbar_icon", false);
+            if (dbIcon != null)
+            {
+                _toolbarIcon = dbIcon;
+                _toolbarIconOwned = false;
+            }
+            else
+            {
+                _toolbarIcon = CreateToolbarIcon();
+                _toolbarIconOwned = true;
+            }
+
+            _toolbarButton = ApplicationLauncher.Instance.AddModApplication(
+                () => _showWindow = true,
+                () => _showWindow = false,
+                null, null, null, null,
+                ApplicationLauncher.AppScenes.FLIGHT,
+                _toolbarIcon);
+        }
+
+        private void RemoveToolbarButton()
+        {
+            if (_toolbarButton != null)
+            {
+                if (ApplicationLauncher.Instance != null)
+                    ApplicationLauncher.Instance.RemoveModApplication(_toolbarButton);
+                _toolbarButton = null;
+            }
+            if (_toolbarIconOwned && _toolbarIcon != null)
+            {
+                Destroy(_toolbarIcon);
+            }
+            _toolbarIcon = null;
+            _toolbarIconOwned = false;
+        }
+
+        private static Texture2D CreateToolbarIcon()
+        {
+            var tex = new Texture2D(38, 38, TextureFormat.RGBA32, false);
+            var pixels = new Color[38 * 38];
+            for (int i = 0; i < pixels.Length; i++)
+                pixels[i] = new Color(0.18f, 0.48f, 0.87f, 1f);
+            tex.SetPixels(pixels);
+            tex.Apply();
+            return tex;
         }
     }
 }

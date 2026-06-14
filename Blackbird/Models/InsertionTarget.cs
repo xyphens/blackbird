@@ -12,6 +12,7 @@ namespace Blackbird.Models
     {
         public double ApoapsisAlt { get; set; }
         public double PeriapsisAlt { get; set; }
+        public double Heading { get; set; }
 
         public double SemiMajorAlt
         {
@@ -30,12 +31,13 @@ namespace Blackbird.Models
         }
 
         // create a basic circular orbit
-        public static InsertionTarget Circular(double altitude)
+        public static InsertionTarget Circular(double altitude, double heading)
         {
             return new InsertionTarget
             {
                 ApoapsisAlt = altitude,
-                PeriapsisAlt = altitude
+                PeriapsisAlt = altitude,
+                Heading = heading
             };
         }
 
@@ -46,7 +48,8 @@ namespace Blackbird.Models
             return new InsertionTarget
             {
                 ApoapsisAlt = orbit.ApoapsisAlt,
-                PeriapsisAlt = orbit.PeriapsisAlt
+                PeriapsisAlt = orbit.PeriapsisAlt,
+                Heading = 0 // placeholder
             };
         }
 
@@ -57,7 +60,8 @@ namespace Blackbird.Models
             return new InsertionTarget
             {
                 ApoapsisAlt = TrajectoryProvider.GetApoapsisAlt(target),
-                PeriapsisAlt = TrajectoryProvider.GetPeriapsisAlt(target)
+                PeriapsisAlt = TrajectoryProvider.GetPeriapsisAlt(target),
+                Heading = 0 // placeholder
             };
         }
     }
