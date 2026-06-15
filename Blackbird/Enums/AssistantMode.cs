@@ -15,7 +15,7 @@ namespace Blackbird.Enums
     public enum GuidanceMode
     {
         None,
-        Guidance,
+        Manual,
         Autopilot
     }
 }

@@ -5,6 +5,7 @@ using Blackbird.Planning;
 using Blackbird.Trajectory;
 using UnityEngine;
 using static alglib;
+using static UnityEngine.GraphicsBuffer;
 
 namespace Blackbird.Modules
 {
@@ -26,10 +27,7 @@ namespace Blackbird.Modules
 
         public bool IsVisible { get; set; }
 
-        public void Initialize(LaunchHandler handler)
-        {
-            _launchHandler = handler;
-        }
+        public void Initialize(LaunchHandler handler) => _launchHandler = handler;
 
         public void Toggle() => IsVisible = !IsVisible;
 
@@ -45,11 +43,12 @@ namespace Blackbird.Modules
             Vessel vessel = FlightGlobals.ActiveVessel;
             if (vessel == null) { GUI.DragWindow(); return; }
 
-            // -- TARGET SECTION --
+            Vessel targetVessel = null;
             ITargetable target = FlightGlobals.fetch.VesselTarget;
-            if (target is Vessel targetVessel &&
-                !ReferenceEquals(vessel, targetVessel) &&
-                vessel.id != targetVessel.id)
+
+            if (target != null) targetVessel = (Vessel) target;
+
+            if (targetVessel != null && !ReferenceEquals(vessel, targetVessel) && vessel.id != targetVessel.id)
             {
                 GUILayout.Label($"Target: {targetVessel.vesselName}");
 
@@ -106,13 +105,12 @@ namespace Blackbird.Modules
 
             GUILayout.Space(5);
 
-            bool canCommit = _launchHandler != null &&
-                (_launchHandler.State == LaunchGuidanceState.Idle || _launchHandler.State == LaunchGuidanceState.PlanReady);
+            bool canCommit = _launchHandler != null && (_launchHandler.State == LaunchGuidanceState.Idle || _launchHandler.State == LaunchGuidanceState.PlanReady);
 
 
             GUI.enabled = canCommit;
-            if (GUILayout.Button("Accept Plan"))
-                CommitPlanInputs(vessel);
+
+            if (GUILayout.Button("Accept Plan")) CommitPlanInputs(vessel, targetVessel);
             GUI.enabled = true;
 
             GUI.DragWindow();
@@ -189,14 +187,14 @@ namespace Blackbird.Modules
             _launchTimeText = BlackbirdHelpers.FormatDuration(c.SecondsUntilLaunch);
         }
 
-        private void CommitPlanInputs(Vessel vessel)
+        private void CommitPlanInputs(Vessel vessel, Vessel targetVessel)
         {
             if (_launchHandler == null || vessel == null) return;
 
             InsertionTarget it = CreateInsertionTargetFromUi();
             double launchUt = _selectedPlan?.SelectedCandidate?.LaunchUt ?? double.NaN;
 
-            _launchHandler.ConstructLaunchPlan(vessel, it.ApoapsisAlt, it.PeriapsisAlt, it.Heading, launchUt);
+            _launchHandler.ConstructLaunchPlan(vessel, targetVessel, it.ApoapsisAlt, it.PeriapsisAlt, it.Heading, launchUt);
             _launchHandler.AcceptPlan();
         }
 

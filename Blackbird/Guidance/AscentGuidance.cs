@@ -21,6 +21,8 @@ namespace Blackbird.Guidance
             LaunchPlan plan,
             double manualPitchCommandDeg,
             double manualHeadingCommandDeg,
+            double manualThrottleCommand,
+            double manualRollCommand,
             GuidanceMode guidanceMode)
         {
             if (vessel == null || plan == null) return null;
@@ -43,10 +45,13 @@ namespace Blackbird.Guidance
 
             double currentHeading = GetCurrentHeadingDeg(vessel);
             double currentPitch = GetCurrentPitchDeg(vessel);
+            double currentThrottle = vessel.ctrlState != null ? vessel.ctrlState.mainThrottle : 0.0;
+            double currentRoll = vessel.ctrlState != null ? vessel.ctrlState.roll : 0.0; 
 
             double commandHeading;
             double commandPitch;
-            double commandThrottle = vessel.ctrlState != null ? vessel.ctrlState.mainThrottle : 0.0;
+            double commandThrottle;
+            double commandRoll;
 
             if (guidanceMode == GuidanceMode.Autopilot)
             {
@@ -57,16 +62,21 @@ namespace Blackbird.Guidance
                     ? ClampPitchForAutopilot(poweredCommand.PitchDeg)
                     : ClampPitchForAutopilot(profilePitch);
                 commandThrottle = poweredCommand != null ? poweredCommand.Throttle : profileThrottle;
+                commandRoll = 0.0; // todo: i dont think autopilot would need roll?
             }
-            else if (guidanceMode == GuidanceMode.Guidance)
+            else if (guidanceMode == GuidanceMode.Manual)
             {
                 commandHeading = manualHeadingCommandDeg;
                 commandPitch = manualPitchCommandDeg;
+                commandThrottle = manualThrottleCommand;
+                commandRoll = manualRollCommand;
             }
             else
             {
                 commandHeading = currentHeading;
                 commandPitch = currentPitch;
+                commandThrottle = currentThrottle;
+                commandRoll = currentRoll;
             }
 
             double headingError = OrbitMath.DeltaDegrees(currentHeading, commandHeading);
@@ -84,6 +94,7 @@ namespace Blackbird.Guidance
                 CommandPitchDeg = commandPitch,
                 CommandHeadingDeg = commandHeading,
                 CommandThrottle = commandThrottle,
+                CommandRoll = commandRoll,
                 HasInertialDirection = poweredCommand != null && poweredCommand.HasInertialDirection,
                 InertialDirection = poweredCommand != null ? poweredCommand.InertialDirection : Vector3d.zero,
 
@@ -92,9 +103,6 @@ namespace Blackbird.Guidance
 
                 PitchErrorDeg = pitchError,
                 HeadingErrorDeg = headingError,
-
-                PitchInstruction = "Pitch towards " + commandPitch.ToString("F1") + "°",
-                HeadingInstruction = "Head towards " + commandHeading.ToString("F1") + "°",
 
                 TargetApoapsisAlt = ascentProfile != null ? ascentProfile.TargetApoapsisAlt : plan.RecommendedApAlt,
                 TargetPeriapsisAlt = ascentProfile != null ? ascentProfile.TargetPeriapsisAlt : plan.RecommendedPeAlt,

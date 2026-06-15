@@ -11,6 +11,7 @@ namespace Blackbird.Planning
 {
     public static class LaunchPlanner
     {
+        // fixme: is this accurate?
         public static double GetPhasingOffset(Vessel active)
         {
             return PlanetScale.GetScale() == PlanetScale.PlanetScaleEnum.RSS ? 50000 : 30000;

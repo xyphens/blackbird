@@ -14,5 +14,11 @@ namespace Blackbird.Helpers
 
             return $"{hours:D2}:{minutes:D2}:{secs:D2}";
         }
+
+        public static string FormatThrottle(double throttlePercent)
+        {
+            if (double.IsNaN(throttlePercent) || double.IsInfinity(throttlePercent)) return "N/A";
+            return throttlePercent <= 0.0 ? "cutoff" : (throttlePercent * 100).ToString("F0") + "%";
+        }
     }
 }
