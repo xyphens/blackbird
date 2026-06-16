@@ -1,10 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Blackbird.Trajectory;
-using UnityEngine;
+﻿using Blackbird.Trajectory;
 
 namespace Blackbird.Models
 {

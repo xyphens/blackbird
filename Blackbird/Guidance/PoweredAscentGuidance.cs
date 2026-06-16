@@ -4,10 +4,12 @@ using Blackbird.Enums;
 using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Psg;
+using Blackbird.Logging;
 using UnityEngine;
 
 namespace Blackbird.Guidance
 {
+    [System.Serializable]
     public sealed class PoweredAscentGuidance
     {
         private const double SolveIntervalSeconds = 5.0;
@@ -20,6 +22,7 @@ namespace Blackbird.Guidance
         private const double TerminalOverrunGraceSeconds = 30.0;
 
         private readonly PsgOptimizer _optimizer = new PsgOptimizer();
+        private readonly BlackbirdLog bbLogger = new BlackbirdLog(LogContext.Psg);
         private PoweredGuidancePhase _phase = PoweredGuidancePhase.Unavailable;
         private bool _complete;
         private Task<PsgOptimizationResult> _solveTask;
@@ -204,7 +207,7 @@ namespace Blackbird.Guidance
                 _optimizerStatus = result != null ? result.Status : "PSG solver returned no result";
                 _optimizerIterations = result != null ? result.Iterations : 0;
                 _constraintViolation = result != null ? result.ConstraintViolation : double.NaN;
-                PsgSnapshotLogger.WriteResult(completedProblem, result);
+                bbLogger.Write(completedProblem, result);
 
                 if (result != null && result.Success && result.Solution != null)
                 {
@@ -247,7 +250,7 @@ namespace Blackbird.Guidance
             _lastSolveRequestUt = vesselState.UniversalTime;
             _optimizerStatus = "PSG solving";
             _pendingProblem = problem;
-            PsgSnapshotLogger.Write(problem, "solve requested");
+            bbLogger.Write(problem);
             _solveTask = Task.Run(() => _optimizer.Solve(problem, warmStart));
         }
 

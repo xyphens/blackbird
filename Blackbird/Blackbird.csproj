@@ -57,6 +57,9 @@
     <Reference Include="UnityEngine.IMGUIModule">
       <HintPath>D:\SteamLibrary\steamapps\common\Kerbal Space Program\KSP_x64_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
     </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule">
+      <HintPath>D:\SteamLibrary\steamapps\common\Kerbal Space Program\KSP_x64_Data\Managed\UnityEngine.JSONSerializeModule.dll</HintPath>
+    </Reference>
     <Reference Include="UnityEngine.InputLegacyModule">
       <HintPath>D:\SteamLibrary\steamapps\common\Kerbal Space Program\KSP_x64_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath>
     </Reference>
@@ -77,6 +80,7 @@
     <Compile Include="Guidance\PIDTranslation.cs" />
     <Compile Include="Guidance\PoweredAscentGuidance.cs" />
     <Compile Include="Helpers\Helpers.cs" />
+    <Compile Include="Logging\Log.cs" />
     <Compile Include="Models\AscentGuidanceInfo.cs" />
     <Compile Include="Models\InsertionTarget.cs" />
     <Compile Include="Models\LaunchCandidate.cs" />
@@ -98,6 +102,8 @@
     <Compile Include="Modules\Planner.cs" />
     <Compile Include="Models\OrbitInfo.cs" />
     <Compile Include="Math\OrbitMath.cs" />
+    <Compile Include="Rendezvous\LvlhFrame.cs" />
+    <Compile Include="Rendezvous\RelativeState.cs" />
     <Compile Include="Enums\PlanetScale.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Properties\Resources.Designer.cs">
@@ -111,7 +117,6 @@
     <Compile Include="PSG\PsgOptimizer.cs" />
     <Compile Include="PSG\PsgPhase.cs" />
     <Compile Include="PSG\PsgProblem.cs" />
-    <Compile Include="PSG\PsgSnapshotLogger.cs" />
     <Compile Include="PSG\PsgSolution.cs" />
     <Compile Include="PSG\PsgTarget.cs" />
     <Compile Include="PSG\PsgTerminal.cs" />
