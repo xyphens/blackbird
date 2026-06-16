@@ -25,6 +25,7 @@ namespace Blackbird.RendezvousHarness
             CheckKeplerPropagation();
             CheckLambertRecoversCircularOrbit();
             CheckLambertRecoversEllipticalOrbit();
+            CheckInterceptCoplanarCatchup();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -173,6 +174,53 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("solver success", res.Success);
             AssertVecRel("departure V1", res.V1, v1True, 1e-5);
             AssertVecRel("arrival V2", res.V2, v2True, 1e-5);
+        }
+
+        // Coplanar catch-up: chaser and target share a circular orbit with the target 15 degrees
+        // ahead. The planner must find a feasible, sane-ΔV intercept whose transfer actually reaches
+        // the target (closest approach ~0), within the iteration/time budget. Target prediction is the
+        // pure two-body propagator, so the conic transfer lands exactly on the predicted point.
+        private static void CheckInterceptCoplanarCatchup()
+        {
+            Console.WriteLine("Case 6: coplanar catch-up intercept (Lambert sweep)");
+
+            double R = KerbinRadius + 250000.0;
+            double vc = Math.Sqrt(KerbinMu / R);
+            double period = CircularPeriod(R);
+
+            Vector3d chaserPos = new Vector3d(R, 0.0, 0.0);
+            Vector3d chaserVel = new Vector3d(0.0, vc, 0.0);
+
+            double lead = 15.0 * Math.PI / 180.0;   // target ahead along-track
+            Vector3d targetPos0 = new Vector3d(R * Math.Cos(lead), R * Math.Sin(lead), 0.0);
+            Vector3d targetVel0 = new Vector3d(-vc * Math.Sin(lead), vc * Math.Cos(lead), 0.0);
+
+            // Target prediction = pure two-body propagation from its t0 state (ignition UT = 0).
+            Func<double, Vector3d> targetAt = ut =>
+            {
+                TwoBody.Propagate(targetPos0, targetVel0, KerbinMu, ut, out Vector3d rt, out _);
+                return rt;
+            };
+
+            InterceptSolution sol = InterceptSolver.Solve(
+                chaserPos, chaserVel, KerbinMu, new Vector3d(0, 0, 1), 0.0, targetAt,
+                tofMin: period * 0.1, tofMax: period * 0.9, arrivalSamples: 60,
+                prograde: true, budgetMilliseconds: 50.0);
+
+            AssertTrue("intercept success", sol.Success);
+            AssertTrue("status Ok", sol.Status == InterceptStatus.Ok);
+            AssertTrue("dV positive", sol.DeltaVMagnitude > 0.0);
+            AssertTrue("dV sane (<1500)", sol.DeltaVMagnitude < 1500.0);
+            AssertTrue("CA near zero (<1 m)", sol.PredictedClosestApproach < 1.0);
+
+            // Independent check: fly the planned transfer and confirm it lands on the target.
+            TwoBody.Propagate(chaserPos, sol.TransferDepartureVelocity, KerbinMu, sol.TimeOfFlight,
+                              out Vector3d landed, out _);
+            AssertVecRel("transfer lands on target", landed, targetAt(sol.ArrivalUt), 1e-6);
+
+            Console.WriteLine(string.Format(
+                "    chose tof={0:F1}s dV={1:F2} m/s CA={2:E2} m samples={3}",
+                sol.TimeOfFlight, sol.DeltaVMagnitude, sol.PredictedClosestApproach, sol.SamplesEvaluated));
         }
 
         private static double CircularPeriod(double radius)
