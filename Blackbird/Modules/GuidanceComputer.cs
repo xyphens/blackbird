@@ -4,7 +4,6 @@ using Blackbird.Guidance;
 using Blackbird.Helpers;
 using Blackbird.Models;
 using UnityEngine;
-using static EdyCommonTools.Spline;
 
 namespace Blackbird.Modules
 {
@@ -13,20 +12,14 @@ namespace Blackbird.Modules
         private static readonly int WindowId = "Blackbird.GuidanceComputer".GetHashCode();
         private Rect _windowRect = new Rect(560, 620, 380, 300);
         private string _pitchInputText = "";
-        private string _headingInputText = "";
-        private string _rollInputText = "";
-        private string _throttleInputText = "";
+        private string _headingInputText = "90";
+        private string _rollInputText = "90";
+        private string _throttleInputText = "0";
         private bool _showAdvancedDetails;
-        private double MinSecondsToUseWarp = 10;
-        private readonly string[] _guidanceModeLabels =
-        {
-            "None",
-            "Manual",
-            "Autopilot"
-        };
+        private const double MinSecondsToUseWarp = 10.0;
+        private readonly string[] _guidanceModeLabels = { "None", "Manual", "Autopilot" };
 
         private LaunchHandler _launchHandler;
-        private GuidanceComputer _guidanceComputer;
         public bool IsVisible { get; set; }
 
         public void Toggle() => IsVisible = !IsVisible;
@@ -38,76 +31,80 @@ namespace Blackbird.Modules
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Guidance Computer");
         }
 
-        private void DrawContents(int _windowId)
+        private void DrawContents(int _)
         {
+            // null guard before any State access
+            if (_launchHandler == null)
+            {
+                GUILayout.Label("Guidance unavailable");
+                GUI.DragWindow();
+                return;
+            }
+
             if (_launchHandler.State != LaunchGuidanceState.GuidingAscent)
             {
-                if (_launchHandler == null || _launchHandler.CurrentPlan == null)
+                if (_launchHandler.CurrentPlan == null)
                 {
-                    GUILayout.Label("Guidance unavailable");
+                    GUILayout.Label("No plan loaded");
+                    GUI.DragWindow();
                     return;
-                } else
+                }
+
+                LaunchWindowInfo lw = _launchHandler.CurrentPlan.LaunchWindow;
+                if (lw != null)
                 {
                     GUILayout.Label("[Launch Window]");
-                    GUILayout.Label($"Asc Node Lon: {_launchHandler.CurrentPlan.LaunchWindow.AscendingNodeLongitudeDeg:F2}°");
-                    GUILayout.Label($"Desc Node Lon: {_launchHandler.CurrentPlan.LaunchWindow.DescendingNodeLongitudeDeg:F2}°");
-                    GUILayout.Label($"Time to Asc: {_launchHandler.CurrentPlan.LaunchWindow.TimeToAscendingNodeSeconds:F0}s");
-                    GUILayout.Label($"Time to Desc: {_launchHandler.CurrentPlan.LaunchWindow.TimeToDescendingNodeSeconds:F0}s");
-                    GUILayout.Label($"Selected Offset: {_launchHandler.CurrentPlan.LaunchWindow.PlaneOffsetDeg:F2}°");
-
-                    double _countdownSeconds = GetDisplayedLaunchCountdownSeconds(_launchHandler.CurrentPlan);
-                    GUILayout.Label($"T- {_countdownSeconds:F0} seconds");
-
-                    GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted && _countdownSeconds >= MinSecondsToUseWarp;
-                    if (GUILayout.Button("Warp To Launch")) _launchHandler.WarpToLaunch();
-
-                    GUI.enabled =
-                        _launchHandler.State == LaunchGuidanceState.PlanAccepted ||
-                        _launchHandler.State == LaunchGuidanceState.AwaitingLaunch;
-                    if (GUILayout.Button("Start Guidance")) _launchHandler.StartGuidance();
-
-                    GUI.enabled =
-                        _launchHandler.State == LaunchGuidanceState.PlanAccepted ||
-                        _launchHandler.State == LaunchGuidanceState.WarpingToLaunch ||
-                        _launchHandler.State == LaunchGuidanceState.AwaitingLaunch ||
-                        _launchHandler.State == LaunchGuidanceState.GuidingAscent;
-                    if (GUILayout.Button("Abort Guidance")) _launchHandler.Abort();
-
-                    GUI.enabled = true;
+                    GUILayout.Label($"Asc Node Lon: {lw.AscendingNodeLongitudeDeg:F2}Â°");
+                    GUILayout.Label($"Desc Node Lon: {lw.DescendingNodeLongitudeDeg:F2}Â°");
+                    GUILayout.Label($"Time to Asc: {lw.TimeToAscendingNodeSeconds:F0}s");
+                    GUILayout.Label($"Time to Desc: {lw.TimeToDescendingNodeSeconds:F0}s");
+                    GUILayout.Label($"Selected Offset: {lw.PlaneOffsetDeg:F2}Â°");
                 }
+
+                double countdown = GetDisplayedLaunchCountdownSeconds(_launchHandler.CurrentPlan);
+                GUILayout.Label(double.IsNaN(countdown) ? "T- -- seconds" : $"T- {countdown:F0} seconds");
+
+                GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted && countdown >= MinSecondsToUseWarp;
+                if (GUILayout.Button("Warp To Launch")) _launchHandler.WarpToLaunch();
+
+                GUI.enabled =
+                    _launchHandler.State == LaunchGuidanceState.PlanAccepted ||
+                    _launchHandler.State == LaunchGuidanceState.AwaitingLaunch;
+                if (GUILayout.Button("Start Guidance")) _launchHandler.StartGuidance();
+
+                GUI.enabled =
+                    _launchHandler.State == LaunchGuidanceState.PlanAccepted ||
+                    _launchHandler.State == LaunchGuidanceState.WarpingToLaunch ||
+                    _launchHandler.State == LaunchGuidanceState.AwaitingLaunch ||
+                    _launchHandler.State == LaunchGuidanceState.GuidingAscent;
+                if (GUILayout.Button("Abort Guidance")) _launchHandler.Abort();
+
+                GUI.enabled = true;
+                GUI.DragWindow();
                 return;
             }
 
             AscentGuidanceInfo guidanceInfo = _launchHandler.GuidanceInfo;
 
-            // select Autopilot / Guidance / None
             DrawSelectGuidanceMethod();
-
             GUILayout.Space(10);
 
-            string gMode = _launchHandler.GuidanceMode == GuidanceMode.Autopilot
-                            ? "Autopilot" :
-                            _launchHandler.GuidanceMode == GuidanceMode.Manual ? "Manual"
-                            : "None";
+            string gMode = _launchHandler.GuidanceMode == GuidanceMode.Autopilot ? "Autopilot" :
+                           _launchHandler.GuidanceMode == GuidanceMode.Manual ? "Manual" : "None";
+            GUILayout.Label($"Mode: {gMode}");
+            GUILayout.Label($"Flight Status: {guidanceInfo.GuidancePhase}");
 
-            bool canAdjustGuidance = _launchHandler.GuidanceMode == GuidanceMode.Manual;
-
-            GUILayout.Label($"Guidance mode: {gMode}");
-            
-            // pitch inputs
-            if (canAdjustGuidance)
+            if (_launchHandler.GuidanceMode == GuidanceMode.Manual)
             {
                 GUILayout.Label("[Manual Control]");
                 GUILayout.Space(10);
-                // PITCH
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("[Pitch]", GUILayout.Width(70));
-                GUILayout.Label($"Command Pitch: {guidanceInfo.CommandPitchDeg:F2}°");
-                // input
-                _pitchInputText = GUILayout.TextField(_pitchInputText, GUILayout.Width(100));
-                double.TryParse(_headingInputText, out double pitch);
-                if (GUILayout.Button("Exct.")) _launchHandler.SetPitchCommand(pitch);
 
+                // PITCH
+                GUILayout.Label($"[Pitch - {guidanceInfo.CommandPitchDeg:F2}Â°]", GUILayout.Width(70));
+                GUILayout.BeginHorizontal();
+                _pitchInputText = GUILayout.TextField(_pitchInputText, GUILayout.Width(100));
+                double.TryParse(_pitchInputText, out double pitch);
+                if (GUILayout.Button("Exct.")) _launchHandler.SetPitchCommand(pitch);
                 if (GUILayout.Button(" - ")) _launchHandler.DecreaseManualPitchCommand();
                 if (GUILayout.Button(" + ")) _launchHandler.IncreaseManualPitchCommand();
                 if (GUILayout.Button("Reset")) _launchHandler.ResetPitchCommand();
@@ -116,14 +113,11 @@ namespace Blackbird.Modules
                 GUILayout.Space(5);
 
                 // HEADING
+                GUILayout.Label($"[Heading - {guidanceInfo.CommandHeadingDeg:F2}Â°]", GUILayout.Width(70));
                 GUILayout.BeginHorizontal();
-                GUILayout.Label("[Heading]", GUILayout.Width(70));
-                GUILayout.Label($"Command Heading: {guidanceInfo.CommandHeadingDeg:F2}°");
-                // input
                 _headingInputText = GUILayout.TextField(_headingInputText, GUILayout.Width(100));
                 double.TryParse(_headingInputText, out double hdg);
                 if (GUILayout.Button("Exct.")) _launchHandler.SetHeadingCommand(hdg);
-
                 if (GUILayout.Button(" - ")) _launchHandler.DecreaseManualHeadingCommand();
                 if (GUILayout.Button(" + ")) _launchHandler.IncreaseManualHeadingCommand();
                 if (GUILayout.Button("Reset")) _launchHandler.ResetHeadingCommand();
@@ -131,13 +125,10 @@ namespace Blackbird.Modules
 
                 // ROLL
                 GUILayout.BeginHorizontal();
-                GUILayout.Label("[Roll]", GUILayout.Width(70));
-                GUILayout.Label($"Command Roll: {guidanceInfo.CommandRoll:F2}°");
-                // input
+                GUILayout.Label($"[Roll - {guidanceInfo.CommandRoll:F2}Â°]", GUILayout.Width(70));
                 _rollInputText = GUILayout.TextField(_rollInputText, GUILayout.Width(100));
-                double.TryParse(_headingInputText, out double roll);
+                double.TryParse(_rollInputText, out double roll);
                 if (GUILayout.Button("Exct.")) _launchHandler.SetRollCommand(roll);
-
                 if (GUILayout.Button(" - ")) _launchHandler.DecreaseManualRollCommand();
                 if (GUILayout.Button(" + ")) _launchHandler.IncreaseManualRollCommand();
                 if (GUILayout.Button("Reset")) _launchHandler.ResetRollCommand();
@@ -147,137 +138,159 @@ namespace Blackbird.Modules
 
                 // THROTTLE
                 GUILayout.BeginHorizontal();
-                GUILayout.Label("[Throttle]", GUILayout.Width(70));
-                GUILayout.Label($"Command Throttle: {BlackbirdHelpers.FormatThrottle(guidanceInfo.CommandThrottle)}%");
-
+                GUILayout.Label($"[Throttle - {BlackbirdHelpers.FormatThrottle(guidanceInfo.CommandThrottle)}%]", GUILayout.Width(70));
                 _throttleInputText = GUILayout.TextField(_throttleInputText, GUILayout.Width(100));
                 double.TryParse(_throttleInputText, out double thtl);
-
                 if (GUILayout.Button("Exct.")) _launchHandler.SetThrottleCommand(thtl);
-
                 if (GUILayout.Button(" - ")) _launchHandler.DecreaseManualThrottleCommand();
                 if (GUILayout.Button(" + ")) _launchHandler.IncreaseManualThrottleCommand();
                 if (GUILayout.Button("Reset")) _launchHandler.ResetThrottleCommand();
                 GUILayout.EndHorizontal();
-            } else if (_launchHandler.GuidanceMode == GuidanceMode.Autopilot) { 
-                GUILayout.Label("[Flight]", GUILayout.Width(70));
-                // table headers
+            }
+            else if (_launchHandler.GuidanceMode == GuidanceMode.Autopilot)
+            {
+                GUILayout.Label("[Guidance]");
+                GUILayout.Label($"Status: {guidanceInfo.GuidanceOptimizerStatus}");
+
+                GUILayout.Space(10);
+
+                GUILayout.Label("[Flight]");
                 GUILayout.BeginHorizontal();
-                GUILayout.Label("Command", GUILayout.Width(80));
-                GUILayout.Label("Guidance", GUILayout.Width(45));
-                GUILayout.Label("Vessel", GUILayout.Width(45));
+                GUILayout.Label("", GUILayout.Width(80));
+                GUILayout.Label("Profile", GUILayout.Width(60));
+                GUILayout.Label("PSG cmd (actual)", GUILayout.Width(110));
                 GUILayout.EndHorizontal();
 
-                // pitch
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("Pitch", GUILayout.Width(80));
-                GUILayout.Label(
-                        double.IsNaN(guidanceInfo.ProfilePitchDeg)
-                            ? "Unavailable"
-                            : $"{guidanceInfo.ProfilePitchDeg:F1}°", GUILayout.Width(45));
-                GUILayout.Label(
-                        double.IsNaN(guidanceInfo.CommandPitchDeg)
-                            ? "Unavailable"
-                            : $"{guidanceInfo.CommandPitchDeg:F1}° ({guidanceInfo.CurrentPitchDeg:F1}°)", GUILayout.Width(45));
+                GUILayout.Label(double.IsNaN(guidanceInfo.ProfilePitchDeg) ? "N/A" : $"{guidanceInfo.ProfilePitchDeg:F1}Â°", GUILayout.Width(60));
+                GUILayout.Label(double.IsNaN(guidanceInfo.CommandPitchDeg) ? "N/A" : $"{guidanceInfo.CommandPitchDeg:F1}Â° ({guidanceInfo.CurrentPitchDeg:F1}Â°)", GUILayout.Width(110));
                 GUILayout.EndHorizontal();
 
-                // heading
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("Heading", GUILayout.Width(80));
-                GUILayout.Label(
-                        double.IsNaN(guidanceInfo.ProfileHeadingDeg)
-                            ? "Unavailable"
-                            : $"{guidanceInfo.ProfileHeadingDeg:F1}°", GUILayout.Width(45));
-                GUILayout.Label(
-                        double.IsNaN(guidanceInfo.CommandHeadingDeg)
-                            ? "Unavailable"
-                            : $"{guidanceInfo.CommandHeadingDeg:F1}° ({guidanceInfo.CurrentHeadingDeg:F1}°)", GUILayout.Width(45));
+                GUILayout.Label(double.IsNaN(guidanceInfo.ProfileHeadingDeg) ? "N/A" : $"{guidanceInfo.ProfileHeadingDeg:F1}Â°", GUILayout.Width(60));
+                GUILayout.Label(double.IsNaN(guidanceInfo.CommandHeadingDeg) ? "N/A" : $"{guidanceInfo.CommandHeadingDeg:F1}Â° ({guidanceInfo.CurrentHeadingDeg:F1}Â°)", GUILayout.Width(110));
                 GUILayout.EndHorizontal();
 
-                // throttle
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("Throttle", GUILayout.Width(80));
-                GUILayout.Label(
-                        double.IsNaN(guidanceInfo.ProfileThrottle)
-                            ? "Unavailable"
-                            : $"{guidanceInfo.ProfileThrottle:F0}%", GUILayout.Width(45));
-                GUILayout.Label(
-                        double.IsNaN(guidanceInfo.CommandThrottle)
-                            ? "Unavailable"
-                            : $"{guidanceInfo.CommandThrottle:F0}%", GUILayout.Width(45));
+                GUILayout.Label(double.IsNaN(guidanceInfo.ProfileThrottle) ? "N/A" : $"{guidanceInfo.ProfileThrottle * 100:F0}%", GUILayout.Width(60));
+                GUILayout.Label(double.IsNaN(guidanceInfo.CommandThrottle) ? "N/A" : $"{guidanceInfo.CommandThrottle * 100:F0}%", GUILayout.Width(110));
                 GUILayout.EndHorizontal();
 
                 GUILayout.Space(10);
 
-                GUILayout.Label("[Guidance]", GUILayout.Width(70));
-                GUILayout.Label($"Status: {guidanceInfo.GuidanceOptimizerStatus}");
-                GUILayout.Label($"Target AP: {guidanceInfo.TargetApoapsisAlt / 1000.0:F0} km");
-                GUILayout.Label($"Predicted AP: {guidanceInfo.PredictedApoapsisAlt / 1000.0:F0} km");
-                GUILayout.Label($"Target PE: {guidanceInfo.TargetPeriapsisAlt / 1000.0:F0} km");
-                GUILayout.Label($"Predicted PE: {guidanceInfo.PredictedPeriapsisAlt / 1000.0:F0} km");
-                GUILayout.Label($"AP Error: {guidanceInfo.ApoapsisErrorMeters / 1000.0:F1} km");
-                GUILayout.Label($"PE Error: {guidanceInfo.PeriapsisErrorMeters / 1000.0:F1} km");
-                GUILayout.Label(
-                    _launchHandler.CurrentPlan.PhasingOrbit.IsFasterThanTarget
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("", GUILayout.Width(80));
+                GUILayout.Label("Target", GUILayout.Width(60));
+                GUILayout.Label("Predicted", GUILayout.Width(60));
+                GUILayout.Label("Dev.", GUILayout.Width(60));
+                GUILayout.EndHorizontal();
+
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Apoapsis", GUILayout.Width(80));
+                GUILayout.Label($"{guidanceInfo.TargetApoapsisAlt / 1000.0:F0} km", GUILayout.Width(60));
+                GUILayout.Label($"{guidanceInfo.PredictedApoapsisAlt / 1000.0:F0} km", GUILayout.Width(60));
+                GUILayout.Label($"{guidanceInfo.ApoapsisErrorMeters / 1000.0:F1} km", GUILayout.Width(60));
+                GUILayout.EndHorizontal();
+
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Periapsis", GUILayout.Width(80));
+                GUILayout.Label($"{guidanceInfo.TargetPeriapsisAlt / 1000.0:F0} km", GUILayout.Width(60));
+                GUILayout.Label($"{guidanceInfo.PredictedPeriapsisAlt / 1000.0:F0} km", GUILayout.Width(60));
+                GUILayout.Label($"{guidanceInfo.PeriapsisErrorMeters / 1000.0:F1} km", GUILayout.Width(60));
+                GUILayout.EndHorizontal();
+
+                PhasingOrbit phasing = _launchHandler.CurrentPlan?.PhasingOrbit;
+                if (phasing != null)
+                {
+                    GUILayout.Label(phasing.IsFasterThanTarget
                         ? "Phasing: insertion orbit is faster than target"
                         : "Phasing: insertion orbit is slower than target");
-                    if (_launchHandler.CurrentPlan.PhasingOrbit.HasRendezvousEstimate)
+                    if (phasing.HasRendezvousEstimate)
                     {
-                        GUILayout.Label($"Rendezvous Orbits: {_launchHandler.CurrentPlan.PhasingOrbit.EstimatedOrbitsToRendezvous:F1}");
-                        GUILayout.Label(
-                            $"Rendezvous Time: {BlackbirdHelpers.FormatDuration(_launchHandler.CurrentPlan.PhasingOrbit.EstimatedTimeToRendezvousSeconds)}");
+                        GUILayout.Label($"Rendezvous Orbits: {phasing.EstimatedOrbitsToRendezvous:F1}");
+                        GUILayout.Label($"Rendezvous Time: {BlackbirdHelpers.FormatDuration(phasing.EstimatedTimeToRendezvousSeconds)}");
                     }
                     else
                     {
                         GUILayout.Label("Rendezvous Estimate: unavailable");
                     }
-                // remaining stats
-                GUILayout.Label($"Rem. Velocity: {guidanceInfo.GuidanceVelocityToGoMetersPerSecond:F0} m/s");
-                GUILayout.Label($"Rem. Time: {guidanceInfo.GuidanceTimeToGoSeconds:F1} s");
-                GUILayout.Label($"Rem. dV: {guidanceInfo.EstimatedRemainingDeltaV:F0} m/s");
-                GUILayout.Label($"Phase Error: {guidanceInfo.PhaseErrorDeg:F2}°");
-                GUILayout.Label($"Plane Error: {guidanceInfo.PlaneErrorDeg:F2}°");
+                }
+
+                GUILayout.Label($"Rmg. Velocity: {guidanceInfo.GuidanceVelocityToGoMetersPerSecond:F0} m/s");
+                GUILayout.Label($"Rmg. Time: {guidanceInfo.GuidanceTimeToGoSeconds:F1} s");
+                GUILayout.Label($"Rmg. dV: {guidanceInfo.EstimatedRemainingDeltaV:F0} m/s");
+                GUILayout.Label($"Phase Error: {guidanceInfo.PhaseErrorDeg:F2}Â°");
+                GUILayout.Label($"Plane Error: {guidanceInfo.PlaneErrorDeg:F2}Â°");
 
                 _showAdvancedDetails = GUILayout.Toggle(_showAdvancedDetails, "Show Advanced Details");
-                
-                if (_showAdvancedDetails) DrawAdvancedDetails(_launchHandler.CurrentPlan, _launchHandler.TargetVessel);
+                if (_showAdvancedDetails)
+                    DrawAdvancedDetails(_launchHandler.CurrentPlan, _launchHandler.CurrentPlan.TargetVessel);
             }
+
+            GUI.DragWindow();
         }
+
         private void DrawAdvancedDetails(LaunchPlan launchPlan, Vessel targetVessel)
         {
-            GUILayout.Space(10);
-            GUILayout.Label("[Advanced Details]");
+            if (launchPlan.ActiveOrbit == null)
+            {
+                GUILayout.Label("Orbit details unavailable for manual plans.");
+                return;
+            }
 
             GUILayout.Space(10);
             GUILayout.Label("-- Active Orbit --");
-            GUILayout.Label($"Inclination: {launchPlan.ActiveOrbit.InclinationDeg:F2}°");
-            GUILayout.Label($"LAN: {launchPlan.ActiveOrbit.LanDeg:F2}°");
+            GUILayout.Label($"Inclination: {launchPlan.ActiveOrbit.InclinationDeg:F2}Â°");
+            GUILayout.Label($"LAN: {launchPlan.ActiveOrbit.LanDeg:F2}Â°");
             GUILayout.Label($"Apoapsis: {launchPlan.ActiveOrbit.ApoapsisAlt / 1000:F0} km");
             GUILayout.Label($"Periapsis: {launchPlan.ActiveOrbit.PeriapsisAlt / 1000:F0} km");
             GUILayout.Label($"Period: {launchPlan.ActiveOrbit.PeriodSeconds:F1}s");
 
-            GUILayout.Space(10);
-            GUILayout.Label("-- Target Orbit --");
-            GUILayout.Label($"Name: {targetVessel.vesselName}");
-            GUILayout.Label($"Distance: {launchPlan.DistanceMeters / 1000:F1} km");
-            GUILayout.Label($"Inclination: {launchPlan.TargetOrbit.InclinationDeg:F2}°");
-            GUILayout.Label($"LAN: {launchPlan.TargetOrbit.LanDeg:F2}°");
-            GUILayout.Label($"Apoapsis: {launchPlan.TargetOrbit.ApoapsisAlt / 1000:F0} km");
-            GUILayout.Label($"Periapsis: {launchPlan.TargetOrbit.PeriapsisAlt / 1000:F0} km");
-            GUILayout.Label($"Phase Angle: {launchPlan.PhaseAngleDeg:F1}°");
+            if (targetVessel != null && launchPlan.TargetOrbit != null)
+            {
+                GUILayout.Space(10);
+                GUILayout.Label("-- Target Orbit --");
+                GUILayout.Label($"Name: {targetVessel.vesselName}");
+                GUILayout.Label($"Distance: {launchPlan.DistanceMeters / 1000:F1} km");
+                GUILayout.Label($"Inclination: {launchPlan.TargetOrbit.InclinationDeg:F2}Â°");
+                GUILayout.Label($"LAN: {launchPlan.TargetOrbit.LanDeg:F2}Â°");
+                GUILayout.Label($"Apoapsis: {launchPlan.TargetOrbit.ApoapsisAlt / 1000:F0} km");
+                GUILayout.Label($"Periapsis: {launchPlan.TargetOrbit.PeriapsisAlt / 1000:F0} km");
+                GUILayout.Label($"Phase Angle: {launchPlan.PhaseAngleDeg:F1}Â°");
 
-            GUILayout.Space(10);
-            GUILayout.Label("-- Orbit Comparison --");
-            GUILayout.Label($"Inc Delta: {launchPlan.RelativeInclinationDeg:F2}°");
-            GUILayout.Label($"LAN Delta: {launchPlan.RelativeLanDeg:F2}°");
-            GUILayout.Label($"Period Delta: {launchPlan.RelativePeriodSeconds:F1}s");
+                GUILayout.Space(10);
+                GUILayout.Label("-- Orbit Comparison --");
+                GUILayout.Label($"Inc Delta: {launchPlan.RelativeInclinationDeg:F2}Â°");
+                GUILayout.Label($"LAN Delta: {launchPlan.RelativeLanDeg:F2}Â°");
+                GUILayout.Label($"Period Delta: {launchPlan.RelativePeriodSeconds:F1}s");
+            }
 
-            GUILayout.Space(10);
-            GUILayout.Label("-- Phasing Period --");
-            GUILayout.Label($"Period Diff: {launchPlan.PhasingOrbit.PeriodDifferenceSeconds:F1}s");
-            GUILayout.Label($"Period Diff: {launchPlan.PhasingOrbit.PeriodDifferenceMinutes:F2} min");
-            GUILayout.Label($"Period Diff: {launchPlan.PhasingOrbit.PeriodDifferencePercent:F3}%");
-            GUILayout.Label($"Phase Gain: {launchPlan.PhasingOrbit.RelativePhaseGainDegPerOrbit:F2}°/orbit");
+            if (launchPlan.PhasingOrbit != null)
+            {
+                GUILayout.Space(10);
+                GUILayout.Label("-- Phasing Period --");
+                GUILayout.Label($"Period Diff: {launchPlan.PhasingOrbit.PeriodDifferenceSeconds:F1}s");
+                GUILayout.Label($"Period Diff: {launchPlan.PhasingOrbit.PeriodDifferenceMinutes:F2} min");
+                GUILayout.Label($"Period Diff: {launchPlan.PhasingOrbit.PeriodDifferencePercent:F3}%");
+                GUILayout.Label($"Phase Gain: {launchPlan.PhasingOrbit.RelativePhaseGainDegPerOrbit:F2}Â°/orbit");
+
+                if (launchPlan.PhasingOrbit.HasRendezvousEstimate)
+                {
+                    GUILayout.Label($"Rendezvous Orbits: {launchPlan.PhasingOrbit.EstimatedOrbitsToRendezvous:F1}");
+                    GUILayout.Label($"Rendezvous Time: {BlackbirdHelpers.FormatDuration(launchPlan.PhasingOrbit.EstimatedTimeToRendezvousSeconds)}");
+                }
+                else
+                {
+                    GUILayout.Label("Rendezvous Estimate: unavailable");
+                }
+
+                GUILayout.Label(launchPlan.PhasingOrbit.IsFasterThanTarget
+                    ? "Phasing: insertion orbit is faster than target"
+                    : "Phasing: insertion orbit is slower than target");
+            }
 
             GUILayout.Space(10);
             GUILayout.Label("-- Phasing Recommendation Details --");
@@ -285,24 +298,25 @@ namespace Blackbird.Modules
             if (recommendation != null && recommendation.HasRecommendation)
             {
                 GUILayout.Label($"Period Diff: {recommendation.PeriodDifferenceSeconds:N1}s");
-                GUILayout.Label($"Phase Gain: {recommendation.PhaseGainDegPerOrbit:N2}°/orbit");
-                GUILayout.Label(
-                    "Offset: " +
-                    ((recommendation.ApoapsisAlt - launchPlan.TargetOrbit.ApoapsisAlt) / 1000.0).ToString("N0") +
-                    " km");
+                GUILayout.Label($"Phase Gain: {recommendation.PhaseGainDegPerOrbit:N2}Â°/orbit");
+                if (launchPlan.TargetOrbit != null)
+                    GUILayout.Label("Offset: " + ((recommendation.ApoapsisAlt - launchPlan.TargetOrbit.ApoapsisAlt) / 1000.0).ToString("N0") + " km");
             }
             else
             {
                 GUILayout.Label("Unavailable");
             }
 
-            GUILayout.Space(10);
-            GUILayout.Label("-- Launch Window Details --");
-            GUILayout.Label($"Asc Node Lon: {launchPlan.LaunchWindow.AscendingNodeLongitudeDeg:F2}°");
-            GUILayout.Label($"Desc Node Lon: {launchPlan.LaunchWindow.DescendingNodeLongitudeDeg:F2}°");
-            GUILayout.Label($"Time to Asc: {launchPlan.LaunchWindow.TimeToAscendingNodeSeconds:F0}s");
-            GUILayout.Label($"Time to Desc: {launchPlan.LaunchWindow.TimeToDescendingNodeSeconds:F0}s");
-            GUILayout.Label($"Selected Offset: {launchPlan.LaunchWindow.PlaneOffsetDeg:F2}°");
+            if (launchPlan.LaunchWindow != null)
+            {
+                GUILayout.Space(10);
+                GUILayout.Label("-- Launch Window Details --");
+                GUILayout.Label($"Asc Node Lon: {launchPlan.LaunchWindow.AscendingNodeLongitudeDeg:F2}Â°");
+                GUILayout.Label($"Desc Node Lon: {launchPlan.LaunchWindow.DescendingNodeLongitudeDeg:F2}Â°");
+                GUILayout.Label($"Time to Asc: {launchPlan.LaunchWindow.TimeToAscendingNodeSeconds:F0}s");
+                GUILayout.Label($"Time to Desc: {launchPlan.LaunchWindow.TimeToDescendingNodeSeconds:F0}s");
+                GUILayout.Label($"Selected Offset: {launchPlan.LaunchWindow.PlaneOffsetDeg:F2}Â°");
+            }
         }
 
         private void DrawSelectGuidanceMethod()
@@ -315,11 +329,7 @@ namespace Blackbird.Modules
                 _launchHandler.GuidanceMode == GuidanceMode.Autopilot ? 2 :
                 0;
 
-            int newSelectedIndex =
-                GUILayout.SelectionGrid(
-                    selectedIndex,
-                    _guidanceModeLabels,
-                    3);
+            int newSelectedIndex = GUILayout.SelectionGrid(selectedIndex, _guidanceModeLabels, 3);
 
             GuidanceMode newMode =
                 newSelectedIndex == 1 ? GuidanceMode.Manual :
@@ -329,18 +339,24 @@ namespace Blackbird.Modules
             if (newMode != _launchHandler.GuidanceMode) _launchHandler.SetGuidanceMode(newMode, FlightGlobals.ActiveVessel);
         }
 
-        // Uses live handler countdown after a plan is accepted, otherwise shows the computed window.
         private double GetDisplayedLaunchCountdownSeconds(LaunchPlan launchPlan)
         {
-            if (_launchHandler.State == LaunchGuidanceState.PlanAccepted ||
-                _launchHandler.State == LaunchGuidanceState.WarpingToLaunch ||
+            if (_launchHandler.State == LaunchGuidanceState.WarpingToLaunch ||
                 _launchHandler.State == LaunchGuidanceState.AwaitingLaunch ||
                 _launchHandler.State == LaunchGuidanceState.GuidingAscent)
             {
                 return Math.Max(0.0, _launchHandler.SecondsUntilLaunch);
             }
 
-            return launchPlan != null && launchPlan.LaunchWindow != null
+            // PlanAccepted: _targetUt not set yet â€” compute live from the selected candidate's LaunchUt.
+            if (_launchHandler.State == LaunchGuidanceState.PlanAccepted)
+            {
+                LaunchCandidate selected = launchPlan?.SelectedCandidate;
+                if (selected != null && !double.IsNaN(selected.LaunchUt))
+                    return Math.Max(0.0, selected.LaunchUt - Planetarium.GetUniversalTime());
+            }
+
+            return launchPlan?.LaunchWindow != null
                 ? launchPlan.LaunchWindow.TimeToPlaneCrossingSeconds
                 : double.NaN;
         }

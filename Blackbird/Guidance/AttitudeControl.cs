@@ -258,9 +258,7 @@ namespace Blackbird.Guidance
 
             return _actuation;
         }
-        private static void ApplyActuation(
-            FlightCtrlState state,
-            Vector3d actuation)
+        private static void ApplyActuation(FlightCtrlState state, Vector3d actuation)
         {
             bool userCommandingPitch =
                 !Mathf.Approximately(state.pitch, state.pitchTrim);

@@ -9,10 +9,12 @@ namespace Blackbird.Guidance
     public sealed class AscentGuidance
     {
         private readonly PoweredAscentGuidance _poweredGuidance = new PoweredAscentGuidance();
+        private readonly ClassicAscentGuidance _classicGuidance = new ClassicAscentGuidance();
 
         public void Reset()
         {
             _poweredGuidance.Reset();
+            _classicGuidance.Reset();
         }
 
         // Produces current flight commands from the selected launch profile and guidance mode.
@@ -34,13 +36,14 @@ namespace Blackbird.Guidance
             double profilePitch = GetProfilePitchDeg(vesselState, ascentProfile);
             double profileHeading = GetProfileHeadingDeg(vessel, plan, vesselState, ascentProfile);
             double profileThrottle = GetProfileThrottle(vesselState, ascentProfile);
-            PoweredGuidanceCommand poweredCommand = _poweredGuidance.GetCommand(
-                vesselState,
-                plan,
-                ascentProfile,
-                profilePitch,
-                profileHeading,
-                profileThrottle);
+            bool useClassic = vesselState != null && vesselState.Scale == PlanetScale.PlanetScaleEnum.Stock;
+            
+            // NaN when no target orbit yet (pre-launch / no target) — classic guidance skips the
+            // inclination term for a non-finite inclination rather than dereferencing a null TargetOrbit.
+            double targetInclinationDeg = plan.TargetOrbit != null ? plan.TargetOrbit.InclinationDeg : double.NaN;
+            PoweredGuidanceCommand poweredCommand = useClassic
+                ? _classicGuidance.GetCommand(vesselState, ascentProfile, profilePitch, profileHeading, targetInclinationDeg)
+                : _poweredGuidance.GetCommand(vesselState, plan, ascentProfile, profilePitch, profileHeading, profileThrottle);
             string guidancePhase = poweredCommand != null ? poweredCommand.Status : "Unavailable";
 
             double currentHeading = GetCurrentHeadingDeg(vessel);
@@ -86,6 +89,7 @@ namespace Blackbird.Guidance
             {
                 GuidanceMode = guidanceMode,
                 GuidancePhase = guidancePhase,
+                IsGuidanceComplete = poweredCommand != null && poweredCommand.IsComplete,
 
                 ProfilePitchDeg = profilePitch,
                 ProfileHeadingDeg = profileHeading,

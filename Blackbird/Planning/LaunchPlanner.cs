@@ -37,6 +37,7 @@ namespace Blackbird.Planning
 
             return new LaunchPlan
             {
+                TargetVessel = target,
                 ActiveOrbit = activeOrbit,
                 TargetOrbit = targetOrbit,
                 TargetOrbitNormal = TrajectoryProvider.GetOrbitNormal(target),

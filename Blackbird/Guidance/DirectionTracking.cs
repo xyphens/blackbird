@@ -8,8 +8,9 @@ namespace Blackbird.Guidance
 {
     public sealed class DirectionTracking
     {
+        // todo: move to OrbitMath
         private const double Tau = 2.0 * Math.PI;
-        private const double DegToRad = Math.PI / 180.0;
+        public const double DegToRad = Math.PI / 180.0;
 
         private QuaternionD _previousRotation;
         public Vector3d TrackedRotation;

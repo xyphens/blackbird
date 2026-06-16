@@ -4,6 +4,8 @@ namespace Blackbird.Enums
     {
         VerticalAscent,
         PitchProgram,
+        Coast,
+        Circularize,
         PoweredGuidance,
         Terminal,
         Complete,

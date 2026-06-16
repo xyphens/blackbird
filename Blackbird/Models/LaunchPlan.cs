@@ -11,6 +11,7 @@ namespace Blackbird.Models
         private double _recommendedPeAlt;
         private PhasingRecommendation _phasingRecommendation;
 
+        public Vessel TargetVessel { get; set; }
         public OrbitInfo ActiveOrbit { get; set; }
         public OrbitInfo TargetOrbit { get; set; }
         public Vector3d TargetOrbitNormal { get; set; }

@@ -2,7 +2,6 @@
 using Blackbird.Enums;
 using Blackbird.Mathematics;
 using Blackbird.Models;
-using UnityEngine;
 
 namespace Blackbird.Guidance
 {
@@ -54,10 +53,10 @@ namespace Blackbird.Guidance
             LaunchCandidate selectedCandidate = CurrentPlan.SelectedCandidate;
             if (selectedCandidate == null || !selectedCandidate.IsValid) return;
 
-            double timeToLaunch = selectedCandidate.SecondsUntilLaunch;
+            double liveTimeToLaunch = selectedCandidate.LaunchUt - Planetarium.GetUniversalTime();
 
             // already close to launch time
-            if (timeToLaunch <= WarpStopLeadTimeSeconds)
+            if (liveTimeToLaunch <= WarpStopLeadTimeSeconds)
             {
                 State = LaunchGuidanceState.AwaitingLaunch;
                 return;
@@ -85,9 +84,6 @@ namespace Blackbird.Guidance
                 rateIndex = 6;
 
             TimeWarp.SetRate(rateIndex, true);
-
-            Debug.Log(
-                $"[BlackBird] Warp: T-{secondsRemaining:F1}s");
         }
 
         public void StartGuidance()
@@ -102,6 +98,13 @@ namespace Blackbird.Guidance
 
         public void Update(Vessel vessel)
         {
+            if (State == LaunchGuidanceState.Idle ||
+                State == LaunchGuidanceState.Complete ||
+                State == LaunchGuidanceState.Aborted)
+            {
+                return;
+            }
+
             // handle guidance
             if (State == LaunchGuidanceState.GuidingAscent)
             {
@@ -114,6 +117,10 @@ namespace Blackbird.Guidance
                         ManualThrottleCommand,
                         ManualRollCommand,
                         GuidanceMode);
+
+                if (GuidanceInfo != null && GuidanceInfo.IsGuidanceComplete)
+                    State = LaunchGuidanceState.Complete;
+
                 return;
             }
 
@@ -273,15 +280,26 @@ namespace Blackbird.Guidance
         public void SetRollCommand(double roll) => ManualRollCommand = roll;
 
         // throttle command
-        public void IncreaseManualThrottleCommand() => ManualThrottleCommand += 1.0;
-        public void DecreaseManualThrottleCommand() => ManualThrottleCommand -= 1.0;
+        public void IncreaseManualThrottleCommand() => ManualThrottleCommand += 0.10;
+        public void DecreaseManualThrottleCommand() => ManualThrottleCommand -= 0.10;
         public void ResetThrottleCommand() => ManualThrottleCommand = GuidanceInfo != null ? GuidanceInfo.CommandThrottle : 0.0;
         public void SetThrottleCommand(double throttle) => ManualThrottleCommand = throttle;
         public void ApplyFlightControls(FlightCtrlState state, Vessel vessel)
         {
             if (state == null) return;
-            if (State != LaunchGuidanceState.GuidingAscent) return;
-            if (GuidanceMode == GuidanceMode.None || GuidanceInfo == null) return;
+
+            if (State == LaunchGuidanceState.Complete)
+            {
+                state.mainThrottle = 0.0f;
+                return;
+            }
+
+            if (State != LaunchGuidanceState.GuidingAscent
+                || GuidanceMode == GuidanceMode.None
+                || GuidanceInfo == null)
+            {
+                return;
+            }
 
             if (IsPrelaunchHold(vessel))
             {
@@ -293,13 +311,13 @@ namespace Blackbird.Guidance
                 return;
             }
 
-            if (GuidanceInfo.HasInertialDirection)
+            if (GuidanceMode == GuidanceMode.Autopilot && GuidanceInfo.HasInertialDirection)
             {
                 _attitudeControl.DriveInertial(vessel, state, GuidanceInfo.InertialDirection, 0.0);
             }
             else
             {
-                _attitudeControl.Drive(vessel, state, GuidanceInfo.CommandHeadingDeg, GuidanceInfo.CommandPitchDeg, GuidanceInfo.CommandThrottle);
+                _attitudeControl.Drive(vessel, state, GuidanceInfo.CommandHeadingDeg, GuidanceInfo.CommandPitchDeg, GuidanceInfo.CommandRoll);
             }
 
             ApplyAutopilotThrottle(state);

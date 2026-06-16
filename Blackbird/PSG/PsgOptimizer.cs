@@ -85,7 +85,7 @@ namespace Blackbird.Psg
                 warmStart,
                 false,
                 IsFixedBurnTime(problem.Phases) ? ObjectiveType.MaximumEnergy : ObjectiveType.MinimumThrustAcceleration,
-                "PSG converged update");
+                "PSG");
         }
 
         private PsgOptimizationResult RunPass(

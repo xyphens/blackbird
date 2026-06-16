@@ -4,15 +4,12 @@ using Blackbird.Models;
 using Blackbird.Planning;
 using Blackbird.Trajectory;
 using UnityEngine;
-using static alglib;
-using static UnityEngine.GraphicsBuffer;
-
 namespace Blackbird.Modules
 {
     public sealed class Planner
     {
         private static readonly int WindowId = "Blackbird.Planner".GetHashCode();
-        private Rect _windowRect = new Rect(560, 200, 420, 500);
+        private Rect _windowRect = new Rect(560, 200, 500, 500);
 
         private string _insertionApText = "";
         private string _insertionPeText = "";
@@ -57,6 +54,7 @@ namespace Blackbird.Modules
 
                 if (!_showInsertionOptions && prevShow)
                 {
+                    // closed show insertion options, reset state
                     _cachedCandidates = null;
                     _launchTimeText = "";
                 }
@@ -64,17 +62,14 @@ namespace Blackbird.Modules
                 if (_showInsertionOptions)
                 {
                     if (_cachedCandidates == null)
+                    {
+                        // generate launch candidates
                         GenerateCachedPlan(vessel, targetVessel);
-
-                    if (_cachedCandidates != null)
+                    } else
+                    {
                         DisplayLaunchPlanCandidates();
+                    }
                 }
-            }
-            else if (_showInsertionOptions)
-            {
-                _showInsertionOptions = false;
-                _cachedCandidates = null;
-                _launchTimeText = "";
             }
 
             GUILayout.Space(10);
@@ -107,11 +102,13 @@ namespace Blackbird.Modules
 
             bool canCommit = _launchHandler != null && (_launchHandler.State == LaunchGuidanceState.Idle || _launchHandler.State == LaunchGuidanceState.PlanReady);
 
-
             GUI.enabled = canCommit;
 
+            GUILayout.BeginHorizontal();
             if (GUILayout.Button("Accept Plan")) CommitPlanInputs(vessel, targetVessel);
-            GUI.enabled = true;
+            GUI.enabled = _launchHandler != null;
+            if (GUILayout.Button("Reset Plan")) _launchHandler.Reset();
+            GUILayout.EndHorizontal();
 
             GUI.DragWindow();
         }
@@ -191,10 +188,18 @@ namespace Blackbird.Modules
         {
             if (_launchHandler == null || vessel == null) return;
 
-            InsertionTarget it = CreateInsertionTargetFromUi();
-            double launchUt = _selectedPlan?.SelectedCandidate?.LaunchUt ?? double.NaN;
+            if (_cachedCandidates != null)
+            {
+                // Full rendezvous plan already has LaunchWindow, orbits, phasing, etc. — use it directly.
+                _launchHandler.SetPlan(_cachedCandidates);
+            }
+            else
+            {
+                InsertionTarget it = CreateInsertionTargetFromUi();
+                double launchUt = _selectedPlan?.SelectedCandidate?.LaunchUt ?? double.NaN;
+                _launchHandler.ConstructLaunchPlan(vessel, targetVessel, it.ApoapsisAlt, it.PeriapsisAlt, it.Heading, launchUt);
+            }
 
-            _launchHandler.ConstructLaunchPlan(vessel, targetVessel, it.ApoapsisAlt, it.PeriapsisAlt, it.Heading, launchUt);
             _launchHandler.AcceptPlan();
         }
 
@@ -208,6 +213,7 @@ namespace Blackbird.Modules
                 Heading = 0
             };
             _cachedCandidates = LaunchPlanner.Create(vessel, targetVessel, targetIt, ll);
+            _launchTimeText = "";
         }
 
         private InsertionTarget CreateInsertionTargetFromUi()

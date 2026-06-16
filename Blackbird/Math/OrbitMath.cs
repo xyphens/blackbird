@@ -1,9 +1,35 @@
 ﻿using System;
 using Blackbird.Trajectory;
 using UnityEngine;
+using static SpaceObjectCollider;
 
 namespace Blackbird.Mathematics
 {
+    public struct M3
+    {
+        public double m00, m01, m02;
+        public double m10, m11, m12;
+        public double m20, m21, m22;
+
+        public M3(double m00, double m01, double m02,
+                  double m10, double m11, double m12,
+                  double m20, double m21, double m22)
+        {
+            this.m00 = m00; this.m01 = m01; this.m02 = m02;
+            this.m10 = m10; this.m11 = m11; this.m12 = m12;
+            this.m20 = m20; this.m21 = m21; this.m22 = m22;
+        }
+
+        // m * v: each result component is a row of m dotted with v.
+        public static Vector3d operator *(M3 m, Vector3d v)
+        {
+            return new Vector3d(
+                m.m00 * v.x + m.m01 * v.y + m.m02 * v.z,
+                m.m10 * v.x + m.m11 * v.y + m.m12 * v.z,
+                m.m20 * v.x + m.m21 * v.y + m.m22 * v.z);
+        }
+    }
+
     internal class OrbitMath
     {
         // Computes surface gravity from the body's gravitational parameter and radius.
@@ -23,6 +49,22 @@ namespace Blackbird.Mathematics
             if (radius <= 0.0) return double.NaN;
 
             return Math.Sqrt(body.gravParameter / radius);
+        }
+
+        // Orbital speed at apoapsis for the closed orbit defined by these apsis altitudes
+        // (vis-viva). Reduces to circular velocity when apoapsisAlt == periapsisAlt. Returns
+        // NaN for non-closed (parabolic/hyperbolic) inputs, i.e. a <= 0.
+        public static double GetApoapsisVelocity(CelestialBody body, double apoapsisAlt, double periapsisAlt)
+        {
+            if (body == null) return double.NaN;
+
+            double apoapsisRadius = body.Radius + apoapsisAlt;
+            double semiMajorAxis = GetSemiMajorAxis(body, apoapsisAlt, periapsisAlt);
+            if (!IsFinite(semiMajorAxis) || semiMajorAxis <= 0.0 || apoapsisRadius <= 0.0)
+                return double.NaN;
+
+            double v2 = body.gravParameter * (2.0 / apoapsisRadius - 1.0 / semiMajorAxis);
+            return v2 > 0.0 ? Math.Sqrt(v2) : double.NaN;
         }
 
         // Computes semi-major axis from apoapsis/periapsis altitudes around a body.
@@ -55,6 +97,11 @@ namespace Blackbird.Mathematics
             if (orbit == null || orbit.referenceBody == null) return Vector3d.zero;
 
             return orbit.referenceBody.position + orbit.getRelativePositionAtUT(universalTime);
+        }
+
+        public static double TimeToNextApoapsis(Orbit orbit, double ut)
+        {
+            return orbit.eccentricity < 1 ? orbit.TimeOfTrueAnomaly(Math.PI, ut) : 0;
         }
 
         // Converts a world-space position into altitude above the body's reference radius.
@@ -300,6 +347,10 @@ namespace Blackbird.Mathematics
         {
             return value * 180.0 / Math.PI;
         }
+        public static double Deg2Rad(double value)
+        {
+            return value * Math.PI / 180.0;
+        }
         public static bool IsFinite(double value)
         {
             return !double.IsNaN(value) && !double.IsInfinity(value);
@@ -307,6 +358,153 @@ namespace Blackbird.Mathematics
         public static double ApplyDeadband(double value, double deadband)
         {
             return Math.Abs(value) < deadband ? 0.0 : value - Math.Sign(value) * deadband;
+        }
+        public static Vector3d DeltaVToCircularize(Orbit o, double ut)
+        {
+            (Vector3d pos, Vector3d vector) = RightHandVectorsAtUt(o, ut);
+            return dvToCircularize(o.referenceBody.gravParameter, pos, vector);
+        }
+
+        private static Vector3d dvToCircularize(double mu, Vector3d r, Vector3d v)
+        {
+            if (mu > 0 && !double.IsNaN(mu) && !double.IsInfinity(mu) 
+                && IsFinite(v) 
+                && IsNonZeroFinite(r))
+            {
+                var h = Vector3d.Cross(r, v);
+                return CircularVelocityFromHorizontalVector(mu, r, h) - v;
+            }
+
+            return new Vector3d();
+        }
+
+        private static Vector3d CircularVelocityFromHorizontalVector(double mu, Vector3d r, Vector3d h) => Vector3d.Cross(h, r).normalized * CircularVelocity(mu, r.magnitude);
+        private static double CircularVelocity(double mu, double r) => Math.Sqrt(mu / r);
+
+        public static Vector3d DeltaVToChangeInclination(Orbit o, double ut, double newInclination)
+        {
+            (Vector3d pos, Vector3d vector) = RightHandVectorsAtUt(o, ut);
+            return dvToChangeInclination(pos, vector, newInclination);
+        }
+        private static Vector3d dvToChangeInclination(Vector3d position, Vector3d velocity, double targetInclination)
+        {
+            Vector3d dV = new Vector3d();
+            // todo: check if pos is nonzero and finite, check if velocity and targetinclination are finite
+            if (IsNonZeroFinite(position) && IsFinite(velocity) && IsFinite(targetInclination))
+            {
+                dV = VelocityForInclination(position, velocity, targetInclination) - velocity;
+            }
+
+            // returns an empty vector if not finite
+            return IsFinite(dV) ? dV : new Vector3d();
+        }
+
+        // Body-relative position & orbital velocity at UT in the SwapYZ ("right-hand", z-up) frame —
+        // MechJeb's SwappedRelativePositionAtUT / SwappedOrbitalVelocityAtUT exactly. This MUST use the
+        // same .xzy convention as PerturbedOrbit/OrbitFromVectors below; the previous version used
+        // Planetarium.Zup (a different z-up frame), and mixing the two rotated every dV by a fixed ~54°.
+        private static (Vector3d pos, Vector3d vel) RightHandVectorsAtUt(Orbit o, double ut)
+        {
+            return (o.getRelativePositionAtUT(ut).xzy, o.getOrbitalVelocityAtUT(ut).xzy);
+        }
+
+        private static Vector3d VelocityForInclination(Vector3d position, Vector3d velocity, double targetInclination)
+        {
+            Vector3d v0 = BodyCenteredInertialToPlane(position, velocity);
+            double horizonMag = new Vector3d(v0.x, v0.y).magnitude;
+            Vector3d vf = PlaneHeadingForInclination(targetInclination, position) * horizonMag;
+            vf.z = v0.z;
+            vf = PlaneToBodyCenteredInertial(position, vf); // ENU -> ECI (inverse of the line above)
+            return vf;
+        }
+
+        private static double AngleForInclination(double inclination, double latitude)
+        {
+            double cosAngle = Math.Cos(inclination) / Math.Cos(latitude);
+
+            if (Math.Abs(cosAngle) > 1.0)
+            {
+                return Math.Abs(ClampPi(inclination, 2 * Math.PI)) < Math.PI * 0.5 ? 0 : Deg2Rad(180);
+            }
+
+            double angle = Math.Acos(cosAngle);
+
+            if (inclination < 0) angle *= -1;
+
+            return angle;
+        }
+
+        private static Vector3d PlaneHeadingForInclination(double inclination, Vector3d position)
+        {
+            double angle = AngleForInclination(inclination, LatFromBCI(position));
+            return new Vector3d(Math.Cos(angle), Math.Sin(angle), 0);
+        }
+        // ECI -> east/north/up
+        // claude review
+        private static Vector3d BodyCenteredInertialToPlane(Vector3d pos, Vector3d vector)
+        {
+            double lat = LatFromBCI(pos);
+            double lon = LonFromBCI(pos);
+
+            double sinLat = Math.Sin(lat);
+            double sinLon = Math.Sin(lon);
+            double cosLat = Math.Cos(lat);
+            double cosLon = Math.Cos(lon);
+
+            var mtx = new M3(
+                -sinLon, cosLon, 0.0,
+                -sinLat * cosLon, -sinLat * sinLon, cosLat,
+                cosLat * cosLon, cosLat * sinLon, sinLat
+                );
+
+            return mtx * vector;
+        }
+
+        public static Vector3d PlaneToBodyCenteredInertial(Vector3d pos, Vector3d vector)
+        {
+            double lat = LatFromBCI(pos);
+            double lon = LonFromBCI(pos);
+
+            double slat = Math.Sin(lat);
+            double slng = Math.Sin(lon);
+            double clat = Math.Cos(lat);
+            double clng = Math.Cos(lon);
+
+            var m = new M3(
+                -slng, -slat * clng, clat * clng,
+                clng, -slat * slng, clat * slng,
+                0, clat, slat
+            );
+
+            return m * vector;
+        }
+
+        private static double LatFromBCI(Vector3d r) => !IsFinite(r) ? double.NaN : Math.Asin(Clamp(r.z / r.magnitude, -1.0, 1.0));
+        private static double LonFromBCI(Vector3d r) => Math.Atan2(r.y, r.x);
+
+        public static bool IsFinite(Vector3d v) => IsFinite(v[0]) && IsFinite(v[1]) && IsFinite(v[2]);
+        public static bool IsNonZeroFinite(Vector3d v) => v != Vector3d.zero && IsFinite(v);
+        public static Orbit PerturbedOrbit(Orbit o, double ut, Vector3d dV) => OrbitFromVectors(WorldPositionAtUt(o, ut), o.getOrbitalVelocityAtUT(ut).xzy + dV, o.referenceBody, ut);
+
+        private static Vector3d WorldPositionAtUt(Orbit o, double ut) => o.referenceBody.position + o.getRelativePositionAtUT(ut).xzy;
+
+        public static Orbit OrbitFromVectors(Vector3d position, Vector3d velocity, CelestialBody body, double ut)
+        {
+            var result = new Orbit();
+            result.UpdateFromStateVectors((position - body.position).xzy, velocity.xzy, body, ut);
+            if (double.IsNaN(result.argumentOfPeriapsis))
+            {
+                Vector3d vecToAscendingNode = Quaternion.AngleAxis(-(float)result.LAN, Planetarium.up) * Planetarium.right;
+                Vector3d vectorToPeriapsis = result.eccVec.xzy;
+                double cosArgOfPeriapsis = Vector3d.Dot(vecToAscendingNode, vectorToPeriapsis) / (vecToAscendingNode.magnitude * vectorToPeriapsis.magnitude);
+                result.argumentOfPeriapsis = cosArgOfPeriapsis > 1 
+                                            ? 0 
+                                            : cosArgOfPeriapsis < -1 
+                                                ? 180 
+                                                : Math.Acos(cosArgOfPeriapsis);
+            }
+
+            return result;
         }
     }
 }

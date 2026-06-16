@@ -67,6 +67,7 @@
   <ItemGroup>
     <Compile Include="Guidance\AscentGuidance.cs" />
     <Compile Include="Guidance\AscentProfile.cs" />
+    <Compile Include="Guidance\ClassicAscentGuidance.cs" />
     <Compile Include="Enums\AssistantMode.cs" />
     <Compile Include="Enums\PoweredGuidancePhase.cs" />
     <Compile Include="Guidance\AttitudeControl.cs" />

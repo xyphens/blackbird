@@ -7,7 +7,7 @@ namespace Blackbird.Psg
 {
     public sealed class PsgPhase
     {
-        private const double StandardGravity = 9.80665;
+        public const double StandardGravity = 9.80665;
         private const double KilogramsPerKspTon = 1000.0;
         private const double NewtonsPerKilonewton = 1000.0;
         private const double MinimumUsablePropellantMassKg = 1.0;

@@ -1,12 +1,5 @@
 ﻿using UnityEngine;
-using System;
-using Blackbird;
-using Blackbird.Helpers;
-using Blackbird.Models;
-using Blackbird.Planning;
 using Blackbird.Guidance;
-using Blackbird.Enums;
-using Blackbird.Trajectory;
 using KSP.UI.Screens;
 using Blackbird.Modules;
 
@@ -15,7 +8,7 @@ namespace Blackbird
     [KSPAddon(KSPAddon.Startup.Flight, false)]
     public sealed class BlackBird : MonoBehaviour
     {
-        private Rect _windowRect = new Rect(200, 200, 350, 800);
+        private Rect _windowRect = new Rect(200, 200, 350, 200);
         private Vessel _flyByWireVessel;
 
         // launch plan and guidance
@@ -33,6 +26,7 @@ namespace Blackbird
         {
             Debug.Log("[BlackBird] Loaded");
             _planner.Initialize(_launchHandler);
+            _guidanceComputer.Initialize(_launchHandler);
             GameEvents.onGUIApplicationLauncherReady.Add(AddToolbarButton);
             GameEvents.onGUIApplicationLauncherDestroyed.Add(RemoveToolbarButton);
         }
@@ -85,7 +79,7 @@ namespace Blackbird
 
         private void DrawMainMenu(int _windowId)
         {
-            if (GUI.Button(new Rect(_windowRect.width - 22, 2, 18, 18), "x"))
+            if (GUI.Button(new Rect(_windowRect.width - 22, 2, 18, 18), " "))
             {
                 _showWindow = false;
                 _toolbarButton?.SetFalse(false);
@@ -101,6 +95,7 @@ namespace Blackbird
         private void DrawModuleToggles()
         {
             GUILayout.BeginHorizontal();
+            GUILayout.Space(10);
             _planner.IsVisible = GUILayout.Toggle(_planner.IsVisible, "Planner");
             _guidanceComputer.IsVisible = GUILayout.Toggle(_guidanceComputer.IsVisible, "Guidance Computer");
             GUILayout.EndHorizontal();
@@ -110,7 +105,7 @@ namespace Blackbird
         {
             if (_toolbarButton != null) return;
 
-            Texture2D dbIcon = GameDatabase.Instance.GetTexture("BlackBird/Textures/toolbar_icon", false);
+            Texture2D dbIcon = GameDatabase.Instance.GetTexture("BlackBird/Textures/toolbar_icon.png", false);
             if (dbIcon != null)
             {
                 _toolbarIcon = dbIcon;
