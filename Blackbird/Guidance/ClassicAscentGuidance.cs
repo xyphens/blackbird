@@ -240,26 +240,33 @@ namespace Blackbird.Guidance
             double ut = OrbitMath.TimeToNextApoapsis(orbit, Planetarium.GetUniversalTime()); // absolute UT
             if (!OrbitMath.IsFinite(ut) || ut <= 0.0) return (double.NaN, Vector3d.zero);
 
-            // Plane change DISABLED for now. The frame fix made the circularization dV correct (the burn
-            // is horizontal), but DeltaVToChangeInclination is still rotating the orbit to polar — even
-            // when asked to hold the current plane. So do a pure prograde circularization, which preserves
-            // whatever plane we launched into. The machinery stays in OrbitMath; re-enable the two lines
-            // below (guarded on a real targetInclination) once it's validated against a known plane change.
-
-            //   Vector3d incCorrection = OrbitMath.DeltaVToChangeInclination(orbit, ut, OrbitMath.Deg2Rad(targetInclination));
-            //   circCorrection = OrbitMath.DeltaVToCircularize(OrbitMath.PerturbedOrbit(orbit, ut, incCorrection), ut);
-
+            // Plane change ONLY when we actually have a target inclination (degrees). Do NOT route a
+            // "hold the current plane" request through DeltaVToChangeInclination — it recomputes the
+            // heading from scratch (a fresh, northward-biased azimuth) and can't reproduce the craft's
+            // actual current heading, so "hold" becomes a large bogus correction (saw inc|1182| / 039°
+            // on a launch needing ~0). No target → zero = pure prograde circularization, plane preserved.
+            // When targeted: plane change first (cheapest at apoapsis), then circularize the perturbed
+            // orbit — exactly MechJeb's classic-ascent block.
             Vector3d incCorrection = Vector3d.zero;
-            Vector3d circCorrection = OrbitMath.DeltaVToCircularize(orbit, ut);
+            Vector3d circCorrection;
+            if (OrbitMath.IsFinite(targetInclination))
+            {
+                incCorrection = OrbitMath.DeltaVToChangeInclination(orbit, ut, targetInclination);
+                circCorrection = OrbitMath.DeltaVToCircularize(
+                    OrbitMath.PerturbedOrbit(orbit, ut, incCorrection), ut);
+            }
+            else
+            {
+                circCorrection = OrbitMath.DeltaVToCircularize(orbit, ut);
+            }
             Vector3d dvWorld = incCorrection + circCorrection;
 
-            // VALIDATION: at apoapsis a coplanar circularization dV is purely prograde, so its angle to
-            // the velocity AT the node should be ~0 (independent of coast progress — a measurement-frame
-            // artifact would vary, a frame bug would be a large constant). incCorrection should be ~0
-            // with no target.
+            // VALIDATION: with no target, the plane-change correction should be ~0 — anything large means
+            // the inclination math is still off. Also log the dV's angle to the velocity at the node
+            // (≈0 for a coplanar circularization). Remove once validated.
             Vector3d velAtAp = orbit.getOrbitalVelocityAtUT(ut).xzy;
-            // Debug.Log($"[CIRC NODE] dv|{dvWorld.magnitude:F1}| inc|{incCorrection.magnitude:F1}| " +
-            //           $"angleFromPrograde={Vector3d.Angle(dvWorld, velAtAp):F1}deg");
+            Debug.Log($"[CIRC NODE] dv|{dvWorld.magnitude:F1}| inc|{incCorrection.magnitude:F1}| " +
+                      $"angleFromPrograde={Vector3d.Angle(dvWorld, velAtAp):F1}deg, TargetInclination: {targetInclination:F1} degrees ({OrbitMath.Deg2Rad(targetInclination)} rad)");
 
             return (ut, dvWorld);
         }

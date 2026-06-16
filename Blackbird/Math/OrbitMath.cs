@@ -362,7 +362,7 @@ namespace Blackbird.Mathematics
         public static Vector3d DeltaVToCircularize(Orbit o, double ut)
         {
             (Vector3d pos, Vector3d vector) = RightHandVectorsAtUt(o, ut);
-            return dvToCircularize(o.referenceBody.gravParameter, pos, vector);
+            return dvToCircularize(o.referenceBody.gravParameter, pos, vector).xzy; // fixme: if still broken, remove the .xzy
         }
 
         private static Vector3d dvToCircularize(double mu, Vector3d r, Vector3d v)
@@ -405,7 +405,8 @@ namespace Blackbird.Mathematics
         // Planetarium.Zup (a different z-up frame), and mixing the two rotated every dV by a fixed ~54°.
         private static (Vector3d pos, Vector3d vel) RightHandVectorsAtUt(Orbit o, double ut)
         {
-            return (o.getRelativePositionAtUT(ut).xzy, o.getOrbitalVelocityAtUT(ut).xzy);
+            o.GetOrbitalStateVectorsAtTrueAnomaly(o.TrueAnomalyAtT(o.getObtAtUT(ut)), ut, false, out Vector3d pos, out Vector3d vel);
+            return (Planetarium.Zup.WorldToLocal(pos), Planetarium.Zup.WorldToLocal(vel));
         }
 
         private static Vector3d VelocityForInclination(Vector3d position, Vector3d velocity, double targetInclination)
