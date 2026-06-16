@@ -1,4 +1,5 @@
 using System;
+using Blackbird.Mathematics;
 using Blackbird.Rendezvous;
 using UnityEngine;
 
@@ -21,6 +22,9 @@ namespace Blackbird.RendezvousHarness
 
             CheckRelativeStateEquatorial();
             CheckRelativeStateRotatedPlane();
+            CheckKeplerPropagation();
+            CheckLambertRecoversCircularOrbit();
+            CheckLambertRecoversEllipticalOrbit();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -95,6 +99,99 @@ namespace Blackbird.RendezvousHarness
             double expRange = Math.Sqrt(200.0 * 200.0 + 500.0 * 500.0 + 30.0 * 30.0);
             AssertScalar("Range", state.Range, expRange);
             AssertScalar("RangeRate", state.RangeRate, -2500.0 / expRange);
+        }
+
+        // Two-body propagation: a circular orbit advanced a quarter period must rotate 90 degrees;
+        // a full period (circular and elliptical) must return exactly to the start. Validates the
+        // universal-variable propagator independently of Lambert.
+        private static void CheckKeplerPropagation()
+        {
+            Console.WriteLine("Case 3: two-body Kepler propagation (universal variable)");
+
+            double r = KerbinRadius + 200000.0;
+            double vc = Math.Sqrt(KerbinMu / r);
+            Vector3d r0 = new Vector3d(r, 0.0, 0.0);
+            Vector3d v0 = new Vector3d(0.0, vc, 0.0);
+            double period = CircularPeriod(r);
+
+            TwoBody.Propagate(r0, v0, KerbinMu, period / 4.0, out Vector3d rQ, out Vector3d vQ);
+            AssertVecRel("circ T/4 pos", rQ, new Vector3d(0.0, r, 0.0), 1e-6);
+            AssertVecRel("circ T/4 vel", vQ, new Vector3d(-vc, 0.0, 0.0), 1e-6);
+
+            TwoBody.Propagate(r0, v0, KerbinMu, period, out Vector3d rF, out Vector3d vF);
+            AssertVecRel("circ T pos", rF, r0, 1e-6);
+            AssertVecRel("circ T vel", vF, v0, 1e-6);
+
+            // Elliptical orbit (faster than circular at this apse): full period returns to start.
+            Vector3d ev0 = new Vector3d(0.0, vc * 1.2, 0.0);
+            double a = 1.0 / (2.0 / r - ev0.sqrMagnitude / KerbinMu);
+            double ePeriod = 2.0 * Math.PI * Math.Sqrt(a * a * a / KerbinMu);
+            TwoBody.Propagate(r0, ev0, KerbinMu, ePeriod, out Vector3d erF, out Vector3d evF);
+            AssertVecRel("ellip T pos", erF, r0, 1e-6);
+            AssertVecRel("ellip T vel", evF, ev0, 1e-6);
+        }
+
+        // Lambert self-consistency: take r1 and r2 from a known circular orbit separated by a known
+        // time of flight; the solved transfer velocities must equal the orbit's actual velocities.
+        // If Lambert recovers the generating orbit, the solver is correct.
+        private static void CheckLambertRecoversCircularOrbit()
+        {
+            Console.WriteLine("Case 4: Lambert recovers the generating circular orbit");
+
+            double r = KerbinRadius + 300000.0;
+            double vc = Math.Sqrt(KerbinMu / r);
+            Vector3d r1 = new Vector3d(r, 0.0, 0.0);
+            Vector3d v1True = new Vector3d(0.0, vc, 0.0);
+            double tof = CircularPeriod(r) / 4.0;   // quarter orbit -> short way
+
+            TwoBody.Propagate(r1, v1True, KerbinMu, tof, out Vector3d r2, out Vector3d v2True);
+
+            LambertResult res = LambertSolver.Solve(r1, r2, tof, KerbinMu, true, new Vector3d(0, 0, 1));
+            AssertTrue("solver success", res.Success);
+            AssertVecRel("departure V1", res.V1, v1True, 1e-5);
+            AssertVecRel("arrival V2", res.V2, v2True, 1e-5);
+        }
+
+        // Same self-consistency check on an eccentric orbit, with a time of flight under half a
+        // period so the short-way solution is the correct one.
+        private static void CheckLambertRecoversEllipticalOrbit()
+        {
+            Console.WriteLine("Case 5: Lambert recovers the generating elliptical orbit");
+
+            double r = KerbinRadius + 150000.0;
+            double vc = Math.Sqrt(KerbinMu / r);
+            Vector3d r1 = new Vector3d(r, 0.0, 0.0);
+            Vector3d v1True = new Vector3d(0.0, vc * 1.15, 0.0);   // eccentric, starting at periapsis
+
+            double a = 1.0 / (2.0 / r - v1True.sqrMagnitude / KerbinMu);
+            double period = 2.0 * Math.PI * Math.Sqrt(a * a * a / KerbinMu);
+            double tof = period * 0.2;                              // < half period -> short way
+
+            TwoBody.Propagate(r1, v1True, KerbinMu, tof, out Vector3d r2, out Vector3d v2True);
+
+            LambertResult res = LambertSolver.Solve(r1, r2, tof, KerbinMu, true, new Vector3d(0, 0, 1));
+            AssertTrue("solver success", res.Success);
+            AssertVecRel("departure V1", res.V1, v1True, 1e-5);
+            AssertVecRel("arrival V2", res.V2, v2True, 1e-5);
+        }
+
+        private static double CircularPeriod(double radius)
+        {
+            return 2.0 * Math.PI * Math.Sqrt(radius * radius * radius / KerbinMu);
+        }
+
+        private static void AssertTrue(string label, bool condition)
+        {
+            Report(label, condition, "true", condition ? "true" : "false", "-");
+        }
+
+        // Relative-tolerance vector compare, for large-magnitude (orbital) quantities where an
+        // absolute 1e-6 m would be unreasonably strict.
+        private static void AssertVecRel(string label, Vector3d actual, Vector3d expected, double relTol)
+        {
+            double scale = Math.Max(expected.magnitude, 1.0);
+            double err = (actual - expected).magnitude / scale;
+            Report(label, err <= relTol, Fmt(expected), Fmt(actual), err.ToString("E2"));
         }
 
         private static void AssertVec(string label, Vector3d actual, Vector3d expected)

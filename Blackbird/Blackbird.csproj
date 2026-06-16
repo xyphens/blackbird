@@ -102,6 +102,8 @@
     <Compile Include="Modules\Planner.cs" />
     <Compile Include="Models\OrbitInfo.cs" />
     <Compile Include="Math\OrbitMath.cs" />
+    <Compile Include="Math\TwoBody.cs" />
+    <Compile Include="Math\LambertSolver.cs" />
     <Compile Include="Rendezvous\LvlhFrame.cs" />
     <Compile Include="Rendezvous\RelativeState.cs" />
     <Compile Include="Enums\PlanetScale.cs" />
