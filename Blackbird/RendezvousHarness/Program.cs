@@ -26,7 +26,8 @@ namespace Blackbird.RendezvousHarness
             CheckLambertRecoversCircularOrbit();
             CheckLambertRecoversEllipticalOrbit();
             CheckInterceptCoplanarCatchup();
-            CheckExecutorStateMachine();
+            CheckExecutorGating();
+            CheckInterceptBurnClosedLoop();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -224,75 +225,186 @@ namespace Blackbird.RendezvousHarness
                 sol.TimeOfFlight, sol.DeltaVMagnitude, sol.PredictedClosestApproach, sol.SamplesEvaluated));
         }
 
-        // Drives the executor skeleton through the full user-gated sequence and asserts the phase/stage
-        // transitions: Idle -> arm/trigger Intercept -> Coast -> arm/trigger MatchVelocity -> Coast ->
-        // arm/trigger CloseApproach -> Complete. Also checks the gates reject out-of-order actions and
-        // that no command carries a burn (none wired yet).
-        private static void CheckExecutorStateMachine()
+        // Validates the executor's user gates and abort/reset, and that arming the intercept produces a
+        // plan and triggering it starts a real burn command. Does not run the burn to completion (that
+        // is Case 8) — a static-ish step here only confirms the gate logic and burn entry.
+        private static void CheckExecutorGating()
         {
-            Console.WriteLine("Case 7: terminal executor skeleton (staged state machine)");
+            Console.WriteLine("Case 7: terminal executor gating + abort/reset");
 
             TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
-            FakeWorld world = new FakeWorld
-            {
-                UniversalTime = 0.0,
-                Mu = KerbinMu,
-                ActivePosition = new Vector3d(KerbinRadius + 200000.0, 0, 0),
-                ActiveVelocity = new Vector3d(0, 2000, 0),
-                TargetPosition = new Vector3d(KerbinRadius + 200000.0, 1000, 0),
-                TargetVelocity = new Vector3d(0, 2000, 0),
-                ReferenceNormal = new Vector3d(0, 0, 1)
-            };
+            SimWorld world = MakeCatchupSim(250000.0, 15.0);
 
             AssertTrue("starts Idle", ex.Phase == RendezvousPhase.Idle);
             AssertTrue("starts at Intercept", ex.Stage == RendezvousStage.Intercept);
             AssertTrue("idle update has no burn", !ex.Update(world).HasBurn);
             AssertTrue("trigger blocked before arm", !ex.Trigger());
 
-            // Stage 1: Intercept
             AssertTrue("arm intercept", ex.Arm());
             AssertTrue("armed phase", ex.Phase == RendezvousPhase.Armed);
             AssertTrue("re-arm blocked while armed", !ex.Arm());
-            AssertTrue("armed update no burn", !ex.Update(world).HasBurn);
+            AssertTrue("armed update has no burn", !ex.Update(world).HasBurn);
+            AssertTrue("plan cached when armed", ex.HasInterceptPlan);
+
             AssertTrue("trigger intercept", ex.Trigger());
             AssertTrue("executing phase", ex.Phase == RendezvousPhase.Executing);
-            AssertTrue("intercept step no burn", !ex.Update(world).HasBurn);
-            AssertTrue("coast after intercept", ex.Phase == RendezvousPhase.Coast);
-            AssertTrue("stage still intercept", ex.Stage == RendezvousStage.Intercept);
+            RendezvousCommand first = ex.Update(world);
+            AssertTrue("intercept burn started", first.HasBurn && ex.Phase == RendezvousPhase.Executing);
 
-            // Stage 2: MatchVelocity
-            AssertTrue("arm advances to match", ex.Arm());
-            AssertTrue("stage is match", ex.Stage == RendezvousStage.MatchVelocity);
-            ex.Trigger();
-            ex.Update(world);
-            AssertTrue("coast after match", ex.Phase == RendezvousPhase.Coast);
-
-            // Stage 3: CloseApproach -> Complete
-            AssertTrue("arm advances to close", ex.Arm());
-            AssertTrue("stage is close", ex.Stage == RendezvousStage.CloseApproach);
-            ex.Trigger();
-            ex.Update(world);
-            AssertTrue("complete after close", ex.Phase == RendezvousPhase.Complete);
-            AssertTrue("IsComplete", ex.IsComplete);
-            AssertTrue("arm blocked when complete", !ex.Arm());
-
-            // Abort then reset
             ex.Abort();
             AssertTrue("aborted phase", ex.Phase == RendezvousPhase.Aborted);
+            AssertTrue("aborted update has no burn", !ex.Update(world).HasBurn);
+
             ex.Reset();
             AssertTrue("reset to idle", ex.Phase == RendezvousPhase.Idle && ex.Stage == RendezvousStage.Intercept);
         }
 
-        // Minimal in-memory IRendezvousWorld for driving the executor offline.
-        private sealed class FakeWorld : IRendezvousWorld
+        // Drives the intercept burn to completion against a stepping two-body sim: arm -> trigger ->
+        // apply the commanded thrust each tick -> propagate both vessels. Asserts the burn terminates
+        // (delivered ΔV reaches the plan), the burn dramatically reduces closest approach vs coasting,
+        // and the remaining stub stages still traverse to Complete on user triggers.
+        private static void CheckInterceptBurnClosedLoop()
         {
-            public double UniversalTime { get; set; }
-            public double Mu { get; set; }
-            public Vector3d ActivePosition { get; set; }
-            public Vector3d ActiveVelocity { get; set; }
-            public Vector3d TargetPosition { get; set; }
-            public Vector3d TargetVelocity { get; set; }
-            public Vector3d ReferenceNormal { get; set; }
+            Console.WriteLine("Case 8: intercept burn closed loop (stepping sim)");
+
+            double altitude = 250000.0;
+            double R = KerbinRadius + altitude;
+            SimWorld sim = MakeCatchupSim(altitude, 15.0);
+
+            // Baseline: closest approach over one orbit if we never burn (stays the constant catch-up gap).
+            double coastCA = MinSeparation(
+                sim.ActivePosition, sim.ActiveVelocity, sim.TargetPosition, sim.TargetVelocity,
+                KerbinMu, CircularPeriod(R), 720);
+
+            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+            ex.Arm();
+            ex.Update(sim);     // armed: caches a preview plan
+            ex.Trigger();
+
+            const double maxAccel = 200.0;   // m/s^2 sim engine; high enough that the burn is near-impulsive
+            const double dt = 0.01;
+            InterceptSolution plan = default(InterceptSolution);
+            bool planCaptured = false;
+            Vector3d dvUnit = Vector3d.zero;
+            double appliedAlongPlan = 0.0;
+            int ticks = 0;
+
+            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 200000)
+            {
+                RendezvousCommand cmd = ex.Update(sim);
+                if (!planCaptured && ex.HasInterceptPlan)
+                {
+                    plan = ex.InterceptPlan;
+                    dvUnit = plan.DeltaV.normalized;
+                    planCaptured = true;
+                }
+                if (ex.Phase != RendezvousPhase.Executing) break;   // burn completed inside Update
+
+                if (cmd.HasBurn)
+                {
+                    Vector3d dv = cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt);
+                    sim.ApplyDeltaV(dv);
+                    appliedAlongPlan += Vector3d.Dot(dv, dvUnit);
+                }
+                sim.Advance(dt);
+            }
+
+            AssertTrue("plan captured", planCaptured);
+            AssertTrue("burn completed -> coast", ex.Phase == RendezvousPhase.Coast);
+            AssertTrue("applied ΔV ~ planned", Math.Abs(appliedAlongPlan - plan.DeltaVMagnitude) < 2.0);
+
+            // Closest approach from the post-burn state to the planned arrival.
+            double remaining = Math.Max(plan.ArrivalUt - sim.UniversalTime, 1.0);
+            double postCA = MinSeparation(
+                sim.ActivePosition, sim.ActiveVelocity, sim.TargetPosition, sim.TargetVelocity,
+                KerbinMu, remaining, 720);
+
+            AssertTrue("burn collapses CA vs coast", postCA < coastCA * 0.05);
+            AssertTrue("post-burn CA small (<3 km)", postCA < 3000.0);
+
+            // The remaining (stub) stages must still traverse to Complete on user triggers.
+            AssertTrue("arm match", ex.Arm());
+            ex.Trigger();
+            ex.Update(sim);
+            AssertTrue("coast after match", ex.Phase == RendezvousPhase.Coast);
+            AssertTrue("arm close", ex.Arm());
+            ex.Trigger();
+            ex.Update(sim);
+            AssertTrue("complete after close", ex.Phase == RendezvousPhase.Complete);
+
+            Console.WriteLine(string.Format(
+                "    plan ΔV={0:F2} applied={1:F2} m/s  coastCA={2:F0} m  postCA={3:F1} m  ticks={4}",
+                plan.DeltaVMagnitude, appliedAlongPlan, coastCA, postCA, ticks));
+        }
+
+        // Builds a stepping sim where chaser and target share a circular orbit with the target leadDeg
+        // ahead along-track (the classic coplanar catch-up).
+        private static SimWorld MakeCatchupSim(double altitude, double leadDeg)
+        {
+            double R = KerbinRadius + altitude;
+            double vc = Math.Sqrt(KerbinMu / R);
+            double lead = leadDeg * Math.PI / 180.0;
+
+            return new SimWorld(
+                KerbinMu,
+                new Vector3d(R, 0.0, 0.0),
+                new Vector3d(0.0, vc, 0.0),
+                new Vector3d(R * Math.Cos(lead), R * Math.Sin(lead), 0.0),
+                new Vector3d(-vc * Math.Sin(lead), vc * Math.Cos(lead), 0.0),
+                new Vector3d(0, 0, 1));
+        }
+
+        // Minimum separation between two two-body trajectories over a duration, sampled uniformly.
+        private static double MinSeparation(
+            Vector3d aPos, Vector3d aVel, Vector3d tPos, Vector3d tVel,
+            double mu, double duration, int samples)
+        {
+            double min = double.PositiveInfinity;
+            for (int i = 0; i <= samples; i++)
+            {
+                double dt = duration * i / samples;
+                TwoBody.Propagate(aPos, aVel, mu, dt, out Vector3d ra, out _);
+                TwoBody.Propagate(tPos, tVel, mu, dt, out Vector3d rt, out _);
+                double d = (ra - rt).magnitude;
+                if (d < min) min = d;
+            }
+            return min;
+        }
+
+        // Stepping in-memory IRendezvousWorld: advances both vessels along their two-body conics and lets
+        // the harness apply impulses to the active vessel, so the executor's closed loop can be driven.
+        private sealed class SimWorld : IRendezvousWorld
+        {
+            private readonly double _mu;
+            private Vector3d _aPos, _aVel, _tPos, _tVel;
+            private readonly Vector3d _refN;
+            private double _ut;
+
+            public SimWorld(double mu, Vector3d aPos, Vector3d aVel, Vector3d tPos, Vector3d tVel, Vector3d refN)
+            {
+                _mu = mu;
+                _aPos = aPos; _aVel = aVel;
+                _tPos = tPos; _tVel = tVel;
+                _refN = refN;
+                _ut = 0.0;
+            }
+
+            public double UniversalTime => _ut;
+            public double Mu => _mu;
+            public Vector3d ActivePosition => _aPos;
+            public Vector3d ActiveVelocity => _aVel;
+            public Vector3d TargetPosition => _tPos;
+            public Vector3d TargetVelocity => _tVel;
+            public Vector3d ReferenceNormal => _refN;
+
+            public void ApplyDeltaV(Vector3d dv) { _aVel += dv; }
+
+            public void Advance(double dt)
+            {
+                TwoBody.Propagate(_aPos, _aVel, _mu, dt, out _aPos, out _aVel);
+                TwoBody.Propagate(_tPos, _tVel, _mu, dt, out _tPos, out _tVel);
+                _ut += dt;
+            }
         }
 
         private static double CircularPeriod(double radius)

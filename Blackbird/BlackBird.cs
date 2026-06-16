@@ -2,6 +2,7 @@
 using Blackbird.Guidance;
 using KSP.UI.Screens;
 using Blackbird.Modules;
+using Blackbird.Rendezvous;
 
 namespace Blackbird
 {
@@ -19,14 +20,18 @@ namespace Blackbird
         private Texture2D _toolbarIcon;
         private bool _toolbarIconOwned;
 
+        private readonly RendezvousHandler _rendezvousHandler = new RendezvousHandler();
+
         private readonly Planner _planner = new Planner();
         private readonly GuidanceComputer _guidanceComputer = new GuidanceComputer();
+        private readonly RendezvousComputer _rendezvousComputer = new RendezvousComputer();
 
         public void Start()
         {
             Debug.Log("[BlackBird] Loaded");
             _planner.Initialize(_launchHandler);
             _guidanceComputer.Initialize(_launchHandler);
+            _rendezvousComputer.Initialize(_rendezvousHandler);
             GameEvents.onGUIApplicationLauncherReady.Add(AddToolbarButton);
             GameEvents.onGUIApplicationLauncherDestroyed.Add(RemoveToolbarButton);
         }
@@ -45,12 +50,16 @@ namespace Blackbird
             }
 
             _launchHandler.Update(activeVessel);
+
+            ITargetable target = FlightGlobals.fetch != null ? FlightGlobals.fetch.VesselTarget : null;
+            _rendezvousHandler.Update(activeVessel, target as Vessel);
         }
         private void OnFlyByWire(FlightCtrlState state)
         {
-            if (_launchHandler == null || _flyByWireVessel == null) return;
+            if (_flyByWireVessel == null) return;
 
             _launchHandler.ApplyFlightControls(state, _flyByWireVessel);
+            _rendezvousHandler.ApplyFlightControls(state, _flyByWireVessel);
         }
 
         public void OnDestroy()
@@ -75,6 +84,7 @@ namespace Blackbird
                 "BlackBird");
             _planner.Draw();
             _guidanceComputer.Draw();
+            _rendezvousComputer.Draw();
         }
 
         private void DrawMainMenu(int _windowId)
@@ -98,6 +108,7 @@ namespace Blackbird
             GUILayout.Space(10);
             _planner.IsVisible = GUILayout.Toggle(_planner.IsVisible, "Planner");
             _guidanceComputer.IsVisible = GUILayout.Toggle(_guidanceComputer.IsVisible, "Guidance Computer");
+            _rendezvousComputer.IsVisible = GUILayout.Toggle(_rendezvousComputer.IsVisible, "Rendezvous");
             GUILayout.EndHorizontal();
         }
 
