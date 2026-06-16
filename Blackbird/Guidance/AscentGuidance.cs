@@ -133,6 +133,7 @@ namespace Blackbird.Guidance
                 EstimatedRemainingDeltaV = selectedCandidate != null
                     ? selectedCandidate.EstimatedRemainingDeltaV
                     : vesselState.RemainingDeltaV,
+                VesselRemainingDeltaV = vesselState != null ? vesselState.RemainingDeltaV : double.NaN,
                 EstimatedInsertionTimeSeconds = selectedCandidate != null
                     ? selectedCandidate.EstimatedInsertionTimeSeconds
                     : double.NaN,

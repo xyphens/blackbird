@@ -190,16 +190,16 @@ namespace Blackbird.Modules
 
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("Apoapsis", GUILayout.Width(80));
-                GUILayout.Label($"{guidanceInfo.TargetApoapsisAlt / 1000.0:F0} km", GUILayout.Width(60));
-                GUILayout.Label($"{guidanceInfo.PredictedApoapsisAlt / 1000.0:F0} km", GUILayout.Width(60));
-                GUILayout.Label($"{guidanceInfo.ApoapsisErrorMeters / 1000.0:F1} km", GUILayout.Width(60));
+                GUILayout.Label(FormatKm(guidanceInfo.TargetApoapsisAlt, "F0"), GUILayout.Width(60));
+                GUILayout.Label(FormatKm(guidanceInfo.PredictedApoapsisAlt, "F0"), GUILayout.Width(60));
+                GUILayout.Label(FormatKm(guidanceInfo.ApoapsisErrorMeters, "F1"), GUILayout.Width(60));
                 GUILayout.EndHorizontal();
 
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("Periapsis", GUILayout.Width(80));
-                GUILayout.Label($"{guidanceInfo.TargetPeriapsisAlt / 1000.0:F0} km", GUILayout.Width(60));
-                GUILayout.Label($"{guidanceInfo.PredictedPeriapsisAlt / 1000.0:F0} km", GUILayout.Width(60));
-                GUILayout.Label($"{guidanceInfo.PeriapsisErrorMeters / 1000.0:F1} km", GUILayout.Width(60));
+                GUILayout.Label(FormatKm(guidanceInfo.TargetPeriapsisAlt, "F0"), GUILayout.Width(60));
+                GUILayout.Label(FormatKm(guidanceInfo.PredictedPeriapsisAlt, "F0"), GUILayout.Width(60));
+                GUILayout.Label(FormatKm(guidanceInfo.PeriapsisErrorMeters, "F1"), GUILayout.Width(60));
                 GUILayout.EndHorizontal();
 
                 PhasingOrbit phasing = _launchHandler.CurrentPlan?.PhasingOrbit;
@@ -219,11 +219,11 @@ namespace Blackbird.Modules
                     }
                 }
 
-                GUILayout.Label($"Rmg. Velocity: {guidanceInfo.GuidanceVelocityToGoMetersPerSecond:F0} m/s");
-                GUILayout.Label($"Rmg. Time: {guidanceInfo.GuidanceTimeToGoSeconds:F1} s");
-                GUILayout.Label($"Rmg. dV: {guidanceInfo.EstimatedRemainingDeltaV:F0} m/s");
-                GUILayout.Label($"Phase Error: {guidanceInfo.PhaseErrorDeg:F2}°");
-                GUILayout.Label($"Plane Error: {guidanceInfo.PlaneErrorDeg:F2}°");
+                GUILayout.Label($"Rmg. Velocity: {FormatNum(guidanceInfo.GuidanceVelocityToGoMetersPerSecond, "F0", "m/s")}");
+                GUILayout.Label($"Rmg. Time: {FormatNum(guidanceInfo.GuidanceTimeToGoSeconds, "F1", "s")}");
+                GUILayout.Label($"Rmg. dV: {FormatNum(guidanceInfo.VesselRemainingDeltaV, "F0", "m/s")}");
+                GUILayout.Label($"Phase Error: {FormatNum(guidanceInfo.PhaseErrorDeg, "F2", "°")}");
+                GUILayout.Label($"Plane Error: {FormatNum(guidanceInfo.PlaneErrorDeg, "F2", "°")}");
 
                 _showAdvancedDetails = GUILayout.Toggle(_showAdvancedDetails, "Show Advanced Details");
                 if (_showAdvancedDetails)
@@ -338,6 +338,19 @@ namespace Blackbird.Modules
 
             if (newMode != _launchHandler.GuidanceMode) _launchHandler.SetGuidanceMode(newMode, FlightGlobals.ActiveVessel);
         }
+
+        // Formats a metre value as kilometres, or "N/A" when the source metric is unavailable
+        // (e.g. PSG-only fields that the classic/Stock guidance path never populates).
+        private static string FormatKm(double meters, string format) =>
+            double.IsNaN(meters) || double.IsInfinity(meters)
+                ? "N/A"
+                : $"{(meters / 1000.0).ToString(format)} km";
+
+        // Formats a numeric metric with a unit, or "N/A" when it isn't available.
+        private static string FormatNum(double value, string format, string unit) =>
+            double.IsNaN(value) || double.IsInfinity(value)
+                ? "N/A"
+                : $"{value.ToString(format)} {unit}";
 
         private double GetDisplayedLaunchCountdownSeconds(LaunchPlan launchPlan)
         {

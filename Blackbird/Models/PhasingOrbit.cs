@@ -49,9 +49,7 @@ namespace Blackbird.Models
             double orbitsToRendezvous = 0.0;
             double timeToRendezvous = 0.0;
 
-            double phaseGainAbs =
-                Math.Abs(phaseGainPerOrbit);
-
+            double phaseGainAbs = Math.Abs(phaseGainPerOrbit);
             if (phaseGainAbs > 0.001)
             {
                 double phaseToClose = Math.Abs(OrbitMath.DeltaDegrees(phaseAngleDeg, 0.0));
@@ -77,6 +75,7 @@ namespace Blackbird.Models
             };
         }
 
+        // how long (in seconds) it takes to complete an orbit a given body
         private static double CalculatePeriodSeconds(double apoapsisAlt, double periapsisAlt, CelestialBody body)
         {
             double radius = body.Radius;

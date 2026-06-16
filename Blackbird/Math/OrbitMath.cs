@@ -247,7 +247,7 @@ namespace Blackbird.Mathematics
         }
 
         public static double DeltaDegrees(double fromDeg, double toDeg) { 
-            double delta = NormalizeDegrees(toDeg -  fromDeg);
+            double delta = NormalizeDegrees(toDeg - fromDeg);
             return delta > 180.0 ? delta - 360.0 : delta;
         }
 

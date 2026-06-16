@@ -41,6 +41,7 @@ namespace Blackbird.Models
 
         public double EstimatedDeltaVUsed { get; set; }
         public double EstimatedRemainingDeltaV { get; set; }
+        public double VesselRemainingDeltaV { get; set; }
         public double EstimatedInsertionTimeSeconds { get; set; }
         public double EstimatedOrbitsToRendezvous { get; set; }
 

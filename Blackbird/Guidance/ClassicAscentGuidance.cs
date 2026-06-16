@@ -148,10 +148,9 @@ namespace Blackbird.Guidance
                     _phase = Phase.Complete;
                     return;
                 }
-                double delivered = Vector3d.Dot(vs.OrbitalVelocity - _burnStartVelocity,
-                                                _dvToCircularize / planned);
-                if (delivered >= planned)
-                    _phase = Phase.Complete;
+                double delivered = Vector3d.Dot(vs.OrbitalVelocity - _burnStartVelocity, _dvToCircularize / planned);
+                if (delivered >= planned) _phase = Phase.Complete;
+
             }
         }
 
@@ -260,13 +259,6 @@ namespace Blackbird.Guidance
                 circCorrection = OrbitMath.DeltaVToCircularize(orbit, ut);
             }
             Vector3d dvWorld = incCorrection + circCorrection;
-
-            // VALIDATION: with no target, the plane-change correction should be ~0 — anything large means
-            // the inclination math is still off. Also log the dV's angle to the velocity at the node
-            // (≈0 for a coplanar circularization). Remove once validated.
-            Vector3d velAtAp = orbit.getOrbitalVelocityAtUT(ut).xzy;
-            Debug.Log($"[CIRC NODE] dv|{dvWorld.magnitude:F1}| inc|{incCorrection.magnitude:F1}| " +
-                      $"angleFromPrograde={Vector3d.Angle(dvWorld, velAtAp):F1}deg, TargetInclination: {targetInclination:F1} degrees ({OrbitMath.Deg2Rad(targetInclination)} rad)");
 
             return (ut, dvWorld);
         }
