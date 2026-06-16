@@ -1,0 +1,54 @@
+using UnityEngine;
+
+namespace Blackbird.Rendezvous
+{
+    // The ordered terminal-rendezvous stages. The executor advances through them in this order, with
+    // a manual user gate between each (contract invariant 1: closed-loop within a stage, manual gates
+    // between stages). Burns for each stage are wired in later contract steps (4, 6, 7).
+    public enum RendezvousStage
+    {
+        Intercept,      // Step 4: burn onto the Lambert transfer toward the target
+        MatchVelocity,  // Step 6: null relative velocity at closest approach
+        CloseApproach   // Step 7: close to ~100 m and station-keep / hand off
+    }
+
+    // Lifecycle phase within the sequence. Idle/Coast/Complete/Aborted are between-stage rest states;
+    // Armed and Executing are the user-gated active states. Closed-loop guidance runs only in Executing.
+    public enum RendezvousPhase
+    {
+        Idle,        // nothing armed; awaiting the user to arm the next stage
+        Armed,       // a stage is armed; awaiting the user trigger to begin it
+        Executing,   // closed-loop guidance running within the armed stage
+        Coast,       // a non-final stage finished; coasting, awaiting arm of the next stage
+        Complete,    // final stage finished; control handed back to the player
+        Aborted      // user aborted; no commands issued until Reset
+    }
+
+    // Per-tick output of the executor: the steering/throttle command plus the current phase/stage for
+    // display and logging. When HasBurn is false the caller holds attitude and cuts throttle (idle).
+    public struct RendezvousCommand
+    {
+        public RendezvousPhase Phase;
+        public RendezvousStage Stage;
+        public bool HasBurn;             // false => idle/coast: no steering, zero throttle
+        public Vector3d ThrustDirection; // world-frame unit vector (meaningful only when HasBurn)
+        public double Throttle;          // 0..1 (meaningful only when HasBurn)
+        public string Status;            // human-readable, for UI/log
+    }
+
+    // The state seam between the executor and the world. In-game this is backed by Vessels +
+    // TrajectoryProvider (VesselRendezvousWorld); offline the harness supplies a two-body-propagated
+    // fake. Routing the executor through this interface (rather than touching Vessel directly) is what
+    // makes the Steps 4-7 closed-loop logic offline-testable. All positions are body-relative (central
+    // body subtracted); velocities are body-centered inertial — the frame the conic math expects.
+    public interface IRendezvousWorld
+    {
+        double UniversalTime { get; }
+        double Mu { get; }
+        Vector3d ActivePosition { get; }
+        Vector3d ActiveVelocity { get; }
+        Vector3d TargetPosition { get; }
+        Vector3d TargetVelocity { get; }
+        Vector3d ReferenceNormal { get; }   // target orbit normal, for transfer-direction disambiguation
+    }
+}

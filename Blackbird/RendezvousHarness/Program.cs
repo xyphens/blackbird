@@ -26,6 +26,7 @@ namespace Blackbird.RendezvousHarness
             CheckLambertRecoversCircularOrbit();
             CheckLambertRecoversEllipticalOrbit();
             CheckInterceptCoplanarCatchup();
+            CheckExecutorStateMachine();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -221,6 +222,77 @@ namespace Blackbird.RendezvousHarness
             Console.WriteLine(string.Format(
                 "    chose tof={0:F1}s dV={1:F2} m/s CA={2:E2} m samples={3}",
                 sol.TimeOfFlight, sol.DeltaVMagnitude, sol.PredictedClosestApproach, sol.SamplesEvaluated));
+        }
+
+        // Drives the executor skeleton through the full user-gated sequence and asserts the phase/stage
+        // transitions: Idle -> arm/trigger Intercept -> Coast -> arm/trigger MatchVelocity -> Coast ->
+        // arm/trigger CloseApproach -> Complete. Also checks the gates reject out-of-order actions and
+        // that no command carries a burn (none wired yet).
+        private static void CheckExecutorStateMachine()
+        {
+            Console.WriteLine("Case 7: terminal executor skeleton (staged state machine)");
+
+            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+            FakeWorld world = new FakeWorld
+            {
+                UniversalTime = 0.0,
+                Mu = KerbinMu,
+                ActivePosition = new Vector3d(KerbinRadius + 200000.0, 0, 0),
+                ActiveVelocity = new Vector3d(0, 2000, 0),
+                TargetPosition = new Vector3d(KerbinRadius + 200000.0, 1000, 0),
+                TargetVelocity = new Vector3d(0, 2000, 0),
+                ReferenceNormal = new Vector3d(0, 0, 1)
+            };
+
+            AssertTrue("starts Idle", ex.Phase == RendezvousPhase.Idle);
+            AssertTrue("starts at Intercept", ex.Stage == RendezvousStage.Intercept);
+            AssertTrue("idle update has no burn", !ex.Update(world).HasBurn);
+            AssertTrue("trigger blocked before arm", !ex.Trigger());
+
+            // Stage 1: Intercept
+            AssertTrue("arm intercept", ex.Arm());
+            AssertTrue("armed phase", ex.Phase == RendezvousPhase.Armed);
+            AssertTrue("re-arm blocked while armed", !ex.Arm());
+            AssertTrue("armed update no burn", !ex.Update(world).HasBurn);
+            AssertTrue("trigger intercept", ex.Trigger());
+            AssertTrue("executing phase", ex.Phase == RendezvousPhase.Executing);
+            AssertTrue("intercept step no burn", !ex.Update(world).HasBurn);
+            AssertTrue("coast after intercept", ex.Phase == RendezvousPhase.Coast);
+            AssertTrue("stage still intercept", ex.Stage == RendezvousStage.Intercept);
+
+            // Stage 2: MatchVelocity
+            AssertTrue("arm advances to match", ex.Arm());
+            AssertTrue("stage is match", ex.Stage == RendezvousStage.MatchVelocity);
+            ex.Trigger();
+            ex.Update(world);
+            AssertTrue("coast after match", ex.Phase == RendezvousPhase.Coast);
+
+            // Stage 3: CloseApproach -> Complete
+            AssertTrue("arm advances to close", ex.Arm());
+            AssertTrue("stage is close", ex.Stage == RendezvousStage.CloseApproach);
+            ex.Trigger();
+            ex.Update(world);
+            AssertTrue("complete after close", ex.Phase == RendezvousPhase.Complete);
+            AssertTrue("IsComplete", ex.IsComplete);
+            AssertTrue("arm blocked when complete", !ex.Arm());
+
+            // Abort then reset
+            ex.Abort();
+            AssertTrue("aborted phase", ex.Phase == RendezvousPhase.Aborted);
+            ex.Reset();
+            AssertTrue("reset to idle", ex.Phase == RendezvousPhase.Idle && ex.Stage == RendezvousStage.Intercept);
+        }
+
+        // Minimal in-memory IRendezvousWorld for driving the executor offline.
+        private sealed class FakeWorld : IRendezvousWorld
+        {
+            public double UniversalTime { get; set; }
+            public double Mu { get; set; }
+            public Vector3d ActivePosition { get; set; }
+            public Vector3d ActiveVelocity { get; set; }
+            public Vector3d TargetPosition { get; set; }
+            public Vector3d TargetVelocity { get; set; }
+            public Vector3d ReferenceNormal { get; set; }
         }
 
         private static double CircularPeriod(double radius)

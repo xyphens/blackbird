@@ -246,7 +246,6 @@ namespace Blackbird.Mathematics
             return MathHelpers.NormalizeDegrees(inertialLongitudeDeg - rotationDeg);
         }
 
-
         public static Vector3d EulerAngles(QuaternionD q, double tau)
         {
             double magnitude = Math.Sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
