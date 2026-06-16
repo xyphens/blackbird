@@ -86,12 +86,12 @@ namespace Blackbird.Psg
             double endMassKg = stage.EndMass * KilogramsPerKspTon;
             double vacuumThrustNewtons = stage.VacuumThrust * NewtonsPerKilonewton;
             double vacuumIsp = stage.VacuumSpecificImpulse;
-            double currentIsp = OrbitMath.IsFinite(stage.CurrentSpecificImpulse) && stage.CurrentSpecificImpulse > 0.0
+            double currentIsp = MathHelpers.IsFinite(stage.CurrentSpecificImpulse) && stage.CurrentSpecificImpulse > 0.0
                 ? stage.CurrentSpecificImpulse
                 : vacuumIsp;
 
-            if (!OrbitMath.IsFinite(startMassKg) || startMassKg <= 0.0 ||
-                !OrbitMath.IsFinite(endMassKg) || endMassKg <= 0.0 ||
+            if (!MathHelpers.IsFinite(startMassKg) || startMassKg <= 0.0 ||
+                !MathHelpers.IsFinite(endMassKg) || endMassKg <= 0.0 ||
                 endMassKg > startMassKg)
             {
                 return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage mass bounds are invalid.");
@@ -102,27 +102,27 @@ namespace Blackbird.Psg
                 return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage has no usable propellant.");
             }
 
-            if (!OrbitMath.IsFinite(vacuumThrustNewtons) || vacuumThrustNewtons <= 0.0)
+            if (!MathHelpers.IsFinite(vacuumThrustNewtons) || vacuumThrustNewtons <= 0.0)
             {
                 return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage vacuum thrust is unavailable.");
             }
 
-            if (!OrbitMath.IsFinite(vacuumIsp) || vacuumIsp <= 0.0)
+            if (!MathHelpers.IsFinite(vacuumIsp) || vacuumIsp <= 0.0)
             {
                 return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage vacuum specific impulse is unavailable.");
             }
 
             double massFlow = vacuumThrustNewtons / (vacuumIsp * StandardGravity);
-            if (!OrbitMath.IsFinite(massFlow) || massFlow <= 0.0)
+            if (!MathHelpers.IsFinite(massFlow) || massFlow <= 0.0)
             {
                 return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage mass flow cannot be derived.");
             }
 
-            double nominalBurnTime = OrbitMath.IsFinite(stage.BurnTimeSeconds) && stage.BurnTimeSeconds > 0.0
+            double nominalBurnTime = MathHelpers.IsFinite(stage.BurnTimeSeconds) && stage.BurnTimeSeconds > 0.0
                 ? stage.BurnTimeSeconds
                 : (startMassKg - endMassKg) / massFlow;
 
-            if (!OrbitMath.IsFinite(nominalBurnTime) || nominalBurnTime <= 0.0)
+            if (!MathHelpers.IsFinite(nominalBurnTime) || nominalBurnTime <= 0.0)
             {
                 return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage burn time cannot be derived.");
             }
@@ -132,7 +132,7 @@ namespace Blackbird.Psg
                 return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage burn time is too short to guide.");
             }
 
-            double minimumThrottle = OrbitMath.Clamp(stage.MinimumThrottle, 0.0, 1.0);
+            double minimumThrottle = MathHelpers.Clamp(stage.MinimumThrottle, 0.0, 1.0);
             double maximumBurnTime = minimumThrottle > 0.0
                 ? nominalBurnTime / minimumThrottle
                 : double.PositiveInfinity;
@@ -169,13 +169,13 @@ namespace Blackbird.Psg
             bool isUnguided,
             bool enforceMassContinuity)
         {
-            if (!OrbitMath.IsFinite(massKg) || massKg <= 0.0)
+            if (!MathHelpers.IsFinite(massKg) || massKg <= 0.0)
             {
                 return CreateInvalid(kspStage, phaseIndex, "Coast mass is invalid.");
             }
 
-            if (!OrbitMath.IsFinite(minimumTimeSeconds) || minimumTimeSeconds < 0.0 ||
-                !OrbitMath.IsFinite(maximumTimeSeconds) || maximumTimeSeconds < minimumTimeSeconds)
+            if (!MathHelpers.IsFinite(minimumTimeSeconds) || minimumTimeSeconds < 0.0 ||
+                !MathHelpers.IsFinite(maximumTimeSeconds) || maximumTimeSeconds < minimumTimeSeconds)
             {
                 return CreateInvalid(kspStage, phaseIndex, "Coast time bounds are invalid.");
             }

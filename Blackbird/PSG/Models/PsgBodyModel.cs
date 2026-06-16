@@ -17,12 +17,12 @@ namespace Blackbird.Psg
             double radiusMeters,
             Vector3d angularVelocityRadiansPerSecond)
         {
-            if (!OrbitMath.IsFinite(gravParameter) || gravParameter <= 0.0)
+            if (!MathHelpers.IsFinite(gravParameter) || gravParameter <= 0.0)
             {
                 return CreateInvalid("Body gravitational parameter is invalid.");
             }
 
-            if (!OrbitMath.IsFinite(radiusMeters) || radiusMeters <= 0.0)
+            if (!MathHelpers.IsFinite(radiusMeters) || radiusMeters <= 0.0)
             {
                 return CreateInvalid("Body radius is invalid.");
             }

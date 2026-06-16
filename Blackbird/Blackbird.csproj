@@ -81,6 +81,7 @@
     <Compile Include="Guidance\PoweredAscentGuidance.cs" />
     <Compile Include="Helpers\Helpers.cs" />
     <Compile Include="Logging\Log.cs" />
+    <Compile Include="Math\Helpers.cs" />
     <Compile Include="Models\AscentGuidanceInfo.cs" />
     <Compile Include="Models\InsertionTarget.cs" />
     <Compile Include="Models\LaunchCandidate.cs" />

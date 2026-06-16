@@ -36,9 +36,9 @@ namespace Blackbird.Guidance
 
             Vector3d deltaEuler = OrbitMath.EulerAngles(deltaRotation, Tau);
 
-            double deltaPitch = OrbitMath.ClampPi(deltaEuler.x * DegToRad, Tau);
-            double deltaYaw = -OrbitMath.ClampPi(deltaEuler.y * DegToRad, Tau);
-            double deltaRoll = OrbitMath.ClampPi(deltaEuler.z * DegToRad, Tau);
+            double deltaPitch = MathHelpers.ClampPi(deltaEuler.x * DegToRad, Tau);
+            double deltaYaw = -MathHelpers.ClampPi(deltaEuler.y * DegToRad, Tau);
+            double deltaRoll = MathHelpers.ClampPi(deltaEuler.z * DegToRad, Tau);
 
             TrackedRotation += new Vector3d(deltaPitch, deltaRoll, deltaYaw);
 
@@ -59,14 +59,14 @@ namespace Blackbird.Guidance
 
             Vector3d deltaEuler = OrbitMath.EulerAngles(deltaRotation, Tau);
 
-            double deltaPitch = OrbitMath.ClampPi(deltaEuler.x * DegToRad, Tau);
-            double deltaYaw = -OrbitMath.ClampPi(deltaEuler.y * DegToRad, Tau);
-            double deltaRoll = OrbitMath.ClampPi(deltaEuler.z * DegToRad, Tau);
+            double deltaPitch = MathHelpers.ClampPi(deltaEuler.x * DegToRad, Tau);
+            double deltaYaw = -MathHelpers.ClampPi(deltaEuler.y * DegToRad, Tau);
+            double deltaRoll = MathHelpers.ClampPi(deltaEuler.z * DegToRad, Tau);
 
             error = new Vector3d(deltaPitch, deltaRoll, deltaYaw);
             desired = TrackedRotation + error;
 
-            distance = OrbitMath.SafeAcos(Math.Cos(deltaPitch) * Math.Cos(deltaYaw));
+            distance = MathHelpers.BoundAcos(Math.Cos(deltaPitch) * Math.Cos(deltaYaw));
         }
 
         public void Reset()

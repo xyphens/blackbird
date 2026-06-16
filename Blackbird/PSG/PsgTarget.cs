@@ -35,14 +35,14 @@ namespace Blackbird.Psg
             double lanDeg,
             bool useLanConstraint)
         {
-            if (!OrbitMath.IsFinite(bodyGravParameter) || bodyGravParameter <= 0.0)
+            if (!MathHelpers.IsFinite(bodyGravParameter) || bodyGravParameter <= 0.0)
             {
                 return CreateInvalid("Target body gravitational parameter is invalid.");
             }
 
-            if (!OrbitMath.IsFinite(periapsisRadiusMeters) || periapsisRadiusMeters <= 0.0 ||
-                !OrbitMath.IsFinite(apoapsisRadiusMeters) || apoapsisRadiusMeters <= 0.0 ||
-                !OrbitMath.IsFinite(attachmentRadiusMeters) || attachmentRadiusMeters <= 0.0)
+            if (!MathHelpers.IsFinite(periapsisRadiusMeters) || periapsisRadiusMeters <= 0.0 ||
+                !MathHelpers.IsFinite(apoapsisRadiusMeters) || apoapsisRadiusMeters <= 0.0 ||
+                !MathHelpers.IsFinite(attachmentRadiusMeters) || attachmentRadiusMeters <= 0.0)
             {
                 return CreateInvalid("Target radii are invalid.");
             }
@@ -115,7 +115,7 @@ namespace Blackbird.Psg
                 return CreateInvalid(ascentProfile.ReasonUnavailable);
             }
 
-            if (!OrbitMath.IsFinite(vesselState.BodyRadius) || vesselState.BodyRadius <= 0.0)
+            if (!MathHelpers.IsFinite(vesselState.BodyRadius) || vesselState.BodyRadius <= 0.0)
             {
                 return CreateInvalid("Reference body radius is unavailable.");
             }
@@ -123,8 +123,8 @@ namespace Blackbird.Psg
             double periapsisRadius = vesselState.BodyRadius + ascentProfile.TargetPeriapsisAlt;
             double apoapsisRadius = vesselState.BodyRadius + ascentProfile.TargetApoapsisAlt;
 
-            if (!OrbitMath.IsFinite(periapsisRadius) || periapsisRadius <= vesselState.BodyRadius ||
-                !OrbitMath.IsFinite(apoapsisRadius) || apoapsisRadius <= vesselState.BodyRadius)
+            if (!MathHelpers.IsFinite(periapsisRadius) || periapsisRadius <= vesselState.BodyRadius ||
+                !MathHelpers.IsFinite(apoapsisRadius) || apoapsisRadius <= vesselState.BodyRadius)
             {
                 return CreateInvalid("Insertion apsides are unavailable.");
             }
@@ -142,10 +142,10 @@ namespace Blackbird.Psg
             double specificEnergy = -vesselState.BodyGravParameter / (2.0 * semiMajorAxis);
             double angularMomentumMagnitude = System.Math.Sqrt(vesselState.BodyGravParameter * semiLatusRectum);
             Vector3d normal = targetOrbitNormal.sqrMagnitude > 0.0 ? targetOrbitNormal.normalized : Vector3d.zero;
-            double inclination = targetOrbit != null && OrbitMath.IsFinite(targetOrbit.InclinationDeg)
+            double inclination = targetOrbit != null && MathHelpers.IsFinite(targetOrbit.InclinationDeg)
                 ? targetOrbit.InclinationDeg
                 : vesselState.CurrentInclinationDeg;
-            double lan = targetOrbit != null && OrbitMath.IsFinite(targetOrbit.LanDeg)
+            double lan = targetOrbit != null && MathHelpers.IsFinite(targetOrbit.LanDeg)
                 ? targetOrbit.LanDeg
                 : vesselState.CurrentLanDeg;
 
@@ -164,7 +164,7 @@ namespace Blackbird.Psg
                 TargetSpecificEnergy = specificEnergy,
                 TargetAngularMomentumVector = normal * angularMomentumMagnitude,
                 UseAttachmentRadius = false,
-                UseLanConstraint = normal.sqrMagnitude > 0.0 || OrbitMath.IsFinite(lan),
+                UseLanConstraint = normal.sqrMagnitude > 0.0 || MathHelpers.IsFinite(lan),
                 UseArgpConstraint = false
             };
         }

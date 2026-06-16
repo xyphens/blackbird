@@ -171,9 +171,9 @@ namespace Blackbird.Models
             double deltaVActual = GetDouble(stageInfo, "deltaVActual", double.NaN);
             double burnTime = GetDouble(stageInfo, "stageBurnTime", double.NaN);
 
-            if (!OrbitMath.IsFinite(rawKspStage) ||
-                !OrbitMath.IsFinite(startMass) ||
-                !OrbitMath.IsFinite(endMass) ||
+            if (!MathHelpers.IsFinite(rawKspStage) ||
+                !MathHelpers.IsFinite(startMass) ||
+                !MathHelpers.IsFinite(endMass) ||
                 startMass <= 0.0 ||
                 endMass <= 0.0)
             {
@@ -183,16 +183,16 @@ namespace Blackbird.Models
             int kspStage = Convert.ToInt32(rawKspStage);
 
             double minimumThrust = GetStageMinimumThrust(stageInfo);
-            double maximumThrust = OrbitMath.IsFinite(thrustVac) && thrustVac > 0.0 ? thrustVac : thrustActual;
-            double minimumThrottle = maximumThrust > 0.0 && OrbitMath.IsFinite(minimumThrust)
-                ? OrbitMath.Clamp(minimumThrust / maximumThrust, 0.0, 1.0)
+            double maximumThrust = MathHelpers.IsFinite(thrustVac) && thrustVac > 0.0 ? thrustVac : thrustActual;
+            double minimumThrottle = maximumThrust > 0.0 && MathHelpers.IsFinite(minimumThrust)
+                ? MathHelpers.Clamp(minimumThrust / maximumThrust, 0.0, 1.0)
                 : 0.0;
 
             bool hasPoweredCapability =
-                (OrbitMath.IsFinite(thrustVac) && thrustVac > 0.0) ||
-                (OrbitMath.IsFinite(thrustActual) && thrustActual > 0.0) ||
-                (OrbitMath.IsFinite(deltaVVac) && deltaVVac > 0.0) ||
-                (OrbitMath.IsFinite(deltaVActual) && deltaVActual > 0.0);
+                (MathHelpers.IsFinite(thrustVac) && thrustVac > 0.0) ||
+                (MathHelpers.IsFinite(thrustActual) && thrustActual > 0.0) ||
+                (MathHelpers.IsFinite(deltaVVac) && deltaVVac > 0.0) ||
+                (MathHelpers.IsFinite(deltaVActual) && deltaVActual > 0.0);
 
             if (!hasPoweredCapability)
             {
@@ -247,7 +247,7 @@ namespace Blackbird.Models
                 if (engine == null) continue;
 
                 double minThrust = Math.Max(0.0, GetDouble(engine, "minThrust", 0.0));
-                double thrustLimiter = OrbitMath.Clamp(GetDouble(engine, "thrustPercentage", 100.0), 0.0, 100.0) / 100.0;
+                double thrustLimiter = MathHelpers.Clamp(GetDouble(engine, "thrustPercentage", 100.0), 0.0, 100.0) / 100.0;
                 minimumThrust += minThrust * thrustLimiter;
             }
 
@@ -302,7 +302,7 @@ namespace Blackbird.Models
                     if (module == null || !IsEngineModule(module) || !IsUsableEngine(module)) continue;
 
                     double maxThrust = Math.Max(0.0, GetDouble(module, "maxThrust", 0.0));
-                    double thrustLimiter = OrbitMath.Clamp(GetDouble(module, "thrustPercentage", 100.0), 0.0, 100.0) / 100.0;
+                    double thrustLimiter = MathHelpers.Clamp(GetDouble(module, "thrustPercentage", 100.0), 0.0, 100.0) / 100.0;
                     double availableThrust = maxThrust * thrustLimiter;
                     double currentThrust = Math.Max(0.0, GetDouble(module, "finalThrust", 0.0));
 
@@ -312,13 +312,13 @@ namespace Blackbird.Models
                     double vacuumIsp = GetEngineIsp(module, 0.0);
                     double atmosphericIsp = GetEngineIsp(module, pressureAtm);
 
-                    if (availableThrust > 0.0 && OrbitMath.IsFinite(vacuumIsp))
+                    if (availableThrust > 0.0 && MathHelpers.IsFinite(vacuumIsp))
                     {
                         weightedVacuumIsp += vacuumIsp * availableThrust;
                         ispWeight += availableThrust;
                     }
 
-                    if (availableThrust > 0.0 && OrbitMath.IsFinite(atmosphericIsp))
+                    if (availableThrust > 0.0 && MathHelpers.IsFinite(atmosphericIsp))
                     {
                         weightedAtmosphericIsp += atmosphericIsp * availableThrust;
                     }
@@ -332,7 +332,7 @@ namespace Blackbird.Models
             }
 
             double surfaceGravity = GetBodySurfaceGravity(body);
-            if (totalMass > 0.0 && OrbitMath.IsFinite(surfaceGravity) && surfaceGravity > 0.0)
+            if (totalMass > 0.0 && MathHelpers.IsFinite(surfaceGravity) && surfaceGravity > 0.0)
             {
                 info.ThrustToWeight = info.AvailableThrust / (totalMass * surfaceGravity);
             }

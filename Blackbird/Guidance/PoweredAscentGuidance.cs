@@ -352,12 +352,12 @@ namespace Blackbird.Guidance
             Vector3d direction = inertialDirection.normalized;
             Vector3d horizontal = Vector3d.Exclude(up, direction);
 
-            pitchDeg = Math.Asin(OrbitMath.Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)) * 180.0 / Math.PI;
+            pitchDeg = Math.Asin(MathHelpers.Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)) * 180.0 / Math.PI;
 
             if (horizontal.sqrMagnitude > 0.0)
             {
                 Vector3d horizontalDirection = horizontal.normalized;
-                headingDeg = OrbitMath.NormalizeDegrees(
+                headingDeg = MathHelpers.NormalizeDegrees(
                     Math.Atan2(
                         Vector3d.Dot(horizontalDirection, east),
                         Vector3d.Dot(horizontalDirection, north)) *
@@ -368,12 +368,12 @@ namespace Blackbird.Guidance
         private static bool HasUsableOrbitState(VesselState vesselState, double targetAp, double targetPe)
         {
             return vesselState.Body != null &&
-                   OrbitMath.IsFinite(vesselState.BodyRadius) &&
-                   OrbitMath.IsFinite(vesselState.BodyGravParameter) &&
-                   OrbitMath.IsFinite(vesselState.CurrentApoapsisAlt) &&
-                   OrbitMath.IsFinite(vesselState.CurrentPeriapsisAlt) &&
-                   OrbitMath.IsFinite(targetAp) &&
-                   OrbitMath.IsFinite(targetPe);
+                   MathHelpers.IsFinite(vesselState.BodyRadius) &&
+                   MathHelpers.IsFinite(vesselState.BodyGravParameter) &&
+                   MathHelpers.IsFinite(vesselState.CurrentApoapsisAlt) &&
+                   MathHelpers.IsFinite(vesselState.CurrentPeriapsisAlt) &&
+                   MathHelpers.IsFinite(targetAp) &&
+                   MathHelpers.IsFinite(targetPe);
         }
 
         private static double EstimateVelocityToGo(VesselState vesselState, AscentProfile ascentProfile)
@@ -384,16 +384,16 @@ namespace Blackbird.Guidance
             Vector3d up = (vesselState.Position - vesselState.Body.position).normalized;
             double currentHorizontal = Vector3d.Exclude(up, vesselState.OrbitalVelocity).magnitude;
 
-            return OrbitMath.IsFinite(targetSpeed)
+            return MathHelpers.IsFinite(targetSpeed)
                 ? Math.Max(0.0, targetSpeed - currentHorizontal)
                 : double.NaN;
         }
 
         private static double EstimateTimeToGoSeconds(VesselState vesselState, double velocityToGo)
         {
-            if (!OrbitMath.IsFinite(velocityToGo) || velocityToGo <= 0.0) return 0.0;
-            if (!OrbitMath.IsFinite(vesselState.AvailableThrust) || vesselState.AvailableThrust <= 0.0) return double.NaN;
-            if (!OrbitMath.IsFinite(vesselState.TotalMass) || vesselState.TotalMass <= 0.0) return double.NaN;
+            if (!MathHelpers.IsFinite(velocityToGo) || velocityToGo <= 0.0) return 0.0;
+            if (!MathHelpers.IsFinite(vesselState.AvailableThrust) || vesselState.AvailableThrust <= 0.0) return double.NaN;
+            if (!MathHelpers.IsFinite(vesselState.TotalMass) || vesselState.TotalMass <= 0.0) return double.NaN;
 
             double acceleration = vesselState.AvailableThrust / vesselState.TotalMass;
             return acceleration > 0.0 ? velocityToGo / acceleration : double.NaN;
@@ -401,7 +401,7 @@ namespace Blackbird.Guidance
 
         private static double ClampPitchForControl(double pitchDeg)
         {
-            return OrbitMath.Clamp(pitchDeg, -30.0, 90.0);
+            return MathHelpers.Clamp(pitchDeg, -30.0, 90.0);
         }
 
         private static PoweredGuidanceCommand CreateUnavailable(double pitchDeg, double headingDeg, double throttle)
@@ -503,8 +503,8 @@ namespace Blackbird.Guidance
                 Phase = phase,
                 Status = status,
                 PitchDeg = pitchDeg,
-                HeadingDeg = OrbitMath.NormalizeDegrees(headingDeg),
-                Throttle = OrbitMath.Clamp(throttle, 0.0, 1.0),
+                HeadingDeg = MathHelpers.NormalizeDegrees(headingDeg),
+                Throttle = MathHelpers.Clamp(throttle, 0.0, 1.0),
                 HasInertialDirection = hasInertialDirection,
                 InertialDirection = hasInertialDirection ? inertialDirection.normalized : Vector3d.zero,
                 ApoapsisErrorMeters = apError,

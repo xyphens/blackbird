@@ -138,8 +138,8 @@ namespace Blackbird.Psg
             double mu = problem.BodyGravParameter;
             double hMagnitude = Math.Sqrt(mu * sma * Math.Max(0.0, 1.0 - ecc * ecc));
             double speed = Math.Sqrt(Math.Max(0.0, mu * (2.0 / attachment - 1.0 / sma)));
-            double gamma = OrbitMath.SafeAcos(OrbitMath.Clamp(hMagnitude / Math.Max(1e-9, attachment * speed), -1.0, 1.0));
-            if (!OrbitMath.IsFinite(gamma)) gamma = 0.0;
+            double gamma = MathHelpers.BoundAcos(MathHelpers.Clamp(hMagnitude / Math.Max(1e-9, attachment * speed), -1.0, 1.0));
+            if (!MathHelpers.IsFinite(gamma)) gamma = 0.0;
 
             double scaledRadius = attachment / scale.Length;
             double scaledSpeed = speed / scale.Velocity;
@@ -240,7 +240,7 @@ namespace Blackbird.Psg
 
         private static double ClampAttachmentRadius(double attachment, double pe, double ap)
         {
-            if (!OrbitMath.IsFinite(attachment) || attachment <= 0.0) return pe;
+            if (!MathHelpers.IsFinite(attachment) || attachment <= 0.0) return pe;
             if (attachment < pe) return pe;
             if (ap > pe && attachment > ap) return ap;
             return attachment;

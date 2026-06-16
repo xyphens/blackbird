@@ -92,15 +92,15 @@ namespace Blackbird.Guidance
                 return CreateInvalid("Vessel state is unavailable.");
             }
 
-            if (!OrbitMath.IsFinite(targetApoapsisAlt) ||
-                !OrbitMath.IsFinite(targetPeriapsisAlt) ||
+            if (!MathHelpers.IsFinite(targetApoapsisAlt) ||
+                !MathHelpers.IsFinite(targetPeriapsisAlt) ||
                 targetApoapsisAlt <= 0.0 ||
                 targetPeriapsisAlt <= 0.0)
             {
                 return CreateInvalid("Insertion target altitude is unavailable.");
             }
 
-            if (!OrbitMath.IsFinite(recommendedHeadingDeg))
+            if (!MathHelpers.IsFinite(recommendedHeadingDeg))
             {
                 return CreateInvalid("Launch heading is unavailable.");
             }
@@ -195,8 +195,8 @@ namespace Blackbird.Guidance
 
             double finalAltitude = points[points.Length - 1].AltitudeMeters;
             double circularVelocity = OrbitMath.GetCircularVelocity(vesselState.Body, finalAltitude);
-            double nominalVerticalRate = OrbitMath.IsFinite(circularVelocity)
-                ? OrbitMath.Clamp(circularVelocity / 25.0, 120.0, 450.0)
+            double nominalVerticalRate = MathHelpers.IsFinite(circularVelocity)
+                ? MathHelpers.Clamp(circularVelocity / 25.0, 120.0, 450.0)
                 : 180.0;
 
             return Math.Max(60.0, (finalAltitude - vesselState.AltitudeMeters) / nominalVerticalRate);
@@ -218,7 +218,7 @@ namespace Blackbird.Guidance
             double radiusScaledStart = vesselState.BodyRadius * 0.0008;
             double start = Math.Max(250.0, Math.Min(pressureStart, radiusScaledStart));
 
-            return OrbitMath.Clamp(start, vesselState.AltitudeMeters, insertionAlt * 0.25);
+            return MathHelpers.Clamp(start, vesselState.AltitudeMeters, insertionAlt * 0.25);
         }
 
         // Computes the desired pitch near atmosphere exit from target altitude and atmospheric depth.
@@ -228,7 +228,7 @@ namespace Blackbird.Guidance
             if (turnEndAlt <= atmosphereTop) return 0.0;
 
             double coastFraction = (turnEndAlt - atmosphereTop) / turnEndAlt;
-            return OrbitMath.Clamp(5.0 + coastFraction * 15.0, 2.0, 20.0);
+            return MathHelpers.Clamp(5.0 + coastFraction * 15.0, 2.0, 20.0);
         }
 
         // Chooses where the bootstrap profile becomes horizontal instead of waiting for apoapsis.
@@ -238,7 +238,7 @@ namespace Blackbird.Guidance
             {
                 double atmosphereTarget = atmosphereTop * 0.85;
                 double insertionTarget = insertionAlt * 0.40;
-                return OrbitMath.Clamp(
+                return MathHelpers.Clamp(
                     Math.Max(atmosphereTarget, insertionTarget),
                     atmosphereTop * 0.45,
                     Math.Min(insertionAlt, atmosphereTop));
@@ -258,15 +258,15 @@ namespace Blackbird.Guidance
                 ? atmosphereTop
                 : turnEndAlt;
 
-            double progress = OrbitMath.Clamp(
+            double progress = MathHelpers.Clamp(
                 (referenceAlt - turnStartAlt) / (turnEndAlt - turnStartAlt),
                 0.001,
                 0.999);
 
-            double normalizedPitch = OrbitMath.Clamp(exitPitchDeg / 90.0, 0.001, 0.999);
+            double normalizedPitch = MathHelpers.Clamp(exitPitchDeg / 90.0, 0.001, 0.999);
             double exponent = Math.Log(1.0 - normalizedPitch) / Math.Log(progress);
 
-            return OrbitMath.Clamp(exponent, 0.35, 2.5);
+            return MathHelpers.Clamp(exponent, 0.35, 2.5);
         }
 
         // Creates altitude samples for stable interpolation before PSG guidance is available.
@@ -303,7 +303,7 @@ namespace Blackbird.Guidance
             if (altitude >= turnEndAlt) return 0.0;
 
             double progress = (altitude - turnStartAlt) / (turnEndAlt - turnStartAlt);
-            return OrbitMath.Clamp(90.0 * (1.0 - Math.Pow(progress, shapeExponent)), 0.0, 90.0);
+            return MathHelpers.Clamp(90.0 * (1.0 - Math.Pow(progress, shapeExponent)), 0.0, 90.0);
         }
 
         // Keeps engines burning until the profile reaches its explicit cutoff altitude.
@@ -325,7 +325,7 @@ namespace Blackbird.Guidance
             double headingDeg,
             double throttle)
         {
-            if (!OrbitMath.IsFinite(altitudeMeters) || !OrbitMath.IsFinite(pitchDeg)) return;
+            if (!MathHelpers.IsFinite(altitudeMeters) || !MathHelpers.IsFinite(pitchDeg)) return;
             if (points.Count > 0 && altitudeMeters <= points[points.Count - 1].AltitudeMeters + 1.0) return;
 
             points.Add(CreatePoint(altitudeMeters, pitchDeg, headingDeg, throttle));
@@ -343,7 +343,7 @@ namespace Blackbird.Guidance
                 AltitudeMeters = altitudeMeters,
                 PitchDeg = pitchDeg,
                 HeadingDeg = headingDeg,
-                Throttle = OrbitMath.Clamp(throttle, 0.0, 1.0)
+                Throttle = MathHelpers.Clamp(throttle, 0.0, 1.0)
             };
         }
     }

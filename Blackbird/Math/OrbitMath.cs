@@ -60,7 +60,7 @@ namespace Blackbird.Mathematics
 
             double apoapsisRadius = body.Radius + apoapsisAlt;
             double semiMajorAxis = GetSemiMajorAxis(body, apoapsisAlt, periapsisAlt);
-            if (!IsFinite(semiMajorAxis) || semiMajorAxis <= 0.0 || apoapsisRadius <= 0.0)
+            if (!MathHelpers.IsFinite(semiMajorAxis) || semiMajorAxis <= 0.0 || apoapsisRadius <= 0.0)
                 return double.NaN;
 
             double v2 = body.gravParameter * (2.0 / apoapsisRadius - 1.0 / semiMajorAxis);
@@ -86,7 +86,7 @@ namespace Blackbird.Mathematics
             if (body == null || body.gravParameter <= 0.0) return double.NaN;
 
             double semiMajorAxis = GetSemiMajorAxis(body, apoapsisAlt, periapsisAlt);
-            if (!IsFinite(semiMajorAxis) || semiMajorAxis <= 0.0) return double.NaN;
+            if (!MathHelpers.IsFinite(semiMajorAxis) || semiMajorAxis <= 0.0) return double.NaN;
 
             return 2.0 * Math.PI * Math.Sqrt(semiMajorAxis * semiMajorAxis * semiMajorAxis / body.gravParameter);
         }
@@ -131,7 +131,7 @@ namespace Blackbird.Mathematics
             Vector3d cross = Vector3d.Cross(activeVector, targetVector);
             double sign = Math.Sign(Vector3d.Dot(cross, orbitNormal));
 
-            return NormalizeDegrees(angle * sign);
+            return MathHelpers.NormalizeDegrees(angle * sign);
         }
 
         // Estimates the two-impulse Hohmann transfer dV between coplanar circular altitudes.
@@ -202,7 +202,7 @@ namespace Blackbird.Mathematics
 
             double azimuthRad = Math.Asin(argument);
 
-            return NormalizeDegrees(azimuthRad * 180.0 / Math.PI);
+            return MathHelpers.NormalizeDegrees(azimuthRad * 180.0 / Math.PI);
         }
 
         // Computes launch heading from the target orbit plane at the current launch position.
@@ -234,57 +234,18 @@ namespace Blackbird.Mathematics
             double eastComponent = Vector3d.Dot(direction, east);
             double headingRad = Math.Atan2(eastComponent, northComponent);
 
-            return NormalizeDegrees(headingRad * 180.0 / Math.PI);
+            return MathHelpers.NormalizeDegrees(headingRad * 180.0 / Math.PI);
         }
 
-        // convert negative degrees to a real radian
-        public static double NormalizeDegrees(double degrees)
-        {
-            degrees %= 360.0;
-            if (degrees < 0) degrees += 360.0;
-
-            return degrees;
-        }
-
-        public static double DeltaDegrees(double fromDeg, double toDeg) { 
-            double delta = NormalizeDegrees(toDeg - fromDeg);
-            return delta > 180.0 ? delta - 360.0 : delta;
-        }
-
-        public static double TimeToLongitudeSeconds(double currentLongitudeDeg, double targetLongitudeDeg, double rotationPeriodSeconds)
-        {
-            double deltaDeg = NormalizeDegrees(targetLongitudeDeg - currentLongitudeDeg);
-            return deltaDeg / 360.0 * rotationPeriodSeconds;
-        }
         public static double GetBodyFixedLongitudeAtTime(
             double inertialLongitudeDeg,
             double universalTimeSeconds,
             double rotationPeriodSeconds)
         {
             double rotationDeg = universalTimeSeconds / rotationPeriodSeconds * 360.0;
-            return NormalizeDegrees(inertialLongitudeDeg - rotationDeg);
-        }
-        public static double Clamp(double value, double min, double max)
-        {
-            return value < min ? min : value > max ? max : value;
-        }
-        public static double ClampPi(double value, double tau)
-        {
-            value %= tau;
-            value = value < 0.0 ? value + tau : value;
-
-            if (value >= tau) value = 0.0;
-
-            return value > Math.PI ? value - tau : value;
+            return MathHelpers.NormalizeDegrees(inertialLongitudeDeg - rotationDeg);
         }
 
-        public static double SafeAcos(double value)
-        {
-            if (double.IsNaN(value) || double.IsInfinity(value))
-                return double.NaN;
-
-            return Math.Acos(Math.Max(-1.0, Math.Min(1.0, value)));
-        }
 
         public static Vector3d EulerAngles(QuaternionD q, double tau)
         {
@@ -311,13 +272,13 @@ namespace Blackbird.Mathematics
             if (test > 0.499999999 * unit)
             {
                 double yaw = 2.0 * Math.Atan2(q.y, q.w);
-                return new Vector3d(90.0, Rad2Deg(Clamp2Pi(yaw, tau)), 0.0);
+                return new Vector3d(90.0, MathHelpers.Rad2Deg(MathHelpers.Clamp2Pi(yaw, tau)), 0.0);
             }
 
             if (test < -0.499999999 * unit)
             {
                 double yaw = -2.0 * Math.Atan2(q.y, q.w);
-                return new Vector3d(270.0, Rad2Deg(Clamp2Pi(yaw, tau)), 0.0);
+                return new Vector3d(270.0, MathHelpers.Rad2Deg(MathHelpers.Clamp2Pi(yaw, tau)), 0.0);
             }
 
             double pitch = Math.Asin(2.0 * test / unit);
@@ -332,33 +293,11 @@ namespace Blackbird.Mathematics
                     sqw - sqx + sqy - sqz);
 
             return new Vector3d(
-                Rad2Deg(Clamp2Pi(pitch, tau)),
-                Rad2Deg(Clamp2Pi(yawNormal, tau)),
-                Rad2Deg(Clamp2Pi(roll, tau)));
+                MathHelpers.Rad2Deg(MathHelpers.Clamp2Pi(pitch, tau)),
+                MathHelpers.Rad2Deg(MathHelpers.Clamp2Pi(yawNormal, tau)),
+                MathHelpers.Rad2Deg(MathHelpers.Clamp2Pi(roll, tau)));
         }
 
-        public static double Clamp2Pi(double value, double tau)
-        {
-            value %= tau;
-            value = value < 0.0 ? value + tau : value;
-            return value >= tau ? 0.0 : value;
-        }
-        public static double Rad2Deg(double value)
-        {
-            return value * 180.0 / Math.PI;
-        }
-        public static double Deg2Rad(double value)
-        {
-            return value * Math.PI / 180.0;
-        }
-        public static bool IsFinite(double value)
-        {
-            return !double.IsNaN(value) && !double.IsInfinity(value);
-        }
-        public static double ApplyDeadband(double value, double deadband)
-        {
-            return Math.Abs(value) < deadband ? 0.0 : value - Math.Sign(value) * deadband;
-        }
         public static Vector3d DeltaVToCircularize(Orbit o, double ut)
         {
             (Vector3d pos, Vector3d vector) = RightHandVectorsAtUt(o, ut);
@@ -368,8 +307,8 @@ namespace Blackbird.Mathematics
         private static Vector3d dvToCircularize(double mu, Vector3d r, Vector3d v)
         {
             if (mu > 0 && !double.IsNaN(mu) && !double.IsInfinity(mu) 
-                && IsFinite(v) 
-                && IsNonZeroFinite(r))
+                && MathHelpers.IsFinite(v) 
+                && MathHelpers.IsNonZeroFinite(r))
             {
                 var h = Vector3d.Cross(r, v);
                 return CircularVelocityFromHorizontalVector(mu, r, h) - v;
@@ -390,13 +329,13 @@ namespace Blackbird.Mathematics
         {
             Vector3d dV = new Vector3d();
             // todo: check if pos is nonzero and finite, check if velocity and targetinclination are finite
-            if (IsNonZeroFinite(position) && IsFinite(velocity) && IsFinite(targetInclination))
+            if (MathHelpers.IsNonZeroFinite(position) && MathHelpers.IsFinite(velocity) && MathHelpers.IsFinite(targetInclination))
             {
                 dV = VelocityForInclination(position, velocity, targetInclination) - velocity;
             }
 
             // returns an empty vector if not finite
-            return IsFinite(dV) ? dV : new Vector3d();
+            return MathHelpers.IsFinite(dV) ? dV : new Vector3d();
         }
 
         // Body-relative position & orbital velocity at UT in the SwapYZ ("right-hand", z-up) frame —
@@ -425,7 +364,7 @@ namespace Blackbird.Mathematics
 
             if (Math.Abs(cosAngle) > 1.0)
             {
-                return Math.Abs(ClampPi(inclination, 2 * Math.PI)) < Math.PI * 0.5 ? 0 : Deg2Rad(180);
+                return Math.Abs(MathHelpers.ClampPi(inclination, 2 * Math.PI)) < Math.PI * 0.5 ? 0 : MathHelpers.Deg2Rad(180);
             }
 
             double angle = Math.Acos(cosAngle);
@@ -480,11 +419,9 @@ namespace Blackbird.Mathematics
             return m * vector;
         }
 
-        private static double LatFromBCI(Vector3d r) => !IsFinite(r) ? double.NaN : Math.Asin(Clamp(r.z / r.magnitude, -1.0, 1.0));
+        private static double LatFromBCI(Vector3d r) => !MathHelpers.IsFinite(r) ? double.NaN : Math.Asin(MathHelpers.Clamp(r.z / r.magnitude, -1.0, 1.0));
         private static double LonFromBCI(Vector3d r) => Math.Atan2(r.y, r.x);
 
-        public static bool IsFinite(Vector3d v) => IsFinite(v[0]) && IsFinite(v[1]) && IsFinite(v[2]);
-        public static bool IsNonZeroFinite(Vector3d v) => v != Vector3d.zero && IsFinite(v);
         public static Orbit PerturbedOrbit(Orbit o, double ut, Vector3d dV) => OrbitFromVectors(WorldPositionAtUt(o, ut), o.getOrbitalVelocityAtUT(ut).xzy + dV, o.referenceBody, ut);
 
         private static Vector3d WorldPositionAtUt(Orbit o, double ut) => o.referenceBody.position + o.getRelativePositionAtUT(ut).xzy;

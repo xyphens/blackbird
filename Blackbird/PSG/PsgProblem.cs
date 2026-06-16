@@ -108,14 +108,14 @@ namespace Blackbird.Psg
                 return CreateInvalid("No powered PSG phases are available.");
             }
 
-            if (!OrbitMath.IsFinite(vesselState.TotalMass) || vesselState.TotalMass <= 0.0)
+            if (!MathHelpers.IsFinite(vesselState.TotalMass) || vesselState.TotalMass <= 0.0)
             {
                 return CreateInvalid("Vessel mass is unavailable.");
             }
 
             if (vesselState.Body == null ||
-                !OrbitMath.IsFinite(vesselState.BodyGravParameter) || vesselState.BodyGravParameter <= 0.0 ||
-                !OrbitMath.IsFinite(vesselState.BodyRadius) || vesselState.BodyRadius <= 0.0)
+                !MathHelpers.IsFinite(vesselState.BodyGravParameter) || vesselState.BodyGravParameter <= 0.0 ||
+                !MathHelpers.IsFinite(vesselState.BodyRadius) || vesselState.BodyRadius <= 0.0)
             {
                 return CreateInvalid("Reference body constants are unavailable.");
             }
@@ -160,19 +160,19 @@ namespace Blackbird.Psg
             double rho0 = body.atmDensityASL;
             double rho1 = body.GetDensity(body.GetPressure(sampleAltitude), body.GetTemperature(sampleAltitude));
 
-            if (!OrbitMath.IsFinite(rho0) || !OrbitMath.IsFinite(rho1) || rho0 <= 0.0 || rho1 <= 0.0 || rho0 <= rho1)
+            if (!MathHelpers.IsFinite(rho0) || !MathHelpers.IsFinite(rho1) || rho0 <= 0.0 || rho1 <= 0.0 || rho0 <= rho1)
             {
                 return 0.0;
             }
 
             double scaleHeight = sampleAltitude / System.Math.Log(rho0 / rho1);
-            return OrbitMath.IsFinite(scaleHeight) && scaleHeight > 0.0 ? scaleHeight : 0.0;
+            return MathHelpers.IsFinite(scaleHeight) && scaleHeight > 0.0 ? scaleHeight : 0.0;
         }
 
         private static Vector3d GetBodyAngularVelocity(VesselState vesselState)
         {
             if (vesselState == null ||
-                !OrbitMath.IsFinite(vesselState.BodyRotationPeriod) ||
+                !MathHelpers.IsFinite(vesselState.BodyRotationPeriod) ||
                 vesselState.BodyRotationPeriod <= 0.0)
             {
                 return Vector3d.zero;

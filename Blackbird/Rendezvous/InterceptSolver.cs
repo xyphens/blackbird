@@ -72,7 +72,7 @@ namespace Blackbird.Rendezvous
         {
             if (mu <= 0.0 || targetPositionAt == null || arrivalSamples < 1 ||
                 tofMin <= 0.0 || tofMax < tofMin ||
-                !TwoBody.IsFinite(activePosition) || !TwoBody.IsFinite(activeVelocity))
+                !MathHelpers.IsFinite(activePosition) || !MathHelpers.IsFinite(activeVelocity))
             {
                 return new InterceptSolution { Success = false, Status = InterceptStatus.InvalidInput };
             }
@@ -96,7 +96,7 @@ namespace Blackbird.Rendezvous
                 double arrivalUt = ignitionUt + tof;
 
                 Vector3d targetPosition = targetPositionAt(arrivalUt);
-                if (!TwoBody.IsFinite(targetPosition)) continue;
+                if (!MathHelpers.IsFinite(targetPosition)) continue;
 
                 LambertResult transfer = LambertSolver.Solve(
                     activePosition, targetPosition, tof, mu, prograde, referenceNormal);

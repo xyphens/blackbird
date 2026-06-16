@@ -112,7 +112,7 @@ namespace Blackbird.Psg
             {
                 IsValid = true,
                 InertialDirection = point.InertialThrustDirection.normalized,
-                Throttle = OrbitMath.Clamp(point.Throttle, 0.0, 1.0)
+                Throttle = MathHelpers.Clamp(point.Throttle, 0.0, 1.0)
             };
         }
 
@@ -189,7 +189,7 @@ namespace Blackbird.Psg
                 if (universalTime > b.UniversalTime) continue;
 
                 double span = b.UniversalTime - a.UniversalTime;
-                double t = span > 1e-9 ? OrbitMath.Clamp((universalTime - a.UniversalTime) / span, 0.0, 1.0) : 0.0;
+                double t = span > 1e-9 ? MathHelpers.Clamp((universalTime - a.UniversalTime) / span, 0.0, 1.0) : 0.0;
 
                 Vector3d direction = Lerp(a.InertialThrustDirection, b.InertialThrustDirection, t);
                 return new PsgSolutionPoint

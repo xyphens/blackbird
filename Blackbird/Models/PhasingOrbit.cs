@@ -52,7 +52,7 @@ namespace Blackbird.Models
             double phaseGainAbs = Math.Abs(phaseGainPerOrbit);
             if (phaseGainAbs > 0.001)
             {
-                double phaseToClose = Math.Abs(OrbitMath.DeltaDegrees(phaseAngleDeg, 0.0));
+                double phaseToClose = Math.Abs(MathHelpers.DeltaDegrees(phaseAngleDeg, 0.0));
 
                 hasEstimate = true;
 

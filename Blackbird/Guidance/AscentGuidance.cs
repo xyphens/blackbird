@@ -60,7 +60,7 @@ namespace Blackbird.Guidance
             {
                 commandHeading = poweredCommand != null
                     ? poweredCommand.HeadingDeg
-                    : OrbitMath.NormalizeDegrees(profileHeading);
+                    : MathHelpers.NormalizeDegrees(profileHeading);
                 commandPitch = poweredCommand != null
                     ? ClampPitchForAutopilot(poweredCommand.PitchDeg)
                     : ClampPitchForAutopilot(profilePitch);
@@ -82,8 +82,8 @@ namespace Blackbird.Guidance
                 commandRoll = currentRoll;
             }
 
-            double headingError = OrbitMath.DeltaDegrees(currentHeading, commandHeading);
-            double pitchError = OrbitMath.DeltaDegrees(currentPitch, commandPitch);
+            double headingError = MathHelpers.DeltaDegrees(currentHeading, commandHeading);
+            double pitchError = MathHelpers.DeltaDegrees(currentPitch, commandPitch);
 
             return new AscentGuidanceInfo
             {
@@ -153,7 +153,7 @@ namespace Blackbird.Guidance
             if (vesselState == null || ascentProfile == null) return 1.0;
 
             double throttle = ascentProfile.GetThrottleAtAltitude(vesselState.AltitudeMeters);
-            return OrbitMath.IsFinite(throttle) ? OrbitMath.Clamp(throttle, 0.0, 1.0) : 1.0;
+            return MathHelpers.IsFinite(throttle) ? MathHelpers.Clamp(throttle, 0.0, 1.0) : 1.0;
         }
 
         // Reads the selected profile pitch, falling back to vertical hold if no profile is available.
@@ -162,7 +162,7 @@ namespace Blackbird.Guidance
             if (vesselState == null || ascentProfile == null) return 90.0;
 
             double pitch = ascentProfile.GetPitchAtAltitude(vesselState.AltitudeMeters);
-            return OrbitMath.IsFinite(pitch) ? pitch : 90.0;
+            return MathHelpers.IsFinite(pitch) ? pitch : 90.0;
         }
 
         // Reads the selected profile heading, falling back to launch azimuth/current heading if needed.
@@ -175,7 +175,7 @@ namespace Blackbird.Guidance
             if (vesselState != null && ascentProfile != null)
             {
                 double heading = ascentProfile.GetHeadingAtAltitude(vesselState.AltitudeMeters);
-                if (OrbitMath.IsFinite(heading)) return heading;
+                if (MathHelpers.IsFinite(heading)) return heading;
             }
 
             return double.IsNaN(plan.LaunchAzimuthDeg)
@@ -227,7 +227,7 @@ namespace Blackbird.Guidance
 
             double headingRad = Math.Atan2(eastComponent, northComponent);
 
-            return OrbitMath.NormalizeDegrees(headingRad * 180.0 / Math.PI);
+            return MathHelpers.NormalizeDegrees(headingRad * 180.0 / Math.PI);
         }
     }
 }

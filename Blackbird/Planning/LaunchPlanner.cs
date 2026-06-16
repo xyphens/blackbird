@@ -48,7 +48,7 @@ namespace Blackbird.Planning
                 RecommendedApAlt = targetInsertion.ApoapsisAlt,
                 RecommendedPeAlt = targetInsertion.PeriapsisAlt,
                 RelativeInclinationDeg = targetOrbit.InclinationDeg - activeOrbit.InclinationDeg,
-                RelativeLanDeg = OrbitMath.DeltaDegrees(activeOrbit.LanDeg, targetOrbit.LanDeg),
+                RelativeLanDeg = MathHelpers.DeltaDegrees(activeOrbit.LanDeg, targetOrbit.LanDeg),
                 RelativePeriodSeconds = targetOrbit.PeriodSeconds - activeOrbit.PeriodSeconds,
                 InsertionTarget = targetInsertion,
                 PhasingOrbit = po,
@@ -84,12 +84,12 @@ namespace Blackbird.Planning
                 targetOrbitNormal,
                 false);
 
-            if (OrbitMath.IsFinite(ascendingHeading))
+            if (MathHelpers.IsFinite(ascendingHeading))
             {
                 launchWindow.AscendingAzimuthDeg = ascendingHeading;
             }
 
-            if (OrbitMath.IsFinite(descendingHeading))
+            if (MathHelpers.IsFinite(descendingHeading))
             {
                 launchWindow.DescendingAzimuthDeg = descendingHeading;
             }
@@ -197,12 +197,12 @@ namespace Blackbird.Planning
 
             double phaseErrorDeg = phasingRecommendation.HasRecommendation
                 ? 0.0
-                : OrbitMath.DeltaDegrees(phaseAngleAtLaunch, 0.0);
+                : MathHelpers.DeltaDegrees(phaseAngleAtLaunch, 0.0);
 
             bool isValid =
                 phasingRecommendation.HasRecommendation &&
                 ascentProfile.IsValid &&
-                OrbitMath.IsFinite(estimatedDeltaVUsed);
+                MathHelpers.IsFinite(estimatedDeltaVUsed);
 
             double score = ScoreCandidate(
                 isValid,
@@ -243,7 +243,7 @@ namespace Blackbird.Planning
         // Returns false when a node cannot produce a usable launch heading or future launch time.
         private static bool IsUsableWindow(double secondsUntilLaunch, double launchHeadingDeg)
         {
-            return OrbitMath.IsFinite(secondsUntilLaunch) && OrbitMath.IsFinite(launchHeadingDeg) && secondsUntilLaunch >= 0.0;
+            return MathHelpers.IsFinite(secondsUntilLaunch) && MathHelpers.IsFinite(launchHeadingDeg) && secondsUntilLaunch >= 0.0;
         }
 
         // Advances the current phase estimate by target mean motion during the wait to launch.
@@ -252,7 +252,7 @@ namespace Blackbird.Planning
             if (targetOrbit == null || targetOrbit.PeriodSeconds <= 0.0) return currentPhaseAngleDeg;
 
             double targetMotionDeg = secondsUntilLaunch / targetOrbit.PeriodSeconds * 360.0;
-            return OrbitMath.NormalizeDegrees(currentPhaseAngleDeg + targetMotionDeg);
+            return MathHelpers.NormalizeDegrees(currentPhaseAngleDeg + targetMotionDeg);
         }
 
         // Estimates ascent plus phasing insertion dV from circular velocity and transfer cost.
@@ -265,14 +265,14 @@ namespace Blackbird.Planning
             double insertionAltitude = (insertionApoapsisAlt + insertionPeriapsisAlt) * 0.5;
             double circularVelocity = OrbitMath.GetCircularVelocity(body, insertionAltitude);
 
-            if (!OrbitMath.IsFinite(circularVelocity)) return double.NaN;
+            if (!MathHelpers.IsFinite(circularVelocity)) return double.NaN;
 
             double targetAltitude = targetOrbit != null
                 ? (targetOrbit.ApoapsisAlt + targetOrbit.PeriapsisAlt) * 0.5
                 : insertionAltitude;
 
             double transferDeltaV = OrbitMath.EstimateHohmannDeltaV(body, insertionAltitude, targetAltitude);
-            if (!OrbitMath.IsFinite(transferDeltaV)) transferDeltaV = 0.0;
+            if (!MathHelpers.IsFinite(transferDeltaV)) transferDeltaV = 0.0;
 
             return circularVelocity + transferDeltaV;
         }

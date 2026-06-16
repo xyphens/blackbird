@@ -24,12 +24,12 @@ namespace Blackbird.Psg
                 return CreateInvalid("Initial position is invalid.");
             }
 
-            if (!OrbitMath.IsFinite(massKg) || massKg <= 0.0)
+            if (!MathHelpers.IsFinite(massKg) || massKg <= 0.0)
             {
                 return CreateInvalid("Initial mass is invalid.");
             }
 
-            if (!OrbitMath.IsFinite(universalTime))
+            if (!MathHelpers.IsFinite(universalTime))
             {
                 return CreateInvalid("Initial universal time is invalid.");
             }

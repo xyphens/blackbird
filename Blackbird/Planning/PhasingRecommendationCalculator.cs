@@ -98,7 +98,7 @@ namespace Blackbird.Planning
             if (!targetAhead && !candidateLetsTargetCatchUp) return CreateUnavailable(mode, "Candidate does not let target catch up");
             if (Math.Abs(phaseGainPerOrbit) < 0.001) return CreateUnavailable(mode, "Candidate phase gain too small.");
 
-            double phaseToClose = Math.Abs(OrbitMath.DeltaDegrees(phaseAngleDeg, 0.0));
+            double phaseToClose = Math.Abs(MathHelpers.DeltaDegrees(phaseAngleDeg, 0.0));
 
             double orbitsToRendezvous = phaseToClose / Math.Abs(phaseGainPerOrbit);
 

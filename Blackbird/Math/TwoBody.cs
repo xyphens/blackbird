@@ -56,7 +56,7 @@ namespace Blackbird.Mathematics
             r = r0;
             v = v0;
 
-            if (mu <= 0.0 || !IsFinite(r0) || !IsFinite(v0) || double.IsNaN(dt) || double.IsInfinity(dt))
+            if (mu <= 0.0 || !MathHelpers.IsFinite(r0) || !MathHelpers.IsFinite(v0) || double.IsNaN(dt) || double.IsInfinity(dt))
                 return false;
             if (Math.Abs(dt) < 1e-12)
                 return true;   // no motion; r0/v0 already assigned
@@ -125,10 +125,7 @@ namespace Blackbird.Mathematics
 
             r = rVec;
             v = fDot * r0 + gDot * v0;
-            return IsFinite(r) && IsFinite(v);
+            return MathHelpers.IsFinite(r) && MathHelpers.IsFinite(v);
         }
-
-        public static bool IsFinite(double x) => !double.IsNaN(x) && !double.IsInfinity(x);
-        public static bool IsFinite(Vector3d vec) => IsFinite(vec.x) && IsFinite(vec.y) && IsFinite(vec.z);
     }
 }

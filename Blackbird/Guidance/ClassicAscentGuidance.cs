@@ -63,7 +63,7 @@ namespace Blackbird.Guidance
                     // Pre-orient to horizontal prograde so the circularize burn starts already aligned
                     // (no slew at the critical apoapsis-crossing moment).
                     double coastThrottle = 0.0;
-                    if (OrbitMath.IsFinite(vesselState.CurrentApoapsisAlt) && vesselState.CurrentApoapsisAlt < targetAp)
+                    if (MathHelpers.IsFinite(vesselState.CurrentApoapsisAlt) && vesselState.CurrentApoapsisAlt < targetAp)
                         coastThrottle = ThrottleToRaiseApoapsis(vesselState, targetAp);
                     return Build(
                         PoweredGuidancePhase.Coast,
@@ -107,7 +107,7 @@ namespace Blackbird.Guidance
 
             if (_phase == Phase.FollowProfile)
             {
-                if (OrbitMath.IsFinite(vs.CurrentApoapsisAlt) && vs.CurrentApoapsisAlt >= targetAp)
+                if (MathHelpers.IsFinite(vs.CurrentApoapsisAlt) && vs.CurrentApoapsisAlt >= targetAp)
                     _phase = Phase.Coast;
                 return;
             }
@@ -123,7 +123,7 @@ namespace Blackbird.Guidance
                 // centering: ignitionUT = node.UT - halfBurnTime), instead of starting the whole burn at
                 // the node and overshooting.
                 double halfBurn = HalfBurnTime(vs, _dvToCircularize.magnitude);
-                if (OrbitMath.IsFinite(_circAtUt) &&
+                if (MathHelpers.IsFinite(_circAtUt) &&
                     Planetarium.GetUniversalTime() >= _circAtUt - halfBurn)
                 {
                     _phase = Phase.Circularize;
@@ -163,7 +163,7 @@ namespace Blackbird.Guidance
             double currentAp = vs.CurrentApoapsisAlt;
             double now       = vs.UniversalTime;
 
-            if (!OrbitMath.IsFinite(currentAp))
+            if (!MathHelpers.IsFinite(currentAp))
             {
                 RecordApSample(currentAp, now, 1.0);
                 return 1.0;
@@ -179,7 +179,7 @@ namespace Blackbird.Guidance
             double throttle;
 
             double elapsed = now - _apLastUT;
-            if (OrbitMath.IsFinite(_apLastAlt) && elapsed > 0.0 && _apLastThrottle > 0.0)
+            if (MathHelpers.IsFinite(_apLastAlt) && elapsed > 0.0 && _apLastThrottle > 0.0)
             {
                 double instantRate = (currentAp - _apLastAlt) / (elapsed * _apLastThrottle);
                 instantRate = Math.Max(1.0, instantRate); // guard against negative/zero
@@ -190,7 +190,7 @@ namespace Blackbird.Guidance
                 double avgRate = AverageApRate();
 
                 double desiredRate = targetAp - currentAp; // close the gap in 1 second
-                throttle = OrbitMath.Clamp(desiredRate / avgRate, 0.05, 1.0);
+                throttle = MathHelpers.Clamp(desiredRate / avgRate, 0.05, 1.0);
             }
             else
             {
@@ -237,7 +237,7 @@ namespace Blackbird.Guidance
             if (orbit == null) return (double.NaN, Vector3d.zero);
 
             double ut = OrbitMath.TimeToNextApoapsis(orbit, Planetarium.GetUniversalTime()); // absolute UT
-            if (!OrbitMath.IsFinite(ut) || ut <= 0.0) return (double.NaN, Vector3d.zero);
+            if (!MathHelpers.IsFinite(ut) || ut <= 0.0) return (double.NaN, Vector3d.zero);
 
             // Plane change ONLY when we actually have a target inclination (degrees). Do NOT route a
             // "hold the current plane" request through DeltaVToChangeInclination — it recomputes the
@@ -248,7 +248,7 @@ namespace Blackbird.Guidance
             // orbit — exactly MechJeb's classic-ascent block.
             Vector3d incCorrection = Vector3d.zero;
             Vector3d circCorrection;
-            if (OrbitMath.IsFinite(targetInclination))
+            if (MathHelpers.IsFinite(targetInclination))
             {
                 incCorrection = OrbitMath.DeltaVToChangeInclination(orbit, ut, targetInclination);
                 circCorrection = OrbitMath.DeltaVToCircularize(
@@ -269,7 +269,7 @@ namespace Blackbird.Guidance
         {
             if (vs.TotalMass <= 0.0 || vs.AvailableThrust <= 0.0 || vs.VacuumSpecificImpulse <= 0.0)
                 return 0.0;
-            if (!OrbitMath.IsFinite(dvTotal) || dvTotal <= 0.0) return 0.0;
+            if (!MathHelpers.IsFinite(dvTotal) || dvTotal <= 0.0) return 0.0;
 
             double vE = vs.VacuumSpecificImpulse * PsgPhase.StandardGravity;
             double halfDv = dvTotal * 0.5;
@@ -295,8 +295,8 @@ namespace Blackbird.Guidance
                 Phase                    = phase,
                 Status                   = status,
                 PitchDeg                 = pitchDeg,
-                HeadingDeg               = OrbitMath.NormalizeDegrees(headingDeg),
-                Throttle                 = OrbitMath.Clamp(throttle, 0.0, 1.0),
+                HeadingDeg               = MathHelpers.NormalizeDegrees(headingDeg),
+                Throttle                 = MathHelpers.Clamp(throttle, 0.0, 1.0),
                 HasInertialDirection     = hasInertialDirection && direction.sqrMagnitude > 0.0,
                 InertialDirection        = direction,
                 ApoapsisErrorMeters      = double.NaN,

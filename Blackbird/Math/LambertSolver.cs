@@ -31,14 +31,14 @@ namespace Blackbird.Mathematics
         {
             LambertResult fail = new LambertResult { Success = false, V1 = Vector3d.zero, V2 = Vector3d.zero };
 
-            if (mu <= 0.0 || tof <= 0.0 || !TwoBody.IsFinite(r1) || !TwoBody.IsFinite(r2))
+            if (mu <= 0.0 || tof <= 0.0 || !MathHelpers.IsFinite(r1) || !MathHelpers.IsFinite(r2))
                 return fail;
 
             double r1mag = r1.magnitude;
             double r2mag = r2.magnitude;
             if (r1mag <= 0.0 || r2mag <= 0.0) return fail;
 
-            double cosDeltaNu = Clamp(Vector3d.Dot(r1, r2) / (r1mag * r2mag), -1.0, 1.0);
+            double cosDeltaNu = MathHelpers.Clamp(Vector3d.Dot(r1, r2) / (r1mag * r2mag), -1.0, 1.0);
 
             // Direction of motion: tm = +1 short way, -1 long way, chosen so the arc is prograde.
             Vector3d cross = Vector3d.Cross(r1, r2);
@@ -98,14 +98,9 @@ namespace Blackbird.Mathematics
 
             Vector3d v1 = (r2 - f * r1) / g;
             Vector3d v2 = (gDot * r2 - r1) / g;
-            if (!TwoBody.IsFinite(v1) || !TwoBody.IsFinite(v2)) return fail;
+            if (!MathHelpers.IsFinite(v1) || !MathHelpers.IsFinite(v2)) return fail;
 
             return new LambertResult { Success = true, V1 = v1, V2 = v2 };
-        }
-
-        private static double Clamp(double value, double lo, double hi)
-        {
-            return value < lo ? lo : (value > hi ? hi : value);
         }
     }
 }

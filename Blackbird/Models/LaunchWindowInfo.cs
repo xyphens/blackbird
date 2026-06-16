@@ -62,16 +62,16 @@ namespace Blackbird.Models
                     bodyRotationPeriod);
 
             double launchLongitude =
-                OrbitMath.NormalizeDegrees(launchLocation.LongitudeDeg);
+                MathHelpers.NormalizeDegrees(launchLocation.LongitudeDeg);
 
             double timeToAsc =
-                OrbitMath.TimeToLongitudeSeconds(
+                MathHelpers.TimeToLongitudeSeconds(
                     launchLongitude,
                     targetAscBodyFixedLong,
                     bodyRotationPeriod);
 
             double timeToDesc =
-                OrbitMath.TimeToLongitudeSeconds(
+                MathHelpers.TimeToLongitudeSeconds(
                     launchLongitude,
                     targetDescBodyFixedLong,
                     bodyRotationPeriod);
@@ -81,7 +81,7 @@ namespace Blackbird.Models
                     targetOrbit.InclinationDeg,
                     launchLocation.LatitudeDeg);
 
-            double descAzimuth = double.IsNaN(ascAzimuth) ? double.NaN : OrbitMath.NormalizeDegrees(180.0 - ascAzimuth);
+            double descAzimuth = double.IsNaN(ascAzimuth) ? double.NaN : MathHelpers.NormalizeDegrees(180.0 - ascAzimuth);
 
             bool useAscending = timeToAsc <= timeToDesc;
 
@@ -98,8 +98,8 @@ namespace Blackbird.Models
                 TimeToDescendingNodeSeconds = timeToDesc,
 
                 PlaneOffsetDeg = useAscending
-                    ? OrbitMath.DeltaDegrees(launchLongitude, targetAscBodyFixedLong)
-                    : OrbitMath.DeltaDegrees(launchLongitude, targetDescBodyFixedLong),
+                    ? MathHelpers.DeltaDegrees(launchLongitude, targetAscBodyFixedLong)
+                    : MathHelpers.DeltaDegrees(launchLongitude, targetDescBodyFixedLong),
 
                 TimeToPlaneCrossingSeconds = useAscending
                     ? timeToAsc

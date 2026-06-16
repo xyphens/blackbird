@@ -258,7 +258,7 @@ namespace Blackbird.Psg
                     for (int k = 0; k < KnotsPerPhase; k++)
                     {
                         double local = KnotsPerPhase > 1 ? (double)k / (KnotsPerPhase - 1) : 0.0;
-                        double global = OrbitMath.Clamp((elapsed + local * duration) / totalTime, 0.0, 1.0);
+                        double global = MathHelpers.Clamp((elapsed + local * duration) / totalTime, 0.0, 1.0);
                         Vector3d r = Lerp(r0, finalR, global);
                         Vector3d v = Lerp(v0, finalV, global);
                         Vector3d u = Lerp(u0, tangent, global);
@@ -442,7 +442,7 @@ namespace Blackbird.Psg
                             RelativeVelocity = GetVector(x, layout.VIndex(k)) * _scale.Velocity,
                             MassKg = x[layout.MIndex(k)] * _scale.Mass,
                             InertialThrustDirection = u.sqrMagnitude > 0.0 ? u.normalized : Vector3d.zero,
-                            Throttle = phase.IsCoast ? 0.0 : OrbitMath.Clamp(throttle, 0.01, 1.0)
+                            Throttle = phase.IsCoast ? 0.0 : MathHelpers.Clamp(throttle, 0.01, 1.0)
                         });
                     }
 
@@ -640,7 +640,7 @@ namespace Blackbird.Psg
                     {
                         double span = energy - previousEnergy;
                         double fraction = span > 1e-12
-                            ? OrbitMath.Clamp((targetEnergy - previousEnergy) / span, 0.0, 1.0)
+                            ? MathHelpers.Clamp((targetEnergy - previousEnergy) / span, 0.0, 1.0)
                             : 1.0;
 
                         return Math.Max(0.0, elapsed - step + step * fraction);
@@ -1013,7 +1013,7 @@ namespace Blackbird.Psg
 
             private double GetInitialPhaseDuration(PsgPhase phase)
             {
-                return OrbitMath.IsFinite(phase.NominalBurnTimeSeconds) && phase.NominalBurnTimeSeconds > 0.0
+                return MathHelpers.IsFinite(phase.NominalBurnTimeSeconds) && phase.NominalBurnTimeSeconds > 0.0
                     ? phase.NominalBurnTimeSeconds
                     : Math.Max(0.1, phase.MaximumBurnTimeSeconds);
             }
@@ -1023,14 +1023,14 @@ namespace Blackbird.Psg
                 double min;
                 double max;
                 GetPhaseDurationBounds(_problem.Phases[phaseIndex], out min, out max);
-                return OrbitMath.Clamp(duration, min, max);
+                return MathHelpers.Clamp(duration, min, max);
             }
 
             private void GetPhaseDurationBounds(PsgPhase phase, out double minimum, out double maximum)
             {
                 minimum = Math.Max(0.0, phase.MinimumBurnTimeSeconds);
                 maximum = phase.MaximumBurnTimeSeconds;
-                if (!OrbitMath.IsFinite(maximum) || maximum <= 0.0)
+                if (!MathHelpers.IsFinite(maximum) || maximum <= 0.0)
                 {
                     maximum = phase.AllowShutdown
                         ? double.PositiveInfinity
@@ -1054,7 +1054,7 @@ namespace Blackbird.Psg
                 double ecc = (ap - pe) / (ap + pe);
                 if (_problem.Target.UseAttachmentRadius || ecc >= 1e-4)
                 {
-                    return OrbitMath.Clamp(_problem.Target.AttachmentRadiusMeters, pe, ap);
+                    return MathHelpers.Clamp(_problem.Target.AttachmentRadiusMeters, pe, ap);
                 }
 
                 return pe;
@@ -1071,7 +1071,7 @@ namespace Blackbird.Psg
 
             private double GetPhaseMassAtFraction(PsgPhase phase, double fraction)
             {
-                return phase.StartMassKg - (phase.StartMassKg - phase.EndMassKg) * OrbitMath.Clamp(fraction, 0.0, 1.0);
+                return phase.StartMassKg - (phase.StartMassKg - phase.EndMassKg) * MathHelpers.Clamp(fraction, 0.0, 1.0);
             }
 
             private double PhaseMassFlow(PsgPhase phase)
@@ -1096,7 +1096,7 @@ namespace Blackbird.Psg
 
                 double initialRadius = Math.Max(1e-9, _problem.InitialRelativePositionMeters.magnitude / _scale.Length);
                 double atmosphereFraction = Math.Exp(-(scaledRadius - initialRadius) / h0);
-                atmosphereFraction = OrbitMath.Clamp(atmosphereFraction, 0.0, 1.0);
+                atmosphereFraction = MathHelpers.Clamp(atmosphereFraction, 0.0, 1.0);
 
                 double vexVacuum = phase.ExhaustVelocityVacuumMetersPerSecond / _scale.Velocity;
                 double vexCurrent = phase.ExhaustVelocityCurrentMetersPerSecond > 0.0

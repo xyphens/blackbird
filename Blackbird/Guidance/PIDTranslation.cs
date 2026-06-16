@@ -52,11 +52,11 @@ namespace Blackbird.Guidance
         **/
         public double Update(double r, double y)
         {
-            y = OrbitMath.IsFinite(_y1) ? _y1 + SmoothIn * (y - _y1) : y;
+            y = MathHelpers.IsFinite(_y1) ? _y1 + SmoothIn * (y - _y1) : y;
 
-            double ep = OrbitMath.ApplyDeadband(B * r - y, ProportionalDeadband);
-            double ei = OrbitMath.ApplyDeadband(r - y, IntegralDeadband);
-            double ed = OrbitMath.ApplyDeadband(C * r - y, DerivativeDeadband);
+            double ep = MathHelpers.ApplyDeadband(B * r - y, ProportionalDeadband);
+            double ei = MathHelpers.ApplyDeadband(r - y, IntegralDeadband);
+            double ed = MathHelpers.ApplyDeadband(C * r - y, DerivativeDeadband);
 
             PTerm = K * ep;
 
@@ -68,12 +68,12 @@ namespace Blackbird.Guidance
             double den = 2.0 * Td + N * Ts;
             DTerm = (2.0 * Td - N * Ts) / den * DTerm + 2.0 * N * k * Td / den * (ed - _ed1);
 
-            if (!OrbitMath.IsFinite(ITerm)) ITerm = 0.0;
-            if (!OrbitMath.IsFinite(ITerm)) DTerm = 0.0;
+            if (!MathHelpers.IsFinite(ITerm)) ITerm = 0.0;
+            if (!MathHelpers.IsFinite(ITerm)) DTerm = 0.0;
 
-            double z = OrbitMath.ApplyDeadband(PTerm + ITerm + DTerm, OutputDeadband);
+            double z = MathHelpers.ApplyDeadband(PTerm + ITerm + DTerm, OutputDeadband);
             
-            double u = OrbitMath.Clamp(z, MinOutput, MaxOutput);
+            double u = MathHelpers.Clamp(z, MinOutput, MaxOutput);
 
             if (Ti != 0.0)
             {
@@ -81,7 +81,7 @@ namespace Blackbird.Guidance
                 ITerm += Ts / tr * (u - z);
             }
 
-            _u1 = OrbitMath.IsFinite(_u1) ? _u1 + SmoothOut * (u - _u1) : u;
+            _u1 = MathHelpers.IsFinite(_u1) ? _u1 + SmoothOut * (u - _u1) : u;
 
             _y1 = y;
             _ei1 = ei;

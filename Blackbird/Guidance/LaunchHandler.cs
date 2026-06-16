@@ -167,14 +167,14 @@ namespace Blackbird.Guidance
             if (gMode == GuidanceMode.Manual)
             {
                 ManualPitchCommandDeg = GuidanceInfo.CurrentPitchDeg;
-                ManualHeadingCommandDeg = OrbitMath.NormalizeDegrees(GuidanceInfo.CurrentHeadingDeg);
+                ManualHeadingCommandDeg = MathHelpers.NormalizeDegrees(GuidanceInfo.CurrentHeadingDeg);
                 ManualThrottleCommand = GuidanceInfo.CommandThrottle;
             }
 
             if (gMode == GuidanceMode.Autopilot)
             {
                 ManualPitchCommandDeg = ClampAutopilotPitchCommand(GuidanceInfo.ProfilePitchDeg);
-                ManualHeadingCommandDeg = OrbitMath.NormalizeDegrees(GuidanceInfo.ProfileHeadingDeg);
+                ManualHeadingCommandDeg = MathHelpers.NormalizeDegrees(GuidanceInfo.ProfileHeadingDeg);
                 ManualThrottleCommand = GuidanceInfo.CommandThrottle;
             }
 
@@ -218,7 +218,7 @@ namespace Blackbird.Guidance
 
             double alt = (apoapsisAlt + periapsisAlt) * 0.5;
             double circVel = OrbitMath.GetCircularVelocity(vessel.mainBody, alt);
-            double estimatedDv = OrbitMath.IsFinite(circVel) ? circVel : 0.0;
+            double estimatedDv = MathHelpers.IsFinite(circVel) ? circVel : 0.0;
             double remainingDv = vs.RemainingDeltaV - estimatedDv;
 
             AscentProfile profile = AscentProfileSolver.Create(vs, apoapsisAlt, periapsisAlt, headingDeg, remainingDv);
@@ -270,7 +270,7 @@ namespace Blackbird.Guidance
         // heading command
         public void IncreaseManualHeadingCommand() => ManualHeadingCommandDeg += 1.0;
         public void DecreaseManualHeadingCommand() => ManualHeadingCommandDeg -= 1.0;
-        public void ResetHeadingCommand() => ManualHeadingCommandDeg = GuidanceInfo != null ? OrbitMath.NormalizeDegrees(GuidanceInfo.CurrentHeadingDeg) : 90.0;
+        public void ResetHeadingCommand() => ManualHeadingCommandDeg = GuidanceInfo != null ? MathHelpers.NormalizeDegrees(GuidanceInfo.CurrentHeadingDeg) : 90.0;
         public void SetHeadingCommand(double heading) => ManualHeadingCommandDeg = heading;
 
         // roll command
