@@ -171,6 +171,8 @@ namespace Blackbird.Modules
                         return "Intercept done. Coasting toward closest approach "
                              + $"(in {FormatTime(_handler.LiveTimeToClosestApproachSeconds)}). "
                              + "Execute Match Velocity as you near it.";
+                    if (_handler.Stage == RendezvousStage.CloseApproach)
+                        return "Matched. Execute Close Approach to close in to ~100 m and hand back control.";
                     return $"Stage done. Execute {StageName(_handler.Stage)} when ready.";
 
                 case RendezvousPhase.Complete:

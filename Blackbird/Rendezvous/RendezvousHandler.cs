@@ -52,9 +52,15 @@ namespace Blackbird.Rendezvous
         private double _steadySinceUt = double.NegativeInfinity;
         private bool _wasExecuting;   // edge-detect entry into a stage burn (for one-shot diagnostics)
 
-        // Warp-to-closest-approach (user convenience). Absolute target UT; auto-stops near the event.
-        private const double WarpLeadSeconds = 10.0;
+        // Warp-to-closest-approach (user convenience). Absolute target UT; auto-stops a lead time short of
+        // the event so the craft can pre-orient. The lead is fixed for stages that fire on arrival, but for
+        // Match Velocity it is the estimated time to slew to the retro-relative-velocity attitude (plus a
+        // settle/safety margin), so the craft is pointed and settled by the time it reaches the approach.
+        private const double WarpLeadMinSeconds = 10.0;    // minimum lead before the event (any stage)
+        private const double WarpLeadMaxSeconds = 120.0;   // cap, so a huge slew estimate can't strand the warp
+        private const double OrientPaddingSeconds = 3.0;   // safety margin on top of the estimated slew + dwell
         private double _warpTargetUt;
+        private double _warpLeadSeconds = WarpLeadMinSeconds;   // lead actually used for the active warp
         public bool Warping { get; private set; }
 
         public bool Engaged => _engaged;
@@ -94,10 +100,32 @@ namespace Blackbird.Rendezvous
         {
             if (_executor.Phase == RendezvousPhase.Executing) return;
             double timeToCa = LiveTimeToClosestApproachSeconds;
-            if (!MathHelpers.IsFinite(timeToCa) || timeToCa <= WarpLeadSeconds) return;
+            double lead = ComputeWarpLeadSeconds();
+            if (!MathHelpers.IsFinite(timeToCa) || timeToCa <= lead) return;
 
+            _warpLeadSeconds = lead;
             _warpTargetUt = Planetarium.GetUniversalTime() + timeToCa;
             Warping = true;
+        }
+
+        // The lead time to stop the warp short of the predicted closest approach. Stages that fire on
+        // arrival need only a small fixed lead; Match Velocity must be pointed retrograde-to-relative
+        // before it can burn, so it leaves the estimated slew time (from torque/MOI, via AttitudeControl)
+        // plus the settle dwell and a safety margin. Clamped so it always leaves at least the minimum and
+        // never an unbounded amount.
+        private double ComputeWarpLeadSeconds()
+        {
+            if (_executor.Stage != RendezvousStage.MatchVelocity || !HasRelative)
+                return WarpLeadMinSeconds;
+
+            Vessel active = FlightGlobals.ActiveVessel;
+            if (active == null) return WarpLeadMinSeconds;
+
+            // Burn direction that nulls the relative velocity = (targetVel - activeVel) = RelativeVelocityWorld.
+            Vector3d burnDirection = Relative.RelativeVelocityWorld;
+            double padding = OrientPaddingSeconds + StabilizeDwellSeconds;
+            double slew = AttitudeControl.EstimateSlewTimeSeconds(active, burnDirection, padding);
+            return MathHelpers.Clamp(slew, WarpLeadMinSeconds, WarpLeadMaxSeconds);
         }
 
         public void StopWarp()
@@ -138,7 +166,7 @@ namespace Blackbird.Rendezvous
             if (Warping)
             {
                 double secondsToWarpTarget = _warpTargetUt - now;
-                if (_executor.Phase == RendezvousPhase.Executing || secondsToWarpTarget <= WarpLeadSeconds)
+                if (_executor.Phase == RendezvousPhase.Executing || secondsToWarpTarget <= _warpLeadSeconds)
                     StopWarp();
                 else
                     WarpHelper.SetSafeWarpRate(secondsToWarpTarget);

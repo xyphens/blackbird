@@ -353,6 +353,72 @@ namespace Blackbird.Guidance
             return torque;
         }
 
+        // Estimates how long (seconds) it would take the attitude controller to swing the craft's nose
+        // from its current facing to a target world-frame direction, then settle — so callers can size a
+        // warp lead / pre-orient window for any maneuver that must fire pointed a particular way.
+        //
+        // Model (deliberately conservative, so it never under-predicts the lead needed):
+        //  - angular acceleration alpha = available control torque / moment of inertia, evaluated on the
+        //    WORST of the pitch and yaw axes (the two that swing the nose), so a weak axis dominates;
+        //  - the same Soften factor and MaxStoppingTime rate cap the live controller uses, so the estimate
+        //    tracks real slew behavior rather than an idealized bang-bang;
+        //  - a rate-limited profile: triangular (accel to midpoint, decel) when the peak rate stays under
+        //    the cap, otherwise trapezoidal (accel to the cap, cruise, decel);
+        //  - plus the caller's padding (settle dwell + safety margin).
+        // Returns just paddingSeconds for a negligible rotation, and a torque-free fallback
+        // (angleRad + padding) when torque/MOI are unavailable.
+        public static double EstimateSlewTimeSeconds(
+            Vessel vessel,
+            Vector3d targetWorldDirection,
+            double paddingSeconds)
+        {
+            if (vessel == null || vessel.ReferenceTransform == null) return paddingSeconds;
+
+            Vector3d target = targetWorldDirection.normalized;
+            if (target.sqrMagnitude <= 0.0) return paddingSeconds;
+
+            Vector3d nose = ((Vector3d)vessel.ReferenceTransform.up).normalized;
+            double dot = Clamp(Vector3d.Dot(nose, target), -1.0, 1.0);
+            double angleRad = Math.Acos(dot);
+            if (angleRad <= 1e-3) return paddingSeconds;
+
+            Vector3d torque = EstimateTorqueAvailable(vessel);
+            Vector3d moi = vessel.MOI;
+            double alphaPitch = SafeAlpha(torque.x, moi.x);   // pitch axis
+            double alphaYaw = SafeAlpha(torque.z, moi.z);     // yaw axis
+            double alpha = Math.Min(alphaPitch, alphaYaw);    // worst nose-swing axis -> conservative
+            if (!IsFinite(alpha) || alpha <= 0.0) return angleRad + paddingSeconds;
+
+            // Conservative accel/rate cap, matching the live controller's softening and stopping time.
+            double alphaEff = alpha * Soften;
+            double omegaMax = alpha * MaxStoppingTime * Soften;
+            if (alphaEff <= 0.0 || omegaMax <= 0.0) return angleRad + paddingSeconds;
+
+            double slew;
+            double trianglePeak = Math.Sqrt(alphaEff * angleRad);   // peak rate of a pure accel/decel
+            if (trianglePeak <= omegaMax)
+            {
+                slew = 2.0 * Math.Sqrt(angleRad / alphaEff);
+            }
+            else
+            {
+                double tRamp = omegaMax / alphaEff;                          // accel (or decel) duration
+                double angleRamp = omegaMax * omegaMax / (2.0 * alphaEff);   // angle covered per ramp
+                double angleCruise = angleRad - 2.0 * angleRamp;            // > 0 by the branch condition
+                slew = 2.0 * tRamp + angleCruise / omegaMax;
+            }
+
+            return slew + paddingSeconds;
+        }
+
+        // Angular acceleration about one axis (|torque| / MOI). Returns +Infinity for a zero-inertia axis
+        // (it never limits the slew) so Math.Min picks the genuinely limiting axis.
+        private static double SafeAlpha(double torque, double moi)
+        {
+            if (moi <= 0.0) return double.PositiveInfinity;
+            return Math.Abs(torque) / moi;
+        }
+
         private static Vector3d MaxAbs(Vector3 positive, Vector3 negative)
         {
             return new Vector3d(

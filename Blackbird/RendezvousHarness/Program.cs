@@ -32,6 +32,9 @@ namespace Blackbird.RendezvousHarness
             CheckClosestApproachCountsDown();
             CheckInterceptLargeCoOrbitalGap();
             CheckInterceptBurnTerminatesUnderWeakThrust();
+            CheckMatchVelocityNullsRelativeVelocity();
+            CheckInterceptBurnTerminatesUnderMinThrottleCreep();
+            CheckCloseApproachParksAtStandoff();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -322,14 +325,10 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("burn collapses CA vs coast", postCA < coastCA * 0.05);
             AssertTrue("post-burn CA small (<3 km)", postCA < 3000.0);
 
-            // After intercept the stage auto-advances; the remaining (stub) stages traverse on Execute.
+            // After intercept the stage auto-advances to Match Velocity (queued for Execute). The full
+            // match -> close traversal is exercised end-to-end in Case 13.
             AssertTrue("stage advanced to match", ex.Stage == RendezvousStage.MatchVelocity);
-            AssertTrue("execute match", ex.Execute());
-            ex.Update(sim);
-            AssertTrue("coast, stage now close", ex.Phase == RendezvousPhase.Coast && ex.Stage == RendezvousStage.CloseApproach);
-            AssertTrue("execute close", ex.Execute());
-            ex.Update(sim);
-            AssertTrue("complete after close", ex.Phase == RendezvousPhase.Complete);
+            AssertTrue("coast awaiting match", ex.Phase == RendezvousPhase.Coast);
 
             Console.WriteLine(string.Format(
                 "    plan ΔV={0:F2} applied={1:F2} m/s  coastCA={2:F0} m  postCA={3:F1} m  ticks={4}",
@@ -479,6 +478,207 @@ namespace Blackbird.RendezvousHarness
             Console.WriteLine(string.Format("    terminated after {0} ticks ({1:F0}s sim)", ticks, ticks * dt));
         }
 
+        // End-to-end Step 6: run the intercept burn to completion, coast to the closest approach the
+        // intercept aimed at, then run the MATCH-VELOCITY stage and confirm it drives the relative speed
+        // to ~0 and advances to the close stage. Both vessels propagate on their conics; the harness
+        // applies the commanded thrust each tick.
+        private static void CheckMatchVelocityNullsRelativeVelocity()
+        {
+            Console.WriteLine("Case 13: match-velocity nulls relative velocity at closest approach");
+
+            SimWorld sim = MakeCatchupSim(250000.0, 15.0);
+            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+
+            const double maxAccel = 50.0;   // near-impulsive engine so both burns finish quickly
+            double dt = 0.02;
+
+            // --- intercept burn to completion (as in Case 8) ---
+            ex.Execute();
+            InterceptSolution plan = default(InterceptSolution);
+            bool planCaptured = false;
+            int ticks = 0;
+            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 500000)
+            {
+                RendezvousCommand cmd = ex.Update(sim);
+                if (!planCaptured && ex.HasInterceptPlan) { plan = ex.InterceptPlan; planCaptured = true; }
+                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (cmd.HasBurn)
+                    sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
+                sim.Advance(dt);
+            }
+            AssertTrue("plan captured", planCaptured);
+            AssertTrue("intercept -> match stage",
+                ex.Stage == RendezvousStage.MatchVelocity && ex.Phase == RendezvousPhase.Coast);
+
+            // --- coast to the closest approach the intercept aimed at ---
+            while (sim.UniversalTime < plan.ArrivalUt - dt) sim.Advance(dt);
+            double relBefore = (sim.ActiveVelocity - sim.TargetVelocity).magnitude;
+
+            // --- match-velocity burn to completion ---
+            AssertTrue("execute match", ex.Execute());
+            ticks = 0;
+            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 500000)
+            {
+                RendezvousCommand cmd = ex.Update(sim);
+                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (cmd.HasBurn)
+                    sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
+                sim.Advance(dt);
+            }
+            double relAfter = (sim.ActiveVelocity - sim.TargetVelocity).magnitude;
+
+            AssertTrue("match completed -> coast",
+                ex.Phase == RendezvousPhase.Coast && ex.Stage == RendezvousStage.CloseApproach);
+            AssertTrue("relative velocity nulled (<0.3 m/s)", relAfter < 0.3);
+            AssertTrue("match reduced relative speed", relAfter < relBefore);
+
+            Console.WriteLine(string.Format(
+                "    relSpeed before={0:F2} after={1:F3} m/s  ticks={2}", relBefore, relAfter, ticks));
+        }
+
+        // End-to-end Step 7: with the executor advanced to the CloseApproach stage, drive the closing-
+        // velocity controller against a fresh clean geometry — chaser 800 m behind a target on a circular
+        // orbit, already matched — and confirm it parks within the standoff band, matched, and ends the
+        // sequence (Phase.Complete = control handed back). The close stage is stateless, so feeding it a
+        // different world than the one used to reach the stage is valid.
+        private static void CheckCloseApproachParksAtStandoff()
+        {
+            Console.WriteLine("Case 15: close-approach parks at standoff and matches (stepping sim)");
+
+            TerminalRendezvousExecutor ex = AdvanceToCloseStage();
+            AssertTrue("at close stage",
+                ex.Stage == RendezvousStage.CloseApproach && ex.Phase == RendezvousPhase.Coast);
+
+            double R = KerbinRadius + 200000.0;
+            double vc = Math.Sqrt(KerbinMu / R);
+            SimWorld sim = new SimWorld(KerbinMu,
+                new Vector3d(R, -800.0, 0.0), new Vector3d(0.0, vc, 0.0),   // chaser 800 m behind, matched
+                new Vector3d(R, 0.0, 0.0), new Vector3d(0.0, vc, 0.0),
+                new Vector3d(0, 0, 1));
+
+            double rangeBefore = (sim.TargetPosition - sim.ActivePosition).magnitude;
+
+            AssertTrue("execute close", ex.Execute());
+            const double maxAccel = 20.0;
+            double dt = 0.05;
+            int ticks = 0;
+            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 1000000)
+            {
+                RendezvousCommand cmd = ex.Update(sim);
+                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (cmd.HasBurn)
+                    sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
+                sim.Advance(dt);
+            }
+
+            double rangeAfter = (sim.TargetPosition - sim.ActivePosition).magnitude;
+            double relAfter = (sim.ActiveVelocity - sim.TargetVelocity).magnitude;
+
+            AssertTrue("close completed (rendezvous done)", ex.Phase == RendezvousPhase.Complete);
+            AssertTrue("parked near standoff (<=150 m)", rangeAfter <= 150.0);
+            AssertTrue("parked not collided (>=50 m)", rangeAfter >= 50.0);
+            AssertTrue("matched at standoff (<0.6 m/s)", relAfter < 0.6);
+            AssertTrue("range reduced", rangeAfter < rangeBefore);
+
+            Console.WriteLine(string.Format(
+                "    range {0:F0} -> {1:F0} m  relSpeed {2:F2} m/s  ticks={3} ({4:F0}s)",
+                rangeBefore, rangeAfter, relAfter, ticks, ticks * dt));
+        }
+
+        // Drives a fresh executor through Intercept + Match Velocity to completion against a coplanar
+        // catch-up sim, leaving it queued (Coast) at the CloseApproach stage. Used to set up Case 15
+        // legitimately (the only way to reach the close stage is to complete the earlier stages).
+        private static TerminalRendezvousExecutor AdvanceToCloseStage()
+        {
+            SimWorld sim = MakeCatchupSim(250000.0, 15.0);
+            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+            const double maxAccel = 50.0;
+            double dt = 0.02;
+
+            ex.Execute();   // intercept
+            InterceptSolution plan = default(InterceptSolution);
+            bool captured = false;
+            int ticks = 0;
+            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 500000)
+            {
+                RendezvousCommand cmd = ex.Update(sim);
+                if (!captured && ex.HasInterceptPlan) { plan = ex.InterceptPlan; captured = true; }
+                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (cmd.HasBurn)
+                    sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
+                sim.Advance(dt);
+            }
+
+            while (sim.UniversalTime < plan.ArrivalUt - dt) sim.Advance(dt);   // coast to CA
+
+            ex.Execute();   // match velocity
+            ticks = 0;
+            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 500000)
+            {
+                RendezvousCommand cmd = ex.Update(sim);
+                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (cmd.HasBurn)
+                    sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
+                sim.Advance(dt);
+            }
+
+            return ex;
+        }
+
+        // Regression for the in-game "intercept burn 6.8/7.6 m/s then stuck at min throttle forever" bug.
+        // Delivered ΔV is driven to creep ASYMPTOTICALLY toward a ceiling BELOW the planned magnitude:
+        // each frame it sets a microscopic new maximum but never reaches planned and never plateaus
+        // exactly. The OLD stall logic reset its timer on every new maximum, so it never tripped (the burn
+        // would floor forever); the deadband progress check must now stall out and complete the stage.
+        // Uses InjectWorld so delivered ΔV is controlled directly (independent of commanded throttle).
+        private static void CheckInterceptBurnTerminatesUnderMinThrottleCreep()
+        {
+            Console.WriteLine("Case 14: intercept burn terminates under min-throttle creep (deadband stall)");
+
+            InjectWorld w = new InjectWorld(MakeCatchupSim(250000.0, 15.0));
+            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+            ex.Execute();
+
+            // First update arms the burn and freezes the plan; the baseline is the active velocity now.
+            ex.Update(w);
+            Vector3d baseline = w.ActiveVelocity;
+            Vector3d dvUnit = ex.InterceptPlan.DeltaV.normalized;
+            double planned = ex.InterceptPlan.DeltaVMagnitude;
+            AssertTrue("plan armed", ex.HasInterceptPlan && planned > 2.0);
+
+            // Deliver a fast chunk to 1 m/s short of planned (well past the stall-arm threshold), then
+            // creep asymptotically toward a ceiling 0.5 m/s short of planned — never reaching cutoff.
+            w.AddVelocity(dvUnit * (planned - 1.0));
+            double ceiling = planned - 0.5;
+
+            double dt = 0.1;
+            int ticks = 0;
+            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 100000)
+            {
+                ex.Update(w);
+                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (ticks % 10 == 0)   // a tiny, shrinking new maximum roughly once per second
+                {
+                    double delivered = Vector3d.Dot(w.ActiveVelocity - baseline, dvUnit);
+                    double gap = ceiling - delivered;
+                    if (gap > 0.0) w.AddVelocity(dvUnit * (gap * 0.5));
+                }
+                w.Advance(dt);
+            }
+
+            double finalDelivered = Vector3d.Dot(w.ActiveVelocity - baseline, dvUnit);
+            AssertTrue("creep burn terminates", ex.Phase == RendezvousPhase.Coast);
+            AssertTrue("terminated promptly (<2000 ticks)", ticks < 2000);
+            AssertTrue("stalled below planned (not 'reached')", finalDelivered < planned - CutoffMargin);
+
+            Console.WriteLine(string.Format(
+                "    planned={0:F2} delivered={1:F2} m/s  ticks={2} ({3:F0}s sim)",
+                planned, finalDelivered, ticks, ticks * dt));
+        }
+
+        // The reached-cutoff epsilon used in the executor (kept in sync for the assertion above).
+        private const double CutoffMargin = 0.15;
+
         // Builds a stepping sim where chaser and target share a circular orbit with the target leadDeg
         // ahead along-track (the classic coplanar catch-up).
         private static SimWorld MakeCatchupSim(double altitude, double leadDeg)
@@ -547,6 +747,34 @@ namespace Blackbird.RendezvousHarness
                 TwoBody.Propagate(_tPos, _tVel, _mu, dt, out _tPos, out _tVel);
                 _ut += dt;
             }
+        }
+
+        // An IRendezvousWorld whose active velocity (and only that) is driven directly by the test, with a
+        // manually advanced clock. Positions/target are frozen from a seed sim. Lets a test feed an exact
+        // delivered-ΔV profile to the executor's cutoff logic, decoupled from any thrust model.
+        private sealed class InjectWorld : IRendezvousWorld
+        {
+            private readonly SimWorld _seed;
+            private Vector3d _activeVel;
+            private double _ut;
+
+            public InjectWorld(SimWorld seed)
+            {
+                _seed = seed;
+                _activeVel = seed.ActiveVelocity;
+                _ut = 0.0;
+            }
+
+            public double UniversalTime => _ut;
+            public double Mu => _seed.Mu;
+            public Vector3d ActivePosition => _seed.ActivePosition;
+            public Vector3d ActiveVelocity => _activeVel;
+            public Vector3d TargetPosition => _seed.TargetPosition;
+            public Vector3d TargetVelocity => _seed.TargetVelocity;
+            public Vector3d ReferenceNormal => _seed.ReferenceNormal;
+
+            public void AddVelocity(Vector3d dv) { _activeVel += dv; }
+            public void Advance(double dt) { _ut += dt; }
         }
 
         private static double CircularPeriod(double radius)
