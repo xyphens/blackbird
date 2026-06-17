@@ -91,6 +91,8 @@ namespace Blackbird.Rendezvous
 
         // User gates (pass-through to the executor). Executing a stage cancels any warp.
         public bool Execute() { StopWarp(); return _executor.Execute(); }
+        // Execute a specific stage out of order (e.g. Match Velocity any time, to kill a closing rate).
+        public bool Execute(RendezvousStage stage) { StopWarp(); return _executor.Execute(stage); }
         public void Abort() { _executor.Abort(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
         public void ResetSequence() { _executor.Reset(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
 
@@ -181,6 +183,17 @@ namespace Blackbird.Rendezvous
             {
                 _executor.RefreshPlanPreview(world);
                 _lastPreviewUt = now;
+
+                // Feed the executor an ignition-time-drift lead = estimated time to orient to the burn
+                // vector (+settle/margin), so the frozen plan matches the state the engine actually fires
+                // from. Uses the current preview ΔV direction; refines over successive previews as the plan
+                // settles. (See TerminalRendezvousExecutor.PlanIntercept.)
+                if (_executor.Stage == RendezvousStage.Intercept && _executor.HasInterceptPlan)
+                {
+                    double padding = OrientPaddingSeconds + StabilizeDwellSeconds;
+                    _executor.IgnitionLeadSeconds = AttitudeControl.EstimateSlewTimeSeconds(
+                        active, _executor.InterceptPlan.DeltaV, padding);
+                }
             }
 
             _command = _executor.Update(world);
@@ -192,6 +205,7 @@ namespace Blackbird.Rendezvous
             // offline harness can't make.
             bool executingNow = _executor.Phase == RendezvousPhase.Executing;
             if (executingNow && !_wasExecuting) LogExecuteDiagnostic(active, target, world);
+            if (!executingNow && _wasExecuting) LogPostBurnDiagnostic(active, target);
             _wasExecuting = executingNow;
 
             // Throttle the per-frame burn log so a multi-second burn doesn't write megabytes.
@@ -224,6 +238,37 @@ namespace Blackbird.Rendezvous
                 string.Format("plan ok={0} dV={1:F2} tof={2:F0} predCA={3:F1}",
                     p.Success, p.DeltaVMagnitude, p.TimeOfFlight, p.PredictedClosestApproach),
                 "activeV=" + aV, "planDV=" + p.DeltaV);
+        }
+
+        // Logs how well the just-finished intercept burn matched its plan: planned vs delivered ΔV
+        // (magnitude shortfall + direction error) and the plan's predicted CA vs the freshly re-measured
+        // achieved CA. This is the decisive over/under-burn + execution-error data; read it from
+        // glog\Blackbird\rendezvous.log. No-op unless the completed stage was an intercept burn.
+        private void LogPostBurnDiagnostic(Vessel active, Vessel target)
+        {
+            if (!_executor.HasLastInterceptBurnReport || active == null || target == null) return;
+            InterceptBurnReport r = _executor.LastInterceptBurnReport;
+
+            // Re-measure the closest approach from the post-burn state so we compare like-for-like.
+            ComputeLiveClosestApproach(active, target);
+
+            double deliveredTotal = r.DeliveredVector.magnitude;
+            double shortfall = r.PlannedDvMagnitude - r.DeliveredAlongAxis;
+
+            double dirErrorDeg = double.NaN;
+            if (r.PlannedDvVector.sqrMagnitude > 0.0 && r.DeliveredVector.sqrMagnitude > 0.0)
+            {
+                double dot = MathHelpers.Clamp(
+                    Vector3d.Dot(r.PlannedDvVector.normalized, r.DeliveredVector.normalized), -1.0, 1.0);
+                dirErrorDeg = Math.Acos(dot) * 180.0 / Math.PI;
+            }
+
+            _log.Write("POSTBURN-DIAG",
+                string.Format("planned dV={0:F2}  delivered axis={1:F2}  delivered total={2:F2}  shortfall={3:F2} m/s",
+                    r.PlannedDvMagnitude, r.DeliveredAlongAxis, deliveredTotal, shortfall),
+                string.Format("dir error={0:F2} deg  cutoff={1}", dirErrorDeg, r.CutoffReason),
+                string.Format("predicted CA={0:F1} m  achieved CA={1:F1} m  in {2:F0}s",
+                    r.PredictedClosestApproach, LiveClosestApproachMeters, LiveTimeToClosestApproachSeconds));
         }
 
         // Semi-major axis implied by a state vector (vis-viva); NaN if unbound. Should equal the stock

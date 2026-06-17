@@ -35,6 +35,19 @@ namespace Blackbird.Rendezvous
         public string Status;            // human-readable, for UI/log
     }
 
+    // Post-burn summary of a completed intercept burn, recorded by the executor at cutoff for diagnostics:
+    // it quantifies how well the burn matched its plan (over/under-burn, direction error) and is paired by
+    // the actuation layer with the predicted-vs-achieved closest approach. Purely for logging/analysis.
+    public struct InterceptBurnReport
+    {
+        public double PlannedDvMagnitude;       // |ΔV| the plan asked for (m/s)
+        public Vector3d PlannedDvVector;        // planned ΔV, world frame
+        public double DeliveredAlongAxis;       // velocity change projected onto the planned axis at cutoff (m/s)
+        public Vector3d DeliveredVector;        // actual total velocity change over the burn, world frame
+        public double PredictedClosestApproach; // CA the plan predicted (m)
+        public string CutoffReason;             // which cutoff fired (reached / stalled / peaked)
+    }
+
     // The state seam between the executor and the world. In-game this is backed by Vessels +
     // TrajectoryProvider (VesselRendezvousWorld); offline the harness supplies a two-body-propagated
     // fake. Routing the executor through this interface (rather than touching Vessel directly) is what

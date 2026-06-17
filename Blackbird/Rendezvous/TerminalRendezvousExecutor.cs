@@ -35,6 +35,12 @@ namespace Blackbird.Rendezvous
         public double InterceptTofMinFraction = 0.05;     // arrival sweep, as a fraction of the orbital period
         public double InterceptTofMaxFraction = 0.95;
 
+        // Ignition-time-drift correction (set by the actuation layer to the estimated orient time): the
+        // plan is solved from the active state coasted forward by this much, so the frozen ΔV matches the
+        // state the engine actually fires from. 0 = plan from the measured state (offline/harness default).
+        public double IgnitionLeadSeconds = 0.0;
+        private const double IgnitionLeadMaxSeconds = 300.0;   // cap the forward coast at 5 min
+
         private const double MinUsefulDeltaV = 0.5;              // m/s; a plan below this is a no-op/degenerate
         private const double AlreadyCloseMeters = 2000.0;        // skip intercept only if genuinely this close
         private const double BurnTaperBandMetersPerSecond = 5.0; // throttle tapers over the last few m/s
@@ -56,7 +62,7 @@ namespace Blackbird.Rendezvous
         private const double CloseStandoffBandMeters = 30.0;       // complete once within standoff + this
         private const double CloseMatchedSpeedMetersPerSecond = 0.5; // ...and relative speed below this
         private const double CloseApproachGain = 0.2;              // commanded closing speed per metre of range error (1/s)
-        private const double CloseMaxApproachSpeedMetersPerSecond = 10.0; // cap on commanded closing speed
+        private const double CloseMaxApproachSpeedMetersPerSecond = 5.0;  // cap on commanded closing speed (braking margin)
         private const double CloseVelDeadbandMetersPerSecond = 0.1;       // no burn within this velocity error
         private const double CloseTaperBandMetersPerSecond = 3.0;         // throttle tapers over this much velocity error
 
@@ -68,6 +74,12 @@ namespace Blackbird.Rendezvous
         // while executing). For UI/logging.
         public bool HasInterceptPlan { get; private set; }
         public InterceptSolution InterceptPlan { get; private set; }
+
+        // Post-burn report from the last completed intercept burn (for the actuation layer's diagnostic).
+        // Set at cutoff; survives the stage transition; cleared on Reset/Execute.
+        public bool HasLastInterceptBurnReport { get; private set; }
+        public InterceptBurnReport LastInterceptBurnReport { get { return _lastInterceptBurnReport; } }
+        private InterceptBurnReport _lastInterceptBurnReport;
 
         // Burn execution state for the intercept stage.
         private bool _burnArmed;                   // burn baseline captured for the current Executing phase
@@ -96,6 +108,8 @@ namespace Blackbird.Rendezvous
             ClearBurnState();
             HasInterceptPlan = false;
             InterceptPlan = default(InterceptSolution);
+            HasLastInterceptBurnReport = false;
+            _lastInterceptBurnReport = default(InterceptBurnReport);
         }
 
         // User gate: start the current stage's closed loop. Valid from Idle (first stage) or Coast (the
@@ -107,6 +121,21 @@ namespace Blackbird.Rendezvous
             Phase = RendezvousPhase.Executing;
             _burnArmed = false;
             _matchArmed = false;
+            HasLastInterceptBurnReport = false;   // a new burn invalidates the previous report
+            return true;
+        }
+
+        // User gate: execute a SPECIFIC stage right now, regardless of the ordered flow — so the operator
+        // can jump straight to Match Velocity (e.g. to kill a dangerous closing rate) or re-run any stage.
+        // Valid from any state except mid-burn (Executing) or Aborted (which requires Reset first).
+        public bool Execute(RendezvousStage stage)
+        {
+            if (Phase == RendezvousPhase.Executing || Phase == RendezvousPhase.Aborted) return false;
+            Stage = stage;
+            Phase = RendezvousPhase.Executing;
+            _burnArmed = false;
+            _matchArmed = false;
+            HasLastInterceptBurnReport = false;
             return true;
         }
 
@@ -247,29 +276,43 @@ namespace Blackbird.Rendezvous
             //     re-solve / match-velocity stage trims the rest.
             //  3. peaked: delivered fell back from its max (axis saturated / velocity rotated past it).
             if (delivered >= _plannedDvMagnitude - CutoffEpsilonMetersPerSecond)
-            {
-                stageComplete = true;
-                return Idle("intercept: burn complete");
-            }
+                return FinishInterceptBurn(world, delivered, "intercept: burn complete", out stageComplete);
+
             // Arm the stall once we are genuinely thrusting; scaled down for small plans so a burn that
             // hangs below 1 m/s (a short re-plan when already close) can still stall out.
             double stallArmThreshold = Math.Min(BurnProgressThreshold, 0.4 * _plannedDvMagnitude);
             if (_maxDeliveredDv > stallArmThreshold && world.UniversalTime - _lastProgressUt > BurnStallSeconds)
-            {
-                stageComplete = true;
-                return Idle(string.Format("intercept: cutoff (delivered stalled at {0:F1}/{1:F1} m/s)",
-                    _maxDeliveredDv, _plannedDvMagnitude));
-            }
+                return FinishInterceptBurn(world, delivered, string.Format(
+                    "intercept: cutoff (delivered stalled at {0:F1}/{1:F1} m/s)",
+                    _maxDeliveredDv, _plannedDvMagnitude), out stageComplete);
+
             if (delivered < _maxDeliveredDv - PeakDropMetersPerSecond)
-            {
-                stageComplete = true;
-                return Idle(string.Format("intercept: cutoff (delivered peaked at {0:F1} m/s)", _maxDeliveredDv));
-            }
+                return FinishInterceptBurn(world, delivered, string.Format(
+                    "intercept: cutoff (delivered peaked at {0:F1} m/s)", _maxDeliveredDv), out stageComplete);
 
             double remaining = _plannedDvMagnitude - delivered;
             double throttle = MathHelpers.Clamp(remaining / BurnTaperBandMetersPerSecond, BurnMinThrottle, 1.0);
             return Burn(_plannedDvUnit, throttle,
                 string.Format("intercept burn {0:F1}/{1:F1} m/s", delivered, _plannedDvMagnitude));
+        }
+
+        // Completes the intercept burn: records the post-burn report (planned vs delivered ΔV + the plan's
+        // predicted CA, for the actuation layer to pair with the achieved CA) and returns the idle command.
+        private RendezvousCommand FinishInterceptBurn(
+            IRendezvousWorld world, double delivered, string status, out bool stageComplete)
+        {
+            stageComplete = true;
+            _lastInterceptBurnReport = new InterceptBurnReport
+            {
+                PlannedDvMagnitude = _plannedDvMagnitude,
+                PlannedDvVector = _plannedDvUnit * _plannedDvMagnitude,
+                DeliveredAlongAxis = delivered,
+                DeliveredVector = world.ActiveVelocity - _burnStartVelocity,
+                PredictedClosestApproach = InterceptPlan.PredictedClosestApproach,
+                CutoffReason = status
+            };
+            HasLastInterceptBurnReport = true;
+            return Idle(status);
         }
 
         // Match-velocity stage closed loop: at/near closest approach, cancel the chaser's velocity
@@ -363,9 +406,14 @@ namespace Blackbird.Rendezvous
             Vector3d velError = desiredRelVel - relVel;
             double errMag = velError.magnitude;
 
-            // Within the deadband, hold attitude / cut throttle so the engine doesn't chatter at setpoint.
+            // Within the deadband, HOLD attitude along the line of sight at zero throttle (a burn command
+            // with 0 throttle) rather than going Idle. Returning Idle would make the actuation layer treat
+            // it as "release control" and reset the orient gate, so every tiny correction re-ran the full
+            // orient+settle dwell — the cause of the many stop-start micro-burns on approach. Holding keeps
+            // the craft pointed and settled so the next correction fires immediately.
             if (errMag <= CloseVelDeadbandMetersPerSecond)
-                return Idle(string.Format("close approach: holding at {0:F0} m ({1:F2} m/s)", range, relSpeed));
+                return Burn(losUnit, 0.0,
+                    string.Format("close approach: holding at {0:F0} m ({1:F2} m/s)", range, relSpeed));
 
             double closingSpeed = Vector3d.Dot(relVel, losUnit);   // actual (positive = closing), for status
             double throttle = MathHelpers.Clamp(errMag / CloseTaperBandMetersPerSecond, BurnMinThrottle, 1.0);
@@ -378,7 +426,28 @@ namespace Blackbird.Rendezvous
         // fraction of the active orbit's period.
         private InterceptSolution PlanIntercept(IRendezvousWorld world)
         {
-            double period = OrbitalPeriod(world.ActivePosition, world.ActiveVelocity, world.Mu);
+            double mu = world.Mu;
+            double measureUt = world.UniversalTime;
+
+            // Ignition-time-drift correction: the burn doesn't start until the craft has oriented, so plan
+            // from the active state COASTED FORWARD to the estimated ignition time, and reference the
+            // arrival sweep to that ignition. The frozen ΔV then matches the state the engine actually
+            // fires from rather than the state measured (seconds-to-minutes) earlier. Lead is supplied by
+            // the actuation layer (estimated slew time); 0 offline (no orient delay).
+            double lead = MathHelpers.Clamp(IgnitionLeadSeconds, 0.0, IgnitionLeadMaxSeconds);
+            double ignitionUt = measureUt + lead;
+
+            Vector3d ignitionPos, ignitionVel;
+            if (lead > 0.0)
+                TwoBody.Propagate(world.ActivePosition, world.ActiveVelocity, mu, lead,
+                    out ignitionPos, out ignitionVel);
+            else
+            {
+                ignitionPos = world.ActivePosition;
+                ignitionVel = world.ActiveVelocity;
+            }
+
+            double period = OrbitalPeriod(ignitionPos, ignitionVel, mu);
             double tofMin, tofMax;
             if (MathHelpers.IsFinite(period) && period > 0.0)
             {
@@ -391,19 +460,19 @@ namespace Blackbird.Rendezvous
                 tofMax = 3600.0;
             }
 
-            double t0 = world.UniversalTime;
-            double mu = world.Mu;
             Vector3d targetPosition = world.TargetPosition;
             Vector3d targetVelocity = world.TargetVelocity;
 
+            // Target prediction propagates from the MEASUREMENT epoch, so absolute arrival UTs (which are
+            // >= ignitionUt) map to the correct elapsed time.
             Func<double, Vector3d> targetPositionAt = ut =>
             {
-                TwoBody.Propagate(targetPosition, targetVelocity, mu, ut - t0, out Vector3d rt, out _);
+                TwoBody.Propagate(targetPosition, targetVelocity, mu, ut - measureUt, out Vector3d rt, out _);
                 return rt;
             };
 
-            return InterceptSolver.Solve(world.ActivePosition, world.ActiveVelocity, mu,
-                world.ReferenceNormal, t0, targetPositionAt, tofMin, tofMax,
+            return InterceptSolver.Solve(ignitionPos, ignitionVel, mu,
+                world.ReferenceNormal, ignitionUt, targetPositionAt, tofMin, tofMax,
                 InterceptArrivalSamples, true, InterceptBudgetMilliseconds);
         }
 

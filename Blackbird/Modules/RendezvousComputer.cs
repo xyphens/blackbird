@@ -105,14 +105,19 @@ namespace Blackbird.Modules
 
             GUILayout.Space(8);
 
-            // --- single action button per stage ---
+            // --- action buttons: any stage can be executed at any time (out of order) ---
+            // Match Velocity in particular must be reachable on demand to kill a dangerous closing rate.
             bool canExecute = _handler.Engaged
-                              && (_handler.Phase == RendezvousPhase.Idle || _handler.Phase == RendezvousPhase.Coast);
+                              && _handler.Phase != RendezvousPhase.Executing
+                              && _handler.Phase != RendezvousPhase.Aborted;
+            if (_handler.Phase == RendezvousPhase.Executing)
+            {
+                GUILayout.Label($"Executing: {StageName(_handler.Stage)}...");
+            }
             GUI.enabled = canExecute;
-            string execLabel = _handler.Phase == RendezvousPhase.Executing
-                ? "Executing..."
-                : $"Execute: {StageName(_handler.Stage)}";
-            if (GUILayout.Button(execLabel)) _handler.Execute();
+            if (GUILayout.Button("Execute: Intercept")) _handler.Execute(RendezvousStage.Intercept);
+            if (GUILayout.Button("Execute: Match Velocity")) _handler.Execute(RendezvousStage.MatchVelocity);
+            if (GUILayout.Button("Execute: Close Approach")) _handler.Execute(RendezvousStage.CloseApproach);
             GUI.enabled = true;
 
             // Warp to closest approach (auto-stops short; cancelled if a burn starts).

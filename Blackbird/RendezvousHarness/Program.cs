@@ -35,6 +35,7 @@ namespace Blackbird.RendezvousHarness
             CheckMatchVelocityNullsRelativeVelocity();
             CheckInterceptBurnTerminatesUnderMinThrottleCreep();
             CheckCloseApproachParksAtStandoff();
+            CheckInterceptIgnitionLead();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -262,6 +263,13 @@ namespace Blackbird.RendezvousHarness
 
             ex.Reset();
             AssertTrue("reset to idle", ex.Phase == RendezvousPhase.Idle && ex.Stage == RendezvousStage.Intercept);
+
+            // Out-of-order execution: jump straight to Match Velocity from Idle (the on-demand safety gate).
+            AssertTrue("execute match directly", ex.Execute(RendezvousStage.MatchVelocity));
+            AssertTrue("jumped to match stage",
+                ex.Stage == RendezvousStage.MatchVelocity && ex.Phase == RendezvousPhase.Executing);
+            AssertTrue("execute(stage) blocked mid-burn", !ex.Execute(RendezvousStage.Intercept));
+            ex.Reset();
         }
 
         // Drives the intercept burn to completion against a stepping two-body sim: arm -> trigger ->
@@ -534,6 +542,48 @@ namespace Blackbird.RendezvousHarness
 
             Console.WriteLine(string.Format(
                 "    relSpeed before={0:F2} after={1:F3} m/s  ticks={2}", relBefore, relAfter, ticks));
+        }
+
+        // Validates the ignition-time-drift correction: with a lead set, the executor must plan from the
+        // active state COASTED FORWARD by the lead, and reference the arrival to that ignition. Verified by
+        // (1) the plan's ignition UT = now + lead, and (2) flying the planned transfer FROM the coasted
+        // ignition state lands exactly on the target's predicted arrival position. With lead applied, the
+        // ΔV is measured against the ignition velocity (not the earlier measured velocity).
+        private static void CheckInterceptIgnitionLead()
+        {
+            Console.WriteLine("Case 16: intercept ignition-lead drift correction");
+
+            SimWorld sim = MakeCatchupSim(250000.0, 15.0);
+            double lead = 120.0;
+
+            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+            ex.IgnitionLeadSeconds = lead;
+            ex.Execute();
+            ex.Update(sim);   // arms + freezes the plan using the lead
+            InterceptSolution plan = ex.InterceptPlan;
+
+            AssertTrue("plan success", plan.Success);
+            AssertScalar("ignition UT = now + lead", plan.IgnitionUt, sim.UniversalTime + lead);
+
+            // Coast the chaser to the ignition state, then fly the planned departure for the time of flight.
+            TwoBody.Propagate(sim.ActivePosition, sim.ActiveVelocity, KerbinMu, lead,
+                out Vector3d ignPos, out Vector3d ignVel);
+            TwoBody.Propagate(ignPos, plan.TransferDepartureVelocity, KerbinMu, plan.TimeOfFlight,
+                out Vector3d landed, out _);
+
+            // Target predicted position at arrival (2-body from its measured state, as the executor uses).
+            TwoBody.Propagate(sim.TargetPosition, sim.TargetVelocity, KerbinMu, plan.ArrivalUt - sim.UniversalTime,
+                out Vector3d targetArrival, out _);
+
+            AssertVecRel("transfer (from ignition) lands on target", landed, targetArrival, 1e-6);
+
+            // ΔV is referenced to the ignition velocity, not the measured velocity.
+            AssertVecRel("plan ΔV = departureV - ignitionV", plan.DeltaV,
+                plan.TransferDepartureVelocity - ignVel, 1e-6);
+
+            Console.WriteLine(string.Format(
+                "    lead={0:F0}s  ignUT={1:F0}  dV={2:F2} m/s  tof={3:F0}s  predCA={4:E2} m",
+                lead, plan.IgnitionUt, plan.DeltaVMagnitude, plan.TimeOfFlight, plan.PredictedClosestApproach));
         }
 
         // End-to-end Step 7: with the executor advanced to the CloseApproach stage, drive the closing-
