@@ -81,17 +81,15 @@ namespace Blackbird.Rendezvous
         public InterceptBurnReport LastInterceptBurnReport { get { return _lastInterceptBurnReport; } }
         private InterceptBurnReport _lastInterceptBurnReport;
 
-        // Burn execution state for the intercept stage (velocity-to-go guidance).
+        // Burn execution state for the intercept stage (planned-ΔV guidance).
         private bool _burnArmed;                   // burn target captured for the current Executing phase
-        private Vector3d _burnStartVelocity;       // velocity at ignition, for the delivered-ΔV diagnostic
-        private Vector3d _targetDepartureVelocity; // frozen transfer V1; we steer our velocity toward this
-        private double _plannedDvMagnitude;        // |planned ΔV|, for throttle taper + diagnostic
-        private Vector3d _plannedDvUnit;           // planned ΔV direction, for the diagnostic only
-        private double _burnStartResidual;         // |velToGo| at ignition = ΔV to deliver ALONG the frozen axis
+        private Vector3d _burnStartVelocity;       // velocity at ignition; delivered ΔV is measured from this
+        private Vector3d _targetDepartureVelocity; // transfer V1; kept for the post-burn velocity-residual diagnostic
+        private double _plannedDvMagnitude;        // |planned ΔV| — the amount to deliver along the burn axis
+        private Vector3d _plannedDvUnit;           // planned ΔV direction — the (fixed) burn axis we steer along
         private double _maxDeliveredDv;            // peak delivered-along-axis, for the peak-drop cutoff
         private double _lastProgressDelivered;     // delivered at the last DEADBAND-sized gain, for stall detection
         private double _lastProgressUt;            // UT of that last meaningful gain, for stall detection
-        private Vector3d _steerDirection;          // frozen burn axis: velToGo direction at ignition (see StepIntercept)
 
         // Burn execution state for the match-velocity stage.
         private bool _matchArmed;                  // match baseline captured for the current Executing phase
@@ -143,28 +141,21 @@ namespace Blackbird.Rendezvous
         }
 
         // Called by the actuation layer (RendezvousHandler) on every frame it is HOLDING throttle while it
-        // orients/stabilizes the craft. The real burn has not started yet, so re-pin ALL progress baselines
-        // to NOW: the diagnostic start velocity, the ignition residual that "progress" is measured from, the
-        // min/last-drop residual trackers, AND the stall timer. Pinning the residual without the timer (the
-        // original bug) let a multi-second orient run the stall clock out before ignition — and because the
-        // velocity-to-go target is referenced to a FUTURE ignition state, |V1 - v| shrinks purely from the
-        // coast during orient, which (measured against the planned magnitude) looked like 79 m/s of bogus
-        // "progress" and armed the stall. Measuring progress from _burnStartResidual instead, and resetting
-        // the timer here, means only real post-ignition thrust can arm/trip the cutoffs. No-op unless an
-        // intercept burn is armed. (The velocity-to-go target itself is fixed and needs no re-pinning.)
+        // orients/stabilizes the craft. The real burn has not started yet, so re-pin the ignition velocity
+        // (delivered is measured from it), the peak/progress trackers, AND the stall timer to NOW — otherwise
+        // a multi-second orient would run the stall clock out, or the small velocity gravity adds during the
+        // orient would count as delivered ΔV, and the burn would "complete" before the engine ever lit. No-op
+        // unless an intercept burn is armed. (The planned-ΔV axis/magnitude are fixed and need no re-pinning.)
         public void HoldBurnBaseline(Vector3d currentVelocity, double ut)
         {
             if (Phase != RendezvousPhase.Executing || Stage != RendezvousStage.Intercept || !_burnArmed) return;
+            // Re-pin the ignition velocity and the delivered/stall trackers to NOW: the real burn hasn't
+            // started while we hold throttle to orient, so delivered (measured from _burnStartVelocity) stays
+            // ~0 and the stall timer can't run out before the engine lights.
             _burnStartVelocity = currentVelocity;
-            Vector3d velToGo = _targetDepartureVelocity - currentVelocity;
-            double residual = velToGo.magnitude;
-            _burnStartResidual = residual;
             _maxDeliveredDv = 0.0;
             _lastProgressDelivered = 0.0;
             _lastProgressUt = ut;
-            // Keep the frozen burn axis aimed at the ideal velToGo direction until thrust actually starts;
-            // after ignition this stops being called, so the axis is locked for the powered burn.
-            if (residual > 0.0) _steerDirection = velToGo.normalized;
         }
 
         // User action: abort the sequence. No further commands are issued until Reset().
@@ -258,36 +249,28 @@ namespace Blackbird.Rendezvous
                     return Idle("intercept: no useful burn found (too far / wrong geometry) - Abort or Reset");
                 }
 
-                // Freeze the TARGET departure velocity (the transfer's V1 at ignition); velToGo = V1 − v is the
-                // remaining velocity to deliver. The burn axis is set from velToGo at ignition and then HELD
-                // (see the steering note below) — steering toward V1 monotonically reduces |velToGo| to its
-                // minimum, where we cut. (An earlier version re-aimed along velToGo every tick to also null
-                // the perpendicular gravity component; at full throttle that overshot and oscillated, so we
-                // freeze the axis and leave the small perpendicular error to match velocity / a re-plan.)
-                _targetDepartureVelocity = plan.TransferDepartureVelocity;
+                // Steer along the PLANNED ΔV vector and deliver its magnitude — the impulsive node executor
+                // (same as ClassicAscentGuidance). The plan already coasts to the estimated ignition state
+                // (IgnitionLeadSeconds), so plan.DeltaV is the correct burn for where the engine actually
+                // lights. NOTE: do NOT target "reach V1 from the current state" — |V1 − v| is inflated by the
+                // velocity gravity adds over the ignition lead (tens of m/s), which made small corrections
+                // over-burn 3-4x in the wrong direction and pushed CA back out (the "throttle-down raises CA"
+                // symptom). The residual perpendicular gravity component is left for match velocity / a re-plan.
+                _targetDepartureVelocity = plan.TransferDepartureVelocity;   // kept only for the velocity-residual diagnostic
                 _plannedDvMagnitude = plan.DeltaVMagnitude;
-                _plannedDvUnit = plan.DeltaV.normalized;       // diagnostic only
+                _plannedDvUnit = plan.DeltaV.normalized;
                 _burnStartVelocity = world.ActiveVelocity;
-                Vector3d initialVelToGo = _targetDepartureVelocity - world.ActiveVelocity;
-                double initialResidual = initialVelToGo.magnitude;
-                _burnStartResidual = initialResidual;
                 _maxDeliveredDv = 0.0;
                 _lastProgressDelivered = 0.0;
                 _lastProgressUt = world.UniversalTime;
-                _steerDirection = initialResidual > 0.0 ? initialVelToGo.normalized : _plannedDvUnit;
                 _burnArmed = true;
             }
 
-            // Delivered ΔV ALONG the frozen burn axis since ignition (orbital velocity, so it also counts the
-            // small gravity contribution over the burn — like ClassicAscentGuidance). Steering does NOT
-            // re-aim: _steerDirection is set at ignition (re-pinned to the ideal velToGo axis through the
-            // orient hold by HoldBurnBaseline) and then HELD. Re-aiming under thrust is what made the burn
-            // oscillate — at full throttle the craft overshoots, velToGo flips ~180°, the craft pivots to
-            // chase it, the orient gate drops, HoldBurnBaseline resets the cutoff baselines, and the burn
-            // never terminated (CA worsened every loop). With a fixed axis the craft never pivots, so
-            // delivered grows monotonically toward the planned magnitude and the cutoffs below fire cleanly.
-            // The small perpendicular gravity component is left for match velocity / a re-plan to trim.
-            double delivered = Vector3d.Dot(world.ActiveVelocity - _burnStartVelocity, _steerDirection);
+            // Delivered ΔV ALONG the fixed planned-ΔV axis since ignition (orbital velocity, so it also counts
+            // the small gravity contribution over the burn — like ClassicAscentGuidance). The axis is the
+            // planned ΔV direction and never re-aims, so the craft holds attitude, delivered grows
+            // monotonically toward the planned magnitude, and the cutoffs below fire cleanly.
+            double delivered = Vector3d.Dot(world.ActiveVelocity - _burnStartVelocity, _plannedDvUnit);
 
             // Peak tracking (for the peak-drop cutoff): the highest delivered ΔV seen along the axis.
             if (delivered > _maxDeliveredDv) _maxDeliveredDv = delivered;
@@ -307,26 +290,26 @@ namespace Blackbird.Rendezvous
             //  2. stalled: once truly thrusting, delivered stops making meaningful progress for a while
             //     (min throttle can't overcome gravity along the axis) — take what we got; match / re-plan trims.
             //  3. peaked: delivered fell back from its max (axis saturated / velocity rotated past it).
-            if (delivered >= _burnStartResidual - CutoffEpsilonMetersPerSecond)
+            if (delivered >= _plannedDvMagnitude - CutoffEpsilonMetersPerSecond)
                 return FinishInterceptBurn(world, delivered, "intercept: burn complete", out stageComplete);
 
             // Arm the stall only once genuinely thrusting; scaled down for small plans (a short re-plan when
-            // already close) so a burn that hangs below 1 m/s can still stall out. _burnStartResidual is the
-            // ignition residual (re-pinned through orient), so the orient coast can't falsely arm this.
-            double stallArmThreshold = Math.Min(BurnProgressThreshold, 0.4 * _burnStartResidual);
+            // already close) so a burn that hangs below 1 m/s can still stall out. Delivered is measured from
+            // the (orient-repinned) ignition velocity, so the orient coast can't falsely arm this.
+            double stallArmThreshold = Math.Min(BurnProgressThreshold, 0.4 * _plannedDvMagnitude);
             if (_maxDeliveredDv > stallArmThreshold && world.UniversalTime - _lastProgressUt > BurnStallSeconds)
                 return FinishInterceptBurn(world, delivered, string.Format(
                     "intercept: cutoff (delivered stalled at {0:F1}/{1:F1} m/s)",
-                    _maxDeliveredDv, _burnStartResidual), out stageComplete);
+                    _maxDeliveredDv, _plannedDvMagnitude), out stageComplete);
 
             if (delivered < _maxDeliveredDv - PeakDropMetersPerSecond)
                 return FinishInterceptBurn(world, delivered, string.Format(
                     "intercept: cutoff (delivered peaked at {0:F1} m/s)", _maxDeliveredDv), out stageComplete);
 
-            double remaining = _burnStartResidual - delivered;
+            double remaining = _plannedDvMagnitude - delivered;
             double throttle = MathHelpers.Clamp(remaining / BurnTaperBandMetersPerSecond, BurnMinThrottle, 1.0);
-            return Burn(_steerDirection, throttle,
-                string.Format("intercept burn: {0:F1}/{1:F1} m/s delivered", delivered, _burnStartResidual));
+            return Burn(_plannedDvUnit, throttle,
+                string.Format("intercept burn: {0:F1}/{1:F1} m/s delivered", delivered, _plannedDvMagnitude));
         }
 
         // Completes the intercept burn: records the post-burn report (planned ΔV, actual delivered velocity
@@ -551,11 +534,9 @@ namespace Blackbird.Rendezvous
             _targetDepartureVelocity = Vector3d.zero;
             _plannedDvMagnitude = 0.0;
             _plannedDvUnit = Vector3d.zero;
-            _burnStartResidual = 0.0;
             _maxDeliveredDv = 0.0;
             _lastProgressDelivered = 0.0;
             _lastProgressUt = 0.0;
-            _steerDirection = Vector3d.zero;
 
             _matchArmed = false;
             _matchMinRelSpeed = 0.0;

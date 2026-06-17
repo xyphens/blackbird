@@ -78,6 +78,10 @@ namespace Blackbird.Rendezvous
         public double LiveClosestApproachMeters { get; private set; } = double.NaN;
         public double LiveTimeToClosestApproachSeconds { get; private set; } = double.NaN;
 
+        // Live CA captured at the instant a burn is executed, so POSTBURN-DIAG can report before -> after
+        // (whether the burn actually tightened the closest approach). Set in LogExecuteDiagnostic.
+        private double _caBeforeBurnMeters = double.NaN;
+
         // Actuation feedback for the UI: while a burn is commanded, whether we are still orienting (true)
         // or actually thrusting (false), whether we are aligned but waiting to settle (Stabilizing), and
         // the current attitude error to the burn vector.
@@ -229,14 +233,17 @@ namespace Blackbird.Rendezvous
             double aSmaOrbit = active != null && active.orbit != null ? active.orbit.semiMajorAxis : double.NaN;
             double tSmaOrbit = target != null && target.orbit != null ? target.orbit.semiMajorAxis : double.NaN;
 
+            // Snapshot the do-nothing CA now so POSTBURN-DIAG can report before -> after.
+            _caBeforeBurnMeters = LiveClosestApproachMeters;
+
             _log.Write("EXECUTE-DIAG",
                 "mu=" + mu.ToString("E5"),
                 string.Format("active |r|={0:F1} |v|={1:F2} SMA_state={2:F1} SMA_orbit={3:F1}",
                     aR.magnitude, aV.magnitude, SmaFromState(aR, aV, mu), aSmaOrbit),
                 string.Format("target |r|={0:F1} |v|={1:F2} SMA_state={2:F1} SMA_orbit={3:F1}",
                     tR.magnitude, tV.magnitude, SmaFromState(tR, tV, mu), tSmaOrbit),
-                string.Format("plan ok={0} dV={1:F2} tof={2:F0} predCA={3:F1}",
-                    p.Success, p.DeltaVMagnitude, p.TimeOfFlight, p.PredictedClosestApproach),
+                string.Format("plan ok={0} dV={1:F2} tof={2:F0} predCA={3:F1}  CA_before={4:F1}",
+                    p.Success, p.DeltaVMagnitude, p.TimeOfFlight, p.PredictedClosestApproach, _caBeforeBurnMeters),
                 "activeV=" + aV, "planDV=" + p.DeltaV);
         }
 
@@ -255,8 +262,7 @@ namespace Blackbird.Rendezvous
             double deliveredTotal = r.DeliveredVector.magnitude;
 
             // Direction error between the actual velocity change and the planned ΔV (shows how much gravity
-            // / steering tilted the burn). With velocity-to-go guidance the residual — not this angle — is
-            // what determines accuracy, but the angle is still informative.
+            // tilted the burn off the planned axis). Small = the frozen-axis burn tracked the plan well.
             double dirErrorDeg = double.NaN;
             if (r.PlannedDvVector.sqrMagnitude > 0.0 && r.DeliveredVector.sqrMagnitude > 0.0)
             {
@@ -265,13 +271,17 @@ namespace Blackbird.Rendezvous
                 dirErrorDeg = Math.Acos(dot) * 180.0 / Math.PI;
             }
 
+            // Did the burn actually tighten the closest approach? (before -> after, and the delta.)
+            double caDelta = LiveClosestApproachMeters - _caBeforeBurnMeters;
+
             _log.Write("POSTBURN-DIAG",
                 string.Format("planned dV={0:F2}  delivered total={1:F2}  velocity residual={2:F2} m/s",
                     r.PlannedDvMagnitude, deliveredTotal, r.VelocityResidual),
                 string.Format("delivered axis={0:F2}  dir error={1:F2} deg  cutoff={2}",
                     r.DeliveredAlongAxis, dirErrorDeg, r.CutoffReason),
-                string.Format("predicted CA={0:F1} m  achieved CA={1:F1} m  in {2:F0}s",
-                    r.PredictedClosestApproach, LiveClosestApproachMeters, LiveTimeToClosestApproachSeconds));
+                string.Format("CA before={0:F1} m  -> achieved CA={1:F1} m  (delta {2:+0;-0} m)  predicted CA={3:F1} m  in {4:F0}s",
+                    _caBeforeBurnMeters, LiveClosestApproachMeters, caDelta,
+                    r.PredictedClosestApproach, LiveTimeToClosestApproachSeconds));
         }
 
         // Semi-major axis implied by a state vector (vis-viva); NaN if unbound. Should equal the stock
