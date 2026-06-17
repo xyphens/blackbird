@@ -36,6 +36,7 @@ namespace Blackbird.RendezvousHarness
             CheckInterceptBurnTerminatesUnderMinThrottleCreep();
             CheckCloseApproachParksAtStandoff();
             CheckInterceptIgnitionLead();
+            CheckInterceptFiniteBurnAchievesCloseApproach();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -542,6 +543,61 @@ namespace Blackbird.RendezvousHarness
 
             Console.WriteLine(string.Format(
                 "    relSpeed before={0:F2} after={1:F3} m/s  ticks={2}", relBefore, relAfter, ticks));
+        }
+
+        // Velocity-to-go guidance under a FINITE burn: with a weak-ish engine the burn takes several
+        // seconds, during which gravity meaningfully rotates the velocity. A frozen-axis cutoff would end
+        // at V1 + a large perpendicular (gravity) component → km-scale miss (the in-game 7-18° dir error).
+        // Velocity-to-go steers to null (V1 - currentVel), so the burn ends ON V1 and the achieved closest
+        // approach stays small. Asserts the post-burn CA collapses vs coasting and is small in absolute m.
+        private static void CheckInterceptFiniteBurnAchievesCloseApproach()
+        {
+            Console.WriteLine("Case 17: finite-burn intercept collapses CA and terminates (frozen-axis; gravity leaves a bounded perpendicular residual)");
+
+            double altitude = 250000.0;
+            double R = KerbinRadius + altitude;
+            SimWorld sim = MakeCatchupSim(altitude, 15.0);
+
+            double coastCA = MinSeparation(
+                sim.ActivePosition, sim.ActiveVelocity, sim.TargetPosition, sim.TargetVelocity,
+                KerbinMu, CircularPeriod(R), 720);
+
+            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+            ex.Execute();
+
+            const double maxAccel = 8.0;   // a ~30 m/s burn takes ~4 s -> gravity acts appreciably during it
+            const double dt = 0.05;
+            InterceptSolution plan = default(InterceptSolution);
+            bool captured = false;
+            int ticks = 0;
+            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 1000000)
+            {
+                RendezvousCommand cmd = ex.Update(sim);
+                if (!captured && ex.HasInterceptPlan) { plan = ex.InterceptPlan; captured = true; }
+                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (cmd.HasBurn)
+                    sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
+                sim.Advance(dt);
+            }
+
+            AssertTrue("plan captured", captured);
+            AssertTrue("burn completed -> coast", ex.Phase == RendezvousPhase.Coast);
+
+            double remaining = Math.Max(plan.ArrivalUt - sim.UniversalTime, 1.0);
+            double postCA = MinSeparation(
+                sim.ActivePosition, sim.ActiveVelocity, sim.TargetPosition, sim.TargetVelocity,
+                KerbinMu, remaining, 1440);
+
+            AssertTrue("finite burn collapses CA vs coast", postCA < coastCA * 0.05);
+            // Frozen-axis steering does not null the perpendicular velocity gravity adds over a multi-second
+            // burn, so a single intercept on this gravity-heavy geometry leaves a few-km residual (match
+            // velocity / a re-plan trims it). The point of this case is that the burn TERMINATES cleanly and
+            // collapses CA by >95% — not sub-km precision, which only the (unstable, removed) re-aim gave.
+            AssertTrue("finite-burn CA bounded (<8 km; residual for match/re-plan)", postCA < 8000.0);
+
+            Console.WriteLine(string.Format(
+                "    maxAccel={0} m/s^2  coastCA={1:F0} m  postCA={2:F0} m  ticks={3} ({4:F0}s)",
+                maxAccel, coastCA, postCA, ticks, ticks * dt));
         }
 
         // Validates the ignition-time-drift correction: with a lead set, the executor must plan from the

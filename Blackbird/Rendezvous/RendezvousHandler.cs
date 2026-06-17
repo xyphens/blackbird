@@ -253,8 +253,10 @@ namespace Blackbird.Rendezvous
             ComputeLiveClosestApproach(active, target);
 
             double deliveredTotal = r.DeliveredVector.magnitude;
-            double shortfall = r.PlannedDvMagnitude - r.DeliveredAlongAxis;
 
+            // Direction error between the actual velocity change and the planned ΔV (shows how much gravity
+            // / steering tilted the burn). With velocity-to-go guidance the residual — not this angle — is
+            // what determines accuracy, but the angle is still informative.
             double dirErrorDeg = double.NaN;
             if (r.PlannedDvVector.sqrMagnitude > 0.0 && r.DeliveredVector.sqrMagnitude > 0.0)
             {
@@ -264,9 +266,10 @@ namespace Blackbird.Rendezvous
             }
 
             _log.Write("POSTBURN-DIAG",
-                string.Format("planned dV={0:F2}  delivered axis={1:F2}  delivered total={2:F2}  shortfall={3:F2} m/s",
-                    r.PlannedDvMagnitude, r.DeliveredAlongAxis, deliveredTotal, shortfall),
-                string.Format("dir error={0:F2} deg  cutoff={1}", dirErrorDeg, r.CutoffReason),
+                string.Format("planned dV={0:F2}  delivered total={1:F2}  velocity residual={2:F2} m/s",
+                    r.PlannedDvMagnitude, deliveredTotal, r.VelocityResidual),
+                string.Format("delivered axis={0:F2}  dir error={1:F2} deg  cutoff={2}",
+                    r.DeliveredAlongAxis, dirErrorDeg, r.CutoffReason),
                 string.Format("predicted CA={0:F1} m  achieved CA={1:F1} m  in {2:F0}s",
                     r.PredictedClosestApproach, LiveClosestApproachMeters, LiveTimeToClosestApproachSeconds));
         }
@@ -323,13 +326,19 @@ namespace Blackbird.Rendezvous
                 _attitude.DriveInertial(vessel, state, _command.ThrustDirection, 0.0);
 
                 double errorDeg = AttitudeErrorDeg(vessel, _command.ThrustDirection);
-                double rateDegPerSec = vessel.angularVelocityD.magnitude * (180.0 / Math.PI);
+                // Only the pitch/yaw angular rate moves the nose off the burn vector; roll (about the
+                // thrust axis) does not affect a thrust-along-nose maneuver. Excluding roll from the
+                // settle gate means a craft that is slow to null roll no longer delays a time-sensitive
+                // burn. (KSP vessel angular velocity: x=pitch, y=roll, z=yaw.)
+                Vector3d angularVel = vessel.angularVelocityD;
+                double pitchYawRateDegPerSec =
+                    Math.Sqrt(angularVel.x * angularVel.x + angularVel.z * angularVel.z) * (180.0 / Math.PI);
                 double now = Planetarium.GetUniversalTime();
                 AlignmentErrorDeg = errorDeg;
 
                 if (!_burnAligned)
                 {
-                    bool steady = errorDeg <= AlignStartDeg && rateDegPerSec <= MaxAngularRateDegPerSec;
+                    bool steady = errorDeg <= AlignStartDeg && pitchYawRateDegPerSec <= MaxAngularRateDegPerSec;
                     if (steady)
                     {
                         if (double.IsNegativeInfinity(_steadySinceUt)) _steadySinceUt = now;
@@ -358,7 +367,7 @@ namespace Blackbird.Rendezvous
                     // Holding throttle while we orient/stabilize: pin the executor's cutoff baseline to
                     // the current velocity so gravity during the orient isn't mistaken for delivered ΔV.
                     state.mainThrottle = 0.0f;
-                    _executor.HoldBurnBaseline(TrajectoryProvider.GetVelocity(vessel));
+                    _executor.HoldBurnBaseline(TrajectoryProvider.GetVelocity(vessel), now);
                 }
 
                 _burningLastApply = _burnAligned;

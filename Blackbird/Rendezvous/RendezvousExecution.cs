@@ -44,8 +44,9 @@ namespace Blackbird.Rendezvous
         public Vector3d PlannedDvVector;        // planned ΔV, world frame
         public double DeliveredAlongAxis;       // velocity change projected onto the planned axis at cutoff (m/s)
         public Vector3d DeliveredVector;        // actual total velocity change over the burn, world frame
+        public double VelocityResidual;         // |target departure velocity - achieved velocity| at cutoff (m/s)
         public double PredictedClosestApproach; // CA the plan predicted (m)
-        public string CutoffReason;             // which cutoff fired (reached / stalled / peaked)
+        public string CutoffReason;             // which cutoff fired (reached / stalled / overshot)
     }
 
     // The state seam between the executor and the world. In-game this is backed by Vessels +
