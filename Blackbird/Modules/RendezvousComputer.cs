@@ -56,11 +56,20 @@ namespace Blackbird.Modules
                               + $"range rate: {_handler.Relative.RangeRate:F1} m/s");
             }
 
+            // Live closest approach (CA) = the minimum predicted chaser-target separation from the
+            // current state, recomputed continuously so it can be watched collapse during a burn.
+            if (!double.IsNaN(_handler.LiveClosestApproachMeters)
+                && !double.IsInfinity(_handler.LiveClosestApproachMeters))
+            {
+                GUILayout.Label($"Closest approach: {_handler.LiveClosestApproachMeters / 1000.0:F2} km "
+                              + $"in {_handler.LiveTimeToClosestApproachSeconds:F0} s");
+            }
+
             if (_handler.HasInterceptPlan)
             {
                 InterceptSolution plan = _handler.InterceptPlan;
                 GUILayout.Label($"Plan ΔV: {plan.DeltaVMagnitude:F1} m/s   tof: {plan.TimeOfFlight:F0} s");
-                GUILayout.Label($"Predicted CA: {plan.PredictedClosestApproach:F0} m");
+                GUILayout.Label($"Plan predicted CA: {plan.PredictedClosestApproach:F0} m");
             }
 
             if (_handler.HasCommand)
