@@ -34,6 +34,11 @@ namespace Blackbird
             _rendezvousComputer.Initialize(_rendezvousHandler);
             GameEvents.onGUIApplicationLauncherReady.Add(AddToolbarButton);
             GameEvents.onGUIApplicationLauncherDestroyed.Add(RemoveToolbarButton);
+
+            // On revert-to-launch the launcher is often already ready, so onGUIApplicationLauncherReady
+            // never fires for this fresh instance and the button goes missing. Add it directly when the
+            // launcher is already up (AddToolbarButton is idempotent).
+            if (ApplicationLauncher.Ready) AddToolbarButton();
         }
 
         public void Update()

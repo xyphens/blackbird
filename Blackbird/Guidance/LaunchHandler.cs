@@ -66,25 +66,7 @@ namespace Blackbird.Guidance
 
             State = LaunchGuidanceState.WarpingToLaunch;
         }
-        private static void SetSafeWarpRate(double secondsRemaining)
-        {
-            int rateIndex;
-
-            if (secondsRemaining <= 15.0)
-                rateIndex = 1;
-            else if (secondsRemaining <= 60.0)
-                rateIndex = 2;
-            else if (secondsRemaining <= 180.0)
-                rateIndex = 3;
-            else if (secondsRemaining <= 600.0)
-                rateIndex = 4;
-            else if (secondsRemaining <= 1800.0)
-                rateIndex = 5;
-            else
-                rateIndex = 6;
-
-            TimeWarp.SetRate(rateIndex, true);
-        }
+        private static void SetSafeWarpRate(double secondsRemaining) => WarpHelper.SetSafeWarpRate(secondsRemaining);
 
         public void StartGuidance()
         {
@@ -134,7 +116,8 @@ namespace Blackbird.Guidance
             if (secondsRemaining <= WarpStopLeadTimeSeconds)
             {
                 TimeWarp.SetRate(0, true);
-                _targetUt = 0.0;
+                // Keep _targetUt (the launch UT) so the countdown keeps showing the real remaining
+                // seconds through the final lead-in — zeroing it made SecondsUntilLaunch jump to 0.
                 State = LaunchGuidanceState.AwaitingLaunch;
                 return;
             }

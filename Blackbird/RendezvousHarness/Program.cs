@@ -26,8 +26,12 @@ namespace Blackbird.RendezvousHarness
             CheckLambertRecoversCircularOrbit();
             CheckLambertRecoversEllipticalOrbit();
             CheckInterceptCoplanarCatchup();
+            CheckInterceptNearClosestApproach();
             CheckExecutorGating();
             CheckInterceptBurnClosedLoop();
+            CheckClosestApproachCountsDown();
+            CheckInterceptLargeCoOrbitalGap();
+            CheckInterceptBurnTerminatesUnderWeakThrust();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -238,22 +242,20 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("starts Idle", ex.Phase == RendezvousPhase.Idle);
             AssertTrue("starts at Intercept", ex.Stage == RendezvousStage.Intercept);
             AssertTrue("idle update has no burn", !ex.Update(world).HasBurn);
-            AssertTrue("trigger blocked before arm", !ex.Trigger());
 
-            AssertTrue("arm intercept", ex.Arm());
-            AssertTrue("armed phase", ex.Phase == RendezvousPhase.Armed);
-            AssertTrue("re-arm blocked while armed", !ex.Arm());
-            AssertTrue("armed update has no burn", !ex.Update(world).HasBurn);
-            AssertTrue("plan cached when armed", ex.HasInterceptPlan);
+            ex.RefreshPlanPreview(world);
+            AssertTrue("preview plan available", ex.HasInterceptPlan);
 
-            AssertTrue("trigger intercept", ex.Trigger());
+            AssertTrue("execute ok", ex.Execute());
             AssertTrue("executing phase", ex.Phase == RendezvousPhase.Executing);
+            AssertTrue("execute blocked while executing", !ex.Execute());
             RendezvousCommand first = ex.Update(world);
             AssertTrue("intercept burn started", first.HasBurn && ex.Phase == RendezvousPhase.Executing);
 
             ex.Abort();
             AssertTrue("aborted phase", ex.Phase == RendezvousPhase.Aborted);
             AssertTrue("aborted update has no burn", !ex.Update(world).HasBurn);
+            AssertTrue("execute blocked when aborted", !ex.Execute());
 
             ex.Reset();
             AssertTrue("reset to idle", ex.Phase == RendezvousPhase.Idle && ex.Stage == RendezvousStage.Intercept);
@@ -277,9 +279,7 @@ namespace Blackbird.RendezvousHarness
                 KerbinMu, CircularPeriod(R), 720);
 
             TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
-            ex.Arm();
-            ex.Update(sim);     // armed: caches a preview plan
-            ex.Trigger();
+            ex.Execute();       // start the intercept stage; plan is frozen on the first executing tick
 
             const double maxAccel = 200.0;   // m/s^2 sim engine; high enough that the burn is near-impulsive
             const double dt = 0.01;
@@ -322,19 +322,161 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("burn collapses CA vs coast", postCA < coastCA * 0.05);
             AssertTrue("post-burn CA small (<3 km)", postCA < 3000.0);
 
-            // The remaining (stub) stages must still traverse to Complete on user triggers.
-            AssertTrue("arm match", ex.Arm());
-            ex.Trigger();
+            // After intercept the stage auto-advances; the remaining (stub) stages traverse on Execute.
+            AssertTrue("stage advanced to match", ex.Stage == RendezvousStage.MatchVelocity);
+            AssertTrue("execute match", ex.Execute());
             ex.Update(sim);
-            AssertTrue("coast after match", ex.Phase == RendezvousPhase.Coast);
-            AssertTrue("arm close", ex.Arm());
-            ex.Trigger();
+            AssertTrue("coast, stage now close", ex.Phase == RendezvousPhase.Coast && ex.Stage == RendezvousStage.CloseApproach);
+            AssertTrue("execute close", ex.Execute());
             ex.Update(sim);
             AssertTrue("complete after close", ex.Phase == RendezvousPhase.Complete);
 
             Console.WriteLine(string.Format(
                 "    plan ΔV={0:F2} applied={1:F2} m/s  coastCA={2:F0} m  postCA={3:F1} m  ticks={4}",
                 plan.DeltaVMagnitude, appliedAlongPlan, coastCA, postCA, ticks));
+        }
+
+        // DIAGNOSTIC: reproduces the user's "loaded in orbit" geometry — target ~60 deg ahead on the SAME
+        // circular orbit (range ~700 km, rel speed ~vc, constant separation / never approaches). Shows
+        // what the single-rev intercept returns here (is it a sane catch-up ΔV, or a degenerate ~0 that
+        // the executor wrongly treats as "done"?).
+        private static void CheckInterceptLargeCoOrbitalGap()
+        {
+            Console.WriteLine("Case 11: intercept across a large co-orbital gap [diagnostic]");
+
+            double R = KerbinRadius + 100000.0;
+            double vc = Math.Sqrt(KerbinMu / R);
+            double period = CircularPeriod(R);
+            double lead = 60.0 * Math.PI / 180.0;
+
+            Vector3d aPos = new Vector3d(R, 0.0, 0.0);
+            Vector3d aVel = new Vector3d(0.0, vc, 0.0);
+            Vector3d tPos = new Vector3d(R * Math.Cos(lead), R * Math.Sin(lead), 0.0);
+            Vector3d tVel = new Vector3d(-vc * Math.Sin(lead), vc * Math.Cos(lead), 0.0);
+
+            Func<double, Vector3d> targetAt = ut =>
+            {
+                TwoBody.Propagate(tPos, tVel, KerbinMu, ut, out Vector3d rt, out _);
+                return rt;
+            };
+
+            InterceptSolution sol = InterceptSolver.Solve(
+                aPos, aVel, KerbinMu, new Vector3d(0, 0, 1), 0.0, targetAt,
+                period * 0.05, period * 0.95, 60, true, 50.0);
+
+            Console.WriteLine(string.Format(
+                "    sep={0:F0} m  relspeed={1:F0} m/s  ->  success={2} dV={3:F2} tof={4:F0} predCA={5:F1}",
+                (tPos - aPos).magnitude, (tVel - aVel).magnitude,
+                sol.Success, sol.DeltaVMagnitude, sol.TimeOfFlight, sol.PredictedClosestApproach));
+        }
+
+        // Reproduces Bug 1: chaser and target on slightly different circular orbits (different periods)
+        // so the true closest approach is a SYNODIC-scale event many orbits away. The old one-period scan
+        // pinned the reported time at ~one period; the solver must instead report a real time that COUNTS
+        // DOWN as the state advances. Asserts the time decreases by ~the elapsed time between samples.
+        private static void CheckClosestApproachCountsDown()
+        {
+            Console.WriteLine("Case 10: closest-approach time counts down (synodic search)");
+
+            double R = KerbinRadius + 150000.0;
+            double vc = Math.Sqrt(KerbinMu / R);
+            double period = CircularPeriod(R);
+
+            // Target ~5 km higher (slower) and AHEAD; the faster lower chaser catches up to a close pass
+            // a few hours out (synodic scale), well beyond one orbital period.
+            double R2 = R + 5000.0;
+            double vc2 = Math.Sqrt(KerbinMu / R2);
+            double lead = 25.0 * Math.PI / 180.0;
+            Vector3d aPos = new Vector3d(R, 0.0, 0.0);
+            Vector3d aVel = new Vector3d(0.0, vc, 0.0);
+            Vector3d tPos = new Vector3d(R2 * Math.Cos(lead), R2 * Math.Sin(lead), 0.0);
+            Vector3d tVel = new Vector3d(-vc2 * Math.Sin(lead), vc2 * Math.Cos(lead), 0.0);
+
+            double maxHorizon = 6.0 * 3600.0;
+            ApproachResult first = ClosestApproachSolver.FindNextApproach(aPos, aVel, tPos, tVel, KerbinMu, maxHorizon, 240);
+
+            // Advance both vessels 600 s and re-evaluate; the time-to-CA should drop by ~600 s.
+            double advance = 600.0;
+            TwoBody.Propagate(aPos, aVel, KerbinMu, advance, out Vector3d aPos2, out Vector3d aVel2);
+            TwoBody.Propagate(tPos, tVel, KerbinMu, advance, out Vector3d tPos2, out Vector3d tVel2);
+            ApproachResult second = ClosestApproachSolver.FindNextApproach(aPos2, aVel2, tPos2, tVel2, KerbinMu, maxHorizon, 240);
+
+            AssertTrue("first approach found", first.Found);
+            AssertTrue("time is beyond one period (synodic)", first.TimeSeconds > period);
+            AssertTrue("time counts down ~600s after advancing", Math.Abs((first.TimeSeconds - advance) - second.TimeSeconds) < 60.0);
+            AssertTrue("approach distance is small (real pass)", first.DistanceMeters < 8000.0);
+
+            Console.WriteLine(string.Format(
+                "    period={0:F0}s  CA#1={1:F0}m in {2:F0}s  CA#2 in {3:F0}s (expected ~{4:F0})",
+                period, first.DistanceMeters, first.TimeSeconds, second.TimeSeconds, first.TimeSeconds - advance));
+        }
+
+        // DIAGNOSTIC: reproduces the in-game "accurate launch" geometry — target ~20 km radially out on a
+        // slightly higher circular orbit, so the pair is at closest approach NOW and sliding past at a low
+        // relative speed. Shows what the single-rev intercept solver does in this regime (vs the easy
+        // 15-degree catch-up). No assertions; this is for diagnosis.
+        private static void CheckInterceptNearClosestApproach()
+        {
+            Console.WriteLine("Case 9: intercept near closest approach (sliding past) [diagnostic]");
+
+            double R = KerbinRadius + 100000.0;
+            double dr = 19570.0;
+            double R2 = R + dr;
+            double vc = Math.Sqrt(KerbinMu / R);
+            double vc2 = Math.Sqrt(KerbinMu / R2);
+
+            Vector3d aPos = new Vector3d(R, 0.0, 0.0);
+            Vector3d aVel = new Vector3d(0.0, vc, 0.0);
+            Vector3d tPos = new Vector3d(R2, 0.0, 0.0);          // 19.57 km radially out
+            Vector3d tVel = new Vector3d(0.0, vc2, 0.0);          // circular -> relvel perpendicular -> CA now
+
+            double period = CircularPeriod(R);
+            Func<double, Vector3d> targetAt = ut =>
+            {
+                TwoBody.Propagate(tPos, tVel, KerbinMu, ut, out Vector3d rt, out _);
+                return rt;
+            };
+
+            InterceptSolution sol = InterceptSolver.Solve(
+                aPos, aVel, KerbinMu, new Vector3d(0, 0, 1), 0.0, targetAt,
+                period * 0.05, period * 0.95, 60, true, 50.0);
+
+            double coastCA = MinSeparation(aPos, aVel, tPos, tVel, KerbinMu, period, 720);
+
+            Console.WriteLine(string.Format(
+                "    separation={0:F2} km  rel speed={1:F1} m/s  coast CA={2:F0} m",
+                dr / 1000.0, Math.Abs(vc2 - vc), coastCA));
+            Console.WriteLine(string.Format(
+                "    intercept: success={0} dV={1:F1} m/s  tof={2:F0}s  predicted CA={3:F1} m",
+                sol.Success, sol.DeltaVMagnitude, sol.TimeOfFlight, sol.PredictedClosestApproach));
+        }
+
+        // Reproduces the "stuck at 5% forever" bug: a weak engine on a long burn, where the delivered
+        // component along the fixed axis plateaus below the planned ΔV (gravity rotates the velocity). The
+        // burn must still TERMINATE (via the stall cutoff) instead of flooring at min throttle forever.
+        private static void CheckInterceptBurnTerminatesUnderWeakThrust()
+        {
+            Console.WriteLine("Case 12: intercept burn terminates under weak thrust (stall cutoff)");
+
+            SimWorld sim = MakeCatchupSim(250000.0, 15.0);
+            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+            ex.Execute();
+
+            const double maxAccel = 0.5;   // weak engine -> long burn -> axis saturates before reaching planned
+            const double dt = 0.2;
+            int ticks = 0;
+            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 500000)
+            {
+                RendezvousCommand cmd = ex.Update(sim);
+                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (cmd.HasBurn)
+                    sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
+                sim.Advance(dt);
+            }
+
+            AssertTrue("weak-thrust burn terminates", ex.Phase == RendezvousPhase.Coast);
+            AssertTrue("terminated within tick budget", ticks < 500000);
+            Console.WriteLine(string.Format("    terminated after {0} ticks ({1:F0}s sim)", ticks, ticks * dt));
         }
 
         // Builds a stepping sim where chaser and target share a circular orbit with the target leadDeg

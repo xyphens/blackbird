@@ -12,14 +12,13 @@ namespace Blackbird.Rendezvous
         CloseApproach   // Step 7: close to ~100 m and station-keep / hand off
     }
 
-    // Lifecycle phase within the sequence. Idle/Coast/Complete/Aborted are between-stage rest states;
-    // Armed and Executing are the user-gated active states. Closed-loop guidance runs only in Executing.
+    // Lifecycle phase within the sequence. Idle/Coast are the between-stage rest states where the user
+    // is expected to act (Execute the current stage); Executing is the autopilot-driven active state.
     public enum RendezvousPhase
     {
-        Idle,        // nothing armed; awaiting the user to arm the next stage
-        Armed,       // a stage is armed; awaiting the user trigger to begin it
-        Executing,   // closed-loop guidance running within the armed stage
-        Coast,       // a non-final stage finished; coasting, awaiting arm of the next stage
+        Idle,        // first stage not started yet; awaiting Execute
+        Executing,   // closed-loop guidance running for the current stage
+        Coast,       // a stage finished and the NEXT stage is queued (Stage already advanced); awaiting Execute
         Complete,    // final stage finished; control handed back to the player
         Aborted      // user aborted; no commands issued until Reset
     }

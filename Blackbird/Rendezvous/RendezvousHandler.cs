@@ -25,10 +25,37 @@ namespace Blackbird.Rendezvous
         private bool _burningLastApply;   // were we actuating thrust on the previous fly-by-wire pass?
 
         // Live closest-approach monitor: recomputed off the draw path on a throttle so it can be watched
-        // collapse during/after a burn, independent of any armed plan.
+        // collapse during/after a burn, independent of any plan. Searches out to the synodic period
+        // (capped) so the time-to-CA is real and decreases, instead of pinning at one orbital period.
         private const double CaRecomputeIntervalSeconds = 0.5;
         private const int CaSampleCount = 240;
+        private const double CaMaxHorizonSeconds = 6.0 * 3600.0;   // cap the synodic search at 6 hours
         private double _lastCaComputeUt = double.NegativeInfinity;
+
+        // Plan preview refresh throttle (so the panel shows ΔV/CA before the user Executes).
+        private const double PreviewIntervalSeconds = 0.5;
+        private double _lastPreviewUt = double.NegativeInfinity;
+
+        // Burn-log throttle so a multi-second burn doesn't write megabytes to the glog.
+        private const double BurnLogIntervalSeconds = 0.25;
+        private double _lastBurnLogUt = double.NegativeInfinity;
+
+        // Orient-then-stabilize-then-burn gate: hold throttle until the craft is BOTH pointed along the
+        // burn vector (within AlignStartDeg) AND has stopped rotating (rate below MaxAngularRate), held
+        // for StabilizeDwell so it has truly settled — otherwise it fires mid-slew and flings the burn
+        // off-axis. Once burning, keep throttle while within the looser AlignKeepDeg (hysteresis).
+        private const double AlignStartDeg = 2.0;
+        private const double AlignKeepDeg = 20.0;
+        private const double MaxAngularRateDegPerSec = 1.0;
+        private const double StabilizeDwellSeconds = 1.5;
+        private bool _burnAligned;
+        private double _steadySinceUt = double.NegativeInfinity;
+        private bool _wasExecuting;   // edge-detect entry into a stage burn (for one-shot diagnostics)
+
+        // Warp-to-closest-approach (user convenience). Absolute target UT; auto-stops near the event.
+        private const double WarpLeadSeconds = 10.0;
+        private double _warpTargetUt;
+        public bool Warping { get; private set; }
 
         public bool Engaged => _engaged;
         public RendezvousPhase Phase => _executor.Phase;
@@ -45,15 +72,40 @@ namespace Blackbird.Rendezvous
         public double LiveClosestApproachMeters { get; private set; } = double.NaN;
         public double LiveTimeToClosestApproachSeconds { get; private set; } = double.NaN;
 
+        // Actuation feedback for the UI: while a burn is commanded, whether we are still orienting (true)
+        // or actually thrusting (false), whether we are aligned but waiting to settle (Stabilizing), and
+        // the current attitude error to the burn vector.
+        public bool Orienting { get; private set; }
+        public bool Stabilizing { get; private set; }
+        public double AlignmentErrorDeg { get; private set; } = double.NaN;
+
         // Master enable. Disengaging also drops attitude control so the player regains the craft.
         public void Engage() { _engaged = true; }
         public void Disengage() { _engaged = false; _attitude.Reset(); }
 
-        // User gates (pass-through to the executor).
-        public bool Arm() => _executor.Arm();
-        public bool Trigger() => _executor.Trigger();
-        public void Abort() { _executor.Abort(); _attitude.Reset(); }
-        public void ResetSequence() { _executor.Reset(); _attitude.Reset(); }
+        // User gates (pass-through to the executor). Executing a stage cancels any warp.
+        public bool Execute() { StopWarp(); return _executor.Execute(); }
+        public void Abort() { _executor.Abort(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
+        public void ResetSequence() { _executor.Reset(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
+
+        // Warp toward the predicted closest approach using the shared safe-warp ladder; auto-stops a few
+        // seconds short (and is cancelled the moment a burn starts). No-op if there is no CA estimate yet.
+        public void WarpToClosestApproach()
+        {
+            if (_executor.Phase == RendezvousPhase.Executing) return;
+            double timeToCa = LiveTimeToClosestApproachSeconds;
+            if (!MathHelpers.IsFinite(timeToCa) || timeToCa <= WarpLeadSeconds) return;
+
+            _warpTargetUt = Planetarium.GetUniversalTime() + timeToCa;
+            Warping = true;
+        }
+
+        public void StopWarp()
+        {
+            if (Warping) WarpHelper.Stop();
+            Warping = false;
+            _warpTargetUt = 0.0;
+        }
 
         // Per-frame tick (from BlackBird.Update). Computes the command + relative state and logs while
         // executing. Bounded work; does not actuate (that is ApplyFlightControls).
@@ -63,7 +115,11 @@ namespace Blackbird.Rendezvous
             _hasCommand = false;
             HasRelative = false;
 
-            if (active == null || target == null || ReferenceEquals(active, target)) return;
+            if (active == null || target == null || ReferenceEquals(active, target))
+            {
+                StopWarp();
+                return;
+            }
 
             // Relative state + live closest approach are computed whenever a target exists, so the panel
             // can be monitored before engaging. The CA scan is throttled to keep it cheap.
@@ -77,19 +133,85 @@ namespace Blackbird.Rendezvous
                 _lastCaComputeUt = now;
             }
 
+            // Warp-to-CA monitoring: back off the rate as the event nears, stop just short, and bail if
+            // a burn starts.
+            if (Warping)
+            {
+                double secondsToWarpTarget = _warpTargetUt - now;
+                if (_executor.Phase == RendezvousPhase.Executing || secondsToWarpTarget <= WarpLeadSeconds)
+                    StopWarp();
+                else
+                    WarpHelper.SetSafeWarpRate(secondsToWarpTarget);
+            }
+
             if (!_engaged) return;
 
             VesselRendezvousWorld world = new VesselRendezvousWorld(active, target);
+
+            // Keep a fresh plan preview for the pending stage so the panel shows ΔV/CA before Execute.
+            if (_executor.Phase != RendezvousPhase.Executing && now - _lastPreviewUt >= PreviewIntervalSeconds)
+            {
+                _executor.RefreshPlanPreview(world);
+                _lastPreviewUt = now;
+            }
+
             _command = _executor.Update(world);
             _hasCommand = true;
 
-            if (_executor.Phase == RendezvousPhase.Executing)
+            // One-shot diagnostic on entering a stage burn: dumps the measured state so we can confirm
+            // in-game whether position/velocity are a consistent two-body state (SMA-from-state vs the
+            // stock orbit SMA) and whether the plan ΔV is sane. This is the decisive frame check the
+            // offline harness can't make.
+            bool executingNow = _executor.Phase == RendezvousPhase.Executing;
+            if (executingNow && !_wasExecuting) LogExecuteDiagnostic(active, target, world);
+            _wasExecuting = executingNow;
+
+            // Throttle the per-frame burn log so a multi-second burn doesn't write megabytes.
+            if (executingNow && now - _lastBurnLogUt >= BurnLogIntervalSeconds)
+            {
                 _log.Write(_executor.Stage.ToString(), _command, Relative);
+                _lastBurnLogUt = now;
+            }
         }
 
-        // Scans the next orbital period for the minimum chaser-target separation by propagating both
-        // along their two-body conics (the always-available conic floor). Records the distance and the
-        // time until it. Bounded sample count; called off the draw path on a throttle.
+        // Logs a consistency snapshot at burn start: |r|, |v|, the semi-major axis implied by the state
+        // vector vs the stock orbit's SMA (mismatch ⇒ position/velocity are in inconsistent frames), and
+        // the resulting plan. Read it from glog\Blackbird\rendezvous.log..
+        private void LogExecuteDiagnostic(Vessel active, Vessel target, IRendezvousWorld world)
+        {
+            double mu = world.Mu;
+            Vector3d aR = world.ActivePosition, aV = world.ActiveVelocity;
+            Vector3d tR = world.TargetPosition, tV = world.TargetVelocity;
+            InterceptSolution p = _executor.InterceptPlan;
+
+            double aSmaOrbit = active != null && active.orbit != null ? active.orbit.semiMajorAxis : double.NaN;
+            double tSmaOrbit = target != null && target.orbit != null ? target.orbit.semiMajorAxis : double.NaN;
+
+            _log.Write("EXECUTE-DIAG",
+                "mu=" + mu.ToString("E5"),
+                string.Format("active |r|={0:F1} |v|={1:F2} SMA_state={2:F1} SMA_orbit={3:F1}",
+                    aR.magnitude, aV.magnitude, SmaFromState(aR, aV, mu), aSmaOrbit),
+                string.Format("target |r|={0:F1} |v|={1:F2} SMA_state={2:F1} SMA_orbit={3:F1}",
+                    tR.magnitude, tV.magnitude, SmaFromState(tR, tV, mu), tSmaOrbit),
+                string.Format("plan ok={0} dV={1:F2} tof={2:F0} predCA={3:F1}",
+                    p.Success, p.DeltaVMagnitude, p.TimeOfFlight, p.PredictedClosestApproach),
+                "activeV=" + aV, "planDV=" + p.DeltaV);
+        }
+
+        // Semi-major axis implied by a state vector (vis-viva); NaN if unbound. Should equal the stock
+        // orbit's SMA when position and velocity are a consistent pair.
+        private static double SmaFromState(Vector3d r, Vector3d v, double mu)
+        {
+            double rmag = r.magnitude;
+            if (rmag <= 0.0 || mu <= 0.0) return double.NaN;
+            double energy = 0.5 * v.sqrMagnitude - mu / rmag;
+            if (energy >= 0.0) return double.NaN;
+            return -mu / (2.0 * energy);
+        }
+
+        // Finds the next true closest approach (out to the synodic period, capped), so the reported
+        // time-to-CA is real and counts down instead of pinning at one orbital period. Called off the
+        // draw path on a throttle.
         private void ComputeLiveClosestApproach(Vessel active, Vessel target)
         {
             CelestialBody body = active.mainBody;
@@ -101,36 +223,14 @@ namespace Blackbird.Rendezvous
             Vector3d tPos = TrajectoryProvider.GetPosition(target) - body.position;
             Vector3d tVel = TrajectoryProvider.GetVelocity(target);
 
-            double horizon = OrbitalPeriod(aPos, aVel, mu);
-            if (!MathHelpers.IsFinite(horizon) || horizon <= 0.0) horizon = 3600.0;
+            ApproachResult approach = ClosestApproachSolver.FindNextApproach(
+                aPos, aVel, tPos, tVel, mu, CaMaxHorizonSeconds, CaSampleCount);
 
-            double minDistance = double.PositiveInfinity;
-            double timeAtMin = 0.0;
-            for (int i = 0; i <= CaSampleCount; i++)
+            if (approach.Found)
             {
-                double dt = horizon * i / CaSampleCount;
-                if (!TwoBody.Propagate(aPos, aVel, mu, dt, out Vector3d ra, out _)) continue;
-                if (!TwoBody.Propagate(tPos, tVel, mu, dt, out Vector3d rt, out _)) continue;
-
-                double distance = (ra - rt).magnitude;
-                if (distance < minDistance) { minDistance = distance; timeAtMin = dt; }
+                LiveClosestApproachMeters = approach.DistanceMeters;
+                LiveTimeToClosestApproachSeconds = approach.TimeSeconds;
             }
-
-            LiveClosestApproachMeters = minDistance;
-            LiveTimeToClosestApproachSeconds = timeAtMin;
-        }
-
-        // Keplerian period from a state vector; NaN if unbound.
-        private static double OrbitalPeriod(Vector3d r, Vector3d v, double mu)
-        {
-            double rmag = r.magnitude;
-            if (rmag <= 0.0 || mu <= 0.0) return double.NaN;
-
-            double energy = 0.5 * v.sqrMagnitude - mu / rmag;
-            if (energy >= 0.0) return double.NaN;
-
-            double a = -mu / (2.0 * energy);
-            return 2.0 * Math.PI * Math.Sqrt(a * a * a / mu);
         }
 
         // Fly-by-wire actuation (from BlackBird.OnFlyByWire). Steers along the burn vector and sets
@@ -140,22 +240,81 @@ namespace Blackbird.Rendezvous
         {
             if (state == null || vessel == null) return;
 
-            bool burning = _engaged && _hasCommand && _command.HasBurn
-                           && _command.ThrustDirection.sqrMagnitude > 0.0;
+            bool wantBurn = _engaged && _hasCommand && _command.HasBurn
+                            && _command.ThrustDirection.sqrMagnitude > 0.0;
 
-            if (burning)
+            if (wantBurn)
             {
+                // Always steer toward the burn vector; throttle only once the craft is pointed AND has
+                // settled (low rotation rate) and held that for the dwell — orient, stabilize, then burn.
                 _attitude.DriveInertial(vessel, state, _command.ThrustDirection, 0.0);
-                state.mainThrottle = Mathf.Clamp01((float)_command.Throttle);
-                _burningLastApply = true;
+
+                double errorDeg = AttitudeErrorDeg(vessel, _command.ThrustDirection);
+                double rateDegPerSec = vessel.angularVelocityD.magnitude * (180.0 / Math.PI);
+                double now = Planetarium.GetUniversalTime();
+                AlignmentErrorDeg = errorDeg;
+
+                if (!_burnAligned)
+                {
+                    bool steady = errorDeg <= AlignStartDeg && rateDegPerSec <= MaxAngularRateDegPerSec;
+                    if (steady)
+                    {
+                        if (double.IsNegativeInfinity(_steadySinceUt)) _steadySinceUt = now;
+                        if (now - _steadySinceUt >= StabilizeDwellSeconds) _burnAligned = true;
+                    }
+                    else
+                    {
+                        _steadySinceUt = double.NegativeInfinity;   // moved/rotating: restart the dwell
+                    }
+                }
+                else if (errorDeg > AlignKeepDeg)
+                {
+                    _burnAligned = false;
+                    _steadySinceUt = double.NegativeInfinity;
+                }
+
+                Orienting = !_burnAligned;
+                Stabilizing = !_burnAligned && errorDeg <= AlignStartDeg;   // pointed, settling
+
+                if (_burnAligned)
+                {
+                    state.mainThrottle = Mathf.Clamp01((float)_command.Throttle);
+                }
+                else
+                {
+                    // Holding throttle while we orient/stabilize: pin the executor's cutoff baseline to
+                    // the current velocity so gravity during the orient isn't mistaken for delivered ΔV.
+                    state.mainThrottle = 0.0f;
+                    _executor.HoldBurnBaseline(TrajectoryProvider.GetVelocity(vessel));
+                }
+
+                _burningLastApply = _burnAligned;
                 return;
             }
+
+            Orienting = false;
+            Stabilizing = false;
+            AlignmentErrorDeg = double.NaN;
+            _burnAligned = false;
+            _steadySinceUt = double.NegativeInfinity;
 
             if (_burningLastApply)
             {
                 state.mainThrottle = 0.0f;   // cut throttle on the first non-burning frame after a burn
                 _burningLastApply = false;
             }
+        }
+
+        // Angle (degrees) between the craft's current facing (control-reference nose) and the desired
+        // world-frame burn direction. Used to gate throttle until aligned.
+        private static double AttitudeErrorDeg(Vessel vessel, Vector3d desiredWorldDirection)
+        {
+            if (vessel.ReferenceTransform == null) return 180.0;
+
+            Vector3d nose = ((Vector3d)vessel.ReferenceTransform.up).normalized;
+            Vector3d desired = desiredWorldDirection.normalized;
+            double dot = MathHelpers.Clamp(Vector3d.Dot(nose, desired), -1.0, 1.0);
+            return Math.Acos(dot) * 180.0 / Math.PI;
         }
     }
 }
