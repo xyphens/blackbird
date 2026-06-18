@@ -9,7 +9,8 @@ namespace Blackbird.Rendezvous
     {
         Intercept,      // Step 4: burn onto the Lambert transfer toward the target
         MatchVelocity,  // Step 6: null relative velocity at closest approach
-        CloseApproach   // Step 7: close to ~100 m and station-keep / hand off
+        CloseApproach,  // Step 7: close to ~100 m and station-keep / hand off
+        Docking         // Docking: RCS-translate onto the target port axis and creep to contact (staged legs)
     }
 
     // Lifecycle phase within the sequence. Idle/Coast are the between-stage rest states where the user
@@ -32,6 +33,10 @@ namespace Blackbird.Rendezvous
         public bool HasBurn;             // false => idle/coast: no steering, zero throttle
         public Vector3d ThrustDirection; // world-frame unit vector (meaningful only when HasBurn)
         public double Throttle;          // 0..1 (meaningful only when HasBurn)
+        // Docking only: a desired RCS translation velocity (world frame, m/s). HasTranslation gates it so
+        // every other stage leaves it zero and the actuation layer ignores it (main-engine path unchanged).
+        public bool HasTranslation;
+        public Vector3d TranslationVelocityWorld;
         public string Status;            // human-readable, for UI/log
     }
 

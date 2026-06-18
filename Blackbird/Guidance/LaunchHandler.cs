@@ -12,6 +12,18 @@ namespace Blackbird.Guidance
 
         private readonly AttitudeControl _attitudeControl = new AttitudeControl();
 
+        // Coast attitude-hold deadband: while coasting (≈zero throttle), once the craft is essentially pointed
+        // at the hold direction and barely rotating, STOP actively driving the attitude PID — otherwise it
+        // nulls infinitesimal error every frame and fires continuous tiny RCS bursts the whole coast. Latched
+        // with hysteresis (enter tight, release only after drifting past the wider exit angle) so it doesn't
+        // chatter at the edge. Only suppressed at ≈zero throttle, so a powered burn keeps tight, continuous
+        // attitude control. (Scoped here, NOT in the shared AttitudeControl, so it never affects burns/docking.)
+        private const double CoastThrottleEpsilon = 0.01;        // ≤ this throttle counts as coasting
+        private const double CoastHoldEnterDeg = 0.15;           // enter the hold below this pointing error
+        private const double CoastHoldExitDeg = 0.40;            // ...and leave it only past this (hysteresis)
+        private const double CoastHoldMaxRateDegPerSec = 0.10;   // ...and only when nearly stopped rotating
+        private bool _coastAttitudeHeld;
+
         // manual guidance
         public double ManualPitchCommandDeg { get; private set; } = 90.0;
         public double ManualHeadingCommandDeg { get; private set; } = 90.0;
@@ -296,10 +308,26 @@ namespace Blackbird.Guidance
 
             if (GuidanceMode == GuidanceMode.Autopilot && GuidanceInfo.HasInertialDirection)
             {
-                _attitudeControl.DriveInertial(vessel, state, GuidanceInfo.InertialDirection, 0.0);
+                // Coasting and already aligned/settled: hold controls neutral instead of nulling micro-error
+                // every frame (which fires continuous tiny RCS bursts). Reset the PID on entry so it doesn't
+                // wind up while idle and re-acquires cleanly when the craft drifts past the exit angle.
+                if (GuidanceInfo.CommandThrottle <= CoastThrottleEpsilon
+                    && CoastAttitudeAligned(vessel, GuidanceInfo.InertialDirection))
+                {
+                    if (!_coastAttitudeHeld) { _attitudeControl.Reset(); _coastAttitudeHeld = true; }
+                    state.pitch = state.pitchTrim;
+                    state.yaw = state.yawTrim;
+                    state.roll = state.rollTrim;
+                }
+                else
+                {
+                    _coastAttitudeHeld = false;
+                    _attitudeControl.DriveInertial(vessel, state, GuidanceInfo.InertialDirection, 0.0);
+                }
             }
             else
             {
+                _coastAttitudeHeld = false;
                 _attitudeControl.Drive(vessel, state, GuidanceInfo.CommandHeadingDeg, GuidanceInfo.CommandPitchDeg, GuidanceInfo.CommandRoll);
             }
 
@@ -311,6 +339,24 @@ namespace Blackbird.Guidance
             if (GuidanceMode != GuidanceMode.Autopilot) return;
 
             state.mainThrottle = (float)(Math.Max(0.0, Math.Min(1.0, GuidanceInfo.CommandThrottle)));
+        }
+
+        // Whether the craft is within the coast-hold deadband of the hold direction AND nearly stopped
+        // rotating, with hysteresis: it must come within CoastHoldEnterDeg to start holding, and only releases
+        // once it has drifted past the wider CoastHoldExitDeg. The rate gate stops it latching mid-slew.
+        private bool CoastAttitudeAligned(Vessel vessel, Vector3d holdDirection)
+        {
+            if (vessel == null || vessel.ReferenceTransform == null || holdDirection.sqrMagnitude <= 0.0)
+                return false;
+
+            double errorDeg = Vector3d.Angle(vessel.ReferenceTransform.up, holdDirection);
+            // KSP vessel angular velocity: x = pitch, z = yaw (y = roll, which doesn't move the nose).
+            Vector3d angularVel = vessel.angularVelocityD;
+            double pitchYawRateDegPerSec =
+                Math.Sqrt(angularVel.x * angularVel.x + angularVel.z * angularVel.z) * (180.0 / Math.PI);
+
+            double gateDeg = _coastAttitudeHeld ? CoastHoldExitDeg : CoastHoldEnterDeg;
+            return errorDeg <= gateDeg && pitchYawRateDegPerSec <= CoastHoldMaxRateDegPerSec;
         }
 
         private static bool IsPrelaunchHold(Vessel vessel)

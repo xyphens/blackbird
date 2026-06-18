@@ -41,6 +41,8 @@ namespace Blackbird.Guidance
             // NaN when no target orbit yet (pre-launch / no target) — classic guidance skips the
             // inclination term for a non-finite inclination rather than dereferencing a null TargetOrbit.
             double targetInclinationDeg = plan.TargetOrbit != null ? plan.TargetOrbit.InclinationDeg : double.NaN;
+            // fixme: update this logic to stop burning rcs across the coast phase and instead only do it at a set time before prograde burn
+
             PoweredGuidanceCommand poweredCommand = useClassic
                 ? _classicGuidance.GetCommand(vesselState, ascentProfile, profilePitch, profileHeading, targetInclinationDeg)
                 : _poweredGuidance.GetCommand(vesselState, plan, ascentProfile, profilePitch, profileHeading, profileThrottle);

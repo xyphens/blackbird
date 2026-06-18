@@ -1,4 +1,5 @@
 using System;
+using Blackbird.Docking;
 using Blackbird.Guidance;
 using Blackbird.Logging;
 using Blackbird.Mathematics;
@@ -65,6 +66,17 @@ namespace Blackbird.Rendezvous
         private double _steadySinceUt = double.NegativeInfinity;
         private bool _wasExecuting;   // edge-detect entry into a stage burn (for one-shot diagnostics)
 
+        // Docking RCS translation: map the world-frame velocity error onto the control-transform axes and
+        // command RCS. Gain converts m/s of error to translation input (saturates fast — RCS is near
+        // bang-bang); the deadband stops chatter. The Translate*Sign constants are the FlightCtrlState axis
+        // polarity — VERIFY IN-GAME and flip any that come out mirrored (control-frame sign conventions vary).
+        private const double DockTranslationGain = 5.0;
+        private const float DockTranslationDeadband = 0.05f;
+        private const float TranslateRightSign = 1.0f;   // state.X (+ = right)
+        private const float TranslateUpSign = 1.0f;      // state.Y (+ = dorsal/up)
+        private const float TranslateFwdSign = 1.0f;     // state.Z (+ = toward the controlled port / nose)
+        private Vector3d _lastTargetVelocityWorld = Vector3d.zero;   // target velocity, refreshed each engaged tick
+
         // Warp-to-closest-approach (user convenience). Absolute target UT; auto-stops a lead time short of
         // the event so the craft can pre-orient. The lead is fixed for stages that fire on arrival, but for
         // Match Velocity it is the estimated time to slew to the retro-relative-velocity attitude (plus a
@@ -110,6 +122,9 @@ namespace Blackbird.Rendezvous
         public bool Execute() { StopWarp(); return _executor.Execute(); }
         // Execute a specific stage out of order (e.g. Match Velocity any time, to kill a closing rate).
         public bool Execute(RendezvousStage stage) { StopWarp(); return _executor.Execute(stage); }
+        // Docking gate: start docking (resets to the Approach leg) or resume the next queued leg from Coast.
+        public bool ExecuteDocking() { StopWarp(); return _executor.ExecuteDocking(); }
+        public DockingLeg DockingLeg => _executor.DockingLeg;
 
         // Close-approach park distance ("match velocities at X m"). The default is restored when the UI
         // option is off, so a one-off custom distance never silently persists into the next approach.
@@ -252,6 +267,19 @@ namespace Blackbird.Rendezvous
                         AttitudeControl.EstimateSlewTimeSeconds(active, brakeDir, OrientPaddingSeconds);
             }
 
+            // Cache the target velocity for the docking RCS controller (which runs on the fly-by-wire pass
+            // where only the active vessel is in hand).
+            _lastTargetVelocityWorld = TrajectoryProvider.GetVelocity(target);
+
+            // Feed the docking stage the live port transforms: the target docking port (the operator targets
+            // it directly) and the chaser's own port (the part being "Controlled From"). Invalid until both
+            // are present, in which case the stage idles with operator guidance.
+            if (_executor.Stage == RendezvousStage.Docking)
+            {
+                bool portsValid = TryGetDockingPorts(active, out PortState chaserPort, out PortState targetPort);
+                _executor.SetDockingPorts(portsValid, chaserPort, targetPort);
+            }
+
             // Feed the executor the live predicted CA + time-to-CA so the close-approach stage can decide
             // when to coast (projection reaches the parking band) vs keep closing.
             double closestApproach = MathHelpers.IsFinite(LiveClosestApproachMeters) ? LiveClosestApproachMeters : double.NaN;
@@ -383,6 +411,15 @@ namespace Blackbird.Rendezvous
         {
             if (state == null || vessel == null) return;
 
+            // Docking uses 6-DOF RCS translation (hold heading + translate), not the main-engine orient/burn
+            // path below. Branch out before any of that logic so the two never interfere.
+            if (_engaged && _hasCommand && _command.Stage == RendezvousStage.Docking && _command.HasTranslation
+                && _command.ThrustDirection.sqrMagnitude > 0.0)
+            {
+                ApplyDockingControls(state, vessel);
+                return;
+            }
+
             bool wantBurn = _engaged && _hasCommand && _command.HasBurn
                             && _command.ThrustDirection.sqrMagnitude > 0.0;
 
@@ -468,6 +505,67 @@ namespace Blackbird.Rendezvous
             //    vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, _rcsPriorState);
             //    _rcsForcedOn = false;
             //}
+        }
+
+        // Docking actuation (6-DOF): hold the mated heading with the attitude controller and drive RCS
+        // translation so the chaser's relative velocity tracks the commanded approach velocity. RCS is forced
+        // on for the maneuver. No main engine. Validated in-game (the offline harness has no actuation path).
+        private void ApplyDockingControls(FlightCtrlState state, Vessel vessel)
+        {
+            if (vessel.ReferenceTransform == null) return;
+            vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
+
+            // Hold the head-on heading so the chaser port faces the target port; no throttle in docking.
+            _attitude.DriveInertial(vessel, state, _command.ThrustDirection, 0.0);
+            state.mainThrottle = 0.0f;
+            AlignmentErrorDeg = AttitudeErrorDeg(vessel, _command.ThrustDirection);
+            Orienting = false;
+            Stabilizing = false;
+            _burningLastApply = false;
+
+            // Velocity error between the commanded approach velocity and our actual relative velocity.
+            Vector3d relVel = TrajectoryProvider.GetVelocity(vessel) - _lastTargetVelocityWorld;
+            Vector3d velError = _command.TranslationVelocityWorld - relVel;
+
+            // Map the world-frame error onto the control-transform axes. For the controlled part: up = the
+            // outward port/nose axis, right = starboard, forward = the belly ("down"). KSP FlightCtrlState
+            // translation: X = right, Y = dorsal/up, Z = forward (toward the nose/port).
+            Transform rt = vessel.ReferenceTransform;
+            double x = TranslateRightSign * Vector3d.Dot(velError, rt.right) * DockTranslationGain;
+            double y = TranslateUpSign * Vector3d.Dot(velError, -(Vector3d)rt.forward) * DockTranslationGain;
+            double z = TranslateFwdSign * Vector3d.Dot(velError, rt.up) * DockTranslationGain;
+
+            state.X = TranslationInput((float)x);
+            state.Y = TranslationInput((float)y);
+            state.Z = TranslationInput((float)z);
+        }
+
+        // Clamps an RCS translation command to [-1, 1] and zeroes it inside the deadband (anti-chatter).
+        private static float TranslationInput(float value)
+        {
+            if (value > DockTranslationDeadband) return Mathf.Clamp(value, -1.0f, 1.0f);
+            if (value < -DockTranslationDeadband) return Mathf.Clamp(value, -1.0f, 1.0f);
+            return 0.0f;
+        }
+
+        // Extracts the world-frame docking-port transforms for the docking stage. The TARGET port comes from
+        // the current target object (the operator targets the docking port itself — it is an ITargetable); its
+        // forward vector is the outward approach axis. The CHASER port is the active vessel's control reference
+        // (the operator does "Control From Here" on their port, so ReferenceTransform.up is its outward axis).
+        // Returns false if either is unavailable, so the executor can prompt the operator.
+        private bool TryGetDockingPorts(Vessel active, out PortState chaserPort, out PortState targetPort)
+        {
+            chaserPort = default(PortState);
+            targetPort = default(PortState);
+            if (active == null || active.ReferenceTransform == null) return false;
+
+            ITargetable tgt = FlightGlobals.fetch != null ? FlightGlobals.fetch.VesselTarget : null;
+            ModuleDockingNode targetNode = tgt as ModuleDockingNode;
+            if (targetNode == null || targetNode.GetTransform() == null) return false;
+
+            targetPort = new PortState(targetNode.GetTransform().position, targetNode.GetFwdVector());
+            chaserPort = new PortState(active.ReferenceTransform.position, active.ReferenceTransform.up);
+            return true;
         }
 
         // Angle (degrees) between the craft's current facing (control-reference nose) and the desired

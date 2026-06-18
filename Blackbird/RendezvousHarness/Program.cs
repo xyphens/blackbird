@@ -1,4 +1,5 @@
 using System;
+using Blackbird.Docking;
 using Blackbird.Mathematics;
 using Blackbird.Rendezvous;
 using UnityEngine;
@@ -37,6 +38,11 @@ namespace Blackbird.RendezvousHarness
             CheckCloseApproachParksAtStandoff();
             CheckInterceptIgnitionLead();
             CheckInterceptFiniteBurnAchievesCloseApproach();
+            CheckDockingGeometry();
+            CheckDockingController();
+            CheckCloseApproachCoastsWhenCaInBand();
+            CheckCloseApproachDeadbandRelaxesWithRange();
+            CheckMatchVelocityLocksDirectionWhenSlow();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -884,6 +890,193 @@ namespace Blackbird.RendezvousHarness
 
             public void AddVelocity(Vector3d dv) { _activeVel += dv; }
             public void Advance(double dt) { _ut += dt; }
+        }
+
+        // Fixed-state world for single-tick controller checks (no propagation) — set the vectors directly.
+        private sealed class StaticWorld : IRendezvousWorld
+        {
+            public double UniversalTime { get; set; }
+            public double Mu { get; set; }
+            public Vector3d ActivePosition { get; set; }
+            public Vector3d ActiveVelocity { get; set; }
+            public Vector3d TargetPosition { get; set; }
+            public Vector3d TargetVelocity { get; set; }
+            public Vector3d ReferenceNormal { get; set; }
+        }
+
+        // Case 18: docking-port geometry decomposition. Known geometry, then a rotation-invariance check
+        // that the along-axis / lateral split is real, not axis luck (mirrors Cases 1/2). Target port faces
+        // +X; the chaser sits 10 m in front of the face and 2 m off the centerline, its own port facing back
+        // down the axis (the mated heading), with a 50 m standoff waypoint.
+        private static void CheckDockingGeometry()
+        {
+            Console.WriteLine("Case 18: docking-port geometry (axial/lateral split + alignment)");
+
+            const double standoff = 50.0;
+
+            // Axis-aligned: target port at origin facing +X, chaser 10 m ahead / 2 m to +Y, facing -X.
+            PortState targetA = new PortState(new Vector3d(0, 0, 0), new Vector3d(1, 0, 0));
+            PortState chaserA = new PortState(new Vector3d(10, 2, 0), new Vector3d(-1, 0, 0));
+            DockingGeometry a = DockingGeometry.Compute(chaserA, targetA, standoff);
+
+            AssertScalar("axial", a.AxialDistance, 10.0);
+            AssertScalar("lateral", a.LateralOffset, 2.0);
+            AssertVec("lateral dir", a.LateralDirection, new Vector3d(0, 1, 0));
+            AssertVec("waypoint", a.ApproachWaypoint, new Vector3d(50, 0, 0));
+            AssertScalar("aligned err", a.AlignmentErrorDeg, 0.0);
+            AssertScalar("range", a.Range, Math.Sqrt(104.0));
+
+            // Misaligned heading: chaser port rotated 90 deg off the mated (-axis) heading.
+            PortState chaserMis = new PortState(new Vector3d(10, 2, 0), new Vector3d(0, -1, 0));
+            DockingGeometry mis = DockingGeometry.Compute(chaserMis, targetA, standoff);
+            AssertScalar("misaligned err", mis.AlignmentErrorDeg, 90.0);
+
+            // Rotation invariance: rotate the axis-aligned setup +90 deg about +Z ((x,y)->(-y,x)). Scalars
+            // MUST be unchanged; the world vectors rotate with the frame.
+            PortState targetR = new PortState(new Vector3d(0, 0, 0), new Vector3d(0, 1, 0));
+            PortState chaserR = new PortState(new Vector3d(-2, 10, 0), new Vector3d(0, -1, 0));
+            DockingGeometry r = DockingGeometry.Compute(chaserR, targetR, standoff);
+
+            AssertScalar("rot axial", r.AxialDistance, 10.0);
+            AssertScalar("rot lateral", r.LateralOffset, 2.0);
+            AssertVec("rot lateral dir", r.LateralDirection, new Vector3d(-1, 0, 0));
+            AssertVec("rot waypoint", r.ApproachWaypoint, new Vector3d(0, 50, 0));
+            AssertScalar("rot aligned err", r.AlignmentErrorDeg, 0.0);
+        }
+
+        // Case 19: docking controller. Target port at origin facing +X; the chaser port faces -X (the mated
+        // head-on heading). Checks that translation steers toward the on-axis goal, that a leg completes only
+        // when arrived AND aligned AND stopped, that Contact completes within capture range, and leg order.
+        private static void CheckDockingController()
+        {
+            Console.WriteLine("Case 19: docking controller (translation + leg gates)");
+
+            PortState target = new PortState(new Vector3d(0, 0, 0), new Vector3d(1, 0, 0));
+
+            // Approach leg, chaser off-axis and beyond the 25 m waypoint: translation points toward (25,0,0).
+            PortState chaserFar = new PortState(new Vector3d(40, 5, 0), new Vector3d(-1, 0, 0));
+            DockingCommand approach = DockingController.Compute(chaserFar, target, Vector3d.zero, DockingLeg.Approach);
+            Vector3d toWaypoint = new Vector3d(25, 0, 0) - new Vector3d(40, 5, 0);
+            AssertTrue("approach steers to waypoint", Vector3d.Dot(approach.TranslationVelocityWorld, toWaypoint) > 0.0);
+            AssertTrue("approach not complete (far)", !approach.LegComplete);
+            AssertVec("mated facing", approach.FacingWorld, new Vector3d(-1, 0, 0));
+            AssertScalar("axial", approach.AxialDistance, 40.0);
+            AssertScalar("lateral", approach.LateralOffset, 5.0);
+
+            // Arrived at the waypoint, aligned, stopped -> Approach complete.
+            PortState chaserAtWp = new PortState(new Vector3d(25.0, 0.3, 0), new Vector3d(-1, 0, 0));
+            AssertTrue("approach complete at waypoint",
+                DockingController.Compute(chaserAtWp, target, Vector3d.zero, DockingLeg.Approach).LegComplete);
+
+            // Same spot but mis-pointed, or still moving -> NOT complete (must be aligned AND nearly stopped).
+            PortState chaserMis = new PortState(new Vector3d(25.0, 0.3, 0), new Vector3d(0, 1, 0));
+            AssertTrue("misaligned blocks completion",
+                !DockingController.Compute(chaserMis, target, Vector3d.zero, DockingLeg.Approach).LegComplete);
+            AssertTrue("motion blocks completion",
+                !DockingController.Compute(chaserAtWp, target, new Vector3d(0, 0, 0.5), DockingLeg.Approach).LegComplete);
+
+            // Contact leg: within capture range -> complete.
+            PortState chaserContact = new PortState(new Vector3d(0.4, 0, 0), new Vector3d(-1, 0, 0));
+            AssertTrue("contact at capture range",
+                DockingController.Compute(chaserContact, target, Vector3d.zero, DockingLeg.Contact).LegComplete);
+
+            AssertTrue("Approach -> Final", DockingController.NextLeg(DockingLeg.Approach) == DockingLeg.Final);
+            AssertTrue("Final -> Contact", DockingController.NextLeg(DockingLeg.Final) == DockingLeg.Contact);
+        }
+
+        // Case 20: close-approach COAST guard. When the predicted closest approach is already inside the
+        // parking band and we're nearby, the stage must HOLD (zero throttle) and let the trajectory carry in --
+        // even if the CA is far in TIME -- instead of firing a pursuit burn that pushes the real CA out (the
+        // "re-run close approach increases our distance" bug). When the CA is NOT in band it must still close.
+        private static void CheckCloseApproachCoastsWhenCaInBand()
+        {
+            Console.WriteLine("Case 20: close approach coasts when CA already in band");
+
+            StaticWorld world = new StaticWorld
+            {
+                Mu = KerbinMu,
+                ReferenceNormal = new Vector3d(0, 0, 1),
+                TargetPosition = new Vector3d(800.0, 0, 0),
+                ActivePosition = new Vector3d(0, 0, 0),        // 800 m apart
+                TargetVelocity = new Vector3d(0, 100.0, 0),
+                ActiveVelocity = new Vector3d(0, 100.0, 0)     // matched (rel speed 0)
+            };
+
+            // CA already in the parking band (5 m < 10 m) but 600 s away (beyond the old 300 s horizon): coast.
+            TerminalRendezvousExecutor coastExec = new TerminalRendezvousExecutor();
+            coastExec.Execute(RendezvousStage.CloseApproach);
+            RendezvousCommand coast = coastExec.Update(world, 5.0, 600.0);
+            AssertTrue("holds heading (has command)", coast.HasBurn);
+            AssertScalar("coast throttle is zero", coast.Throttle, 0.0);
+            AssertTrue("coast did not complete", coast.Phase != RendezvousPhase.Complete);
+
+            // CA NOT in band -> must still close (nonzero throttle), proving the closing path still works.
+            TerminalRendezvousExecutor closeExec = new TerminalRendezvousExecutor();
+            closeExec.Execute(RendezvousStage.CloseApproach);
+            RendezvousCommand close = closeExec.Update(world, 2000.0, 600.0);
+            AssertTrue("closes when CA out of band", close.Throttle > 0.0);
+        }
+
+        // Case 21: the close-approach velocity deadband relaxes with range. The SAME small closing-velocity
+        // error (0.4 m/s off the commanded 5 m/s) must be tolerated (hold, no burn) when 4 km out, but still
+        // corrected when 200 m out — so we stop micro-burning to hold an exact velocity at km distance.
+        private static void CheckCloseApproachDeadbandRelaxesWithRange()
+        {
+            Console.WriteLine("Case 21: close-approach deadband relaxes with range");
+
+            // Closing along +X at 4.6 m/s vs a commanded 5.0 m/s cap => a 0.4 m/s gap (under the 4 km deadband
+            // ~2.0, over the 200 m deadband ~0.1). CA fed out of band so the closing controller is the one used.
+            Vector3d targetVel = new Vector3d(0, 100.0, 0);
+            Vector3d activeVel = new Vector3d(4.6, 100.0, 0);
+
+            StaticWorld far = new StaticWorld
+            {
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                TargetPosition = new Vector3d(4000.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = targetVel, ActiveVelocity = activeVel
+            };
+            TerminalRendezvousExecutor farExec = new TerminalRendezvousExecutor();
+            farExec.Execute(RendezvousStage.CloseApproach);
+            RendezvousCommand farCmd = farExec.Update(far, 2000.0, 600.0);
+            AssertScalar("4 km: holds (no micro-burn)", farCmd.Throttle, 0.0);
+
+            StaticWorld near = new StaticWorld
+            {
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                TargetPosition = new Vector3d(200.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = targetVel, ActiveVelocity = activeVel
+            };
+            TerminalRendezvousExecutor nearExec = new TerminalRendezvousExecutor();
+            nearExec.Execute(RendezvousStage.CloseApproach);
+            RendezvousCommand nearCmd = nearExec.Update(near, 2000.0, 600.0);
+            AssertTrue("200 m: still corrects", nearCmd.Throttle > 0.0);
+        }
+
+        // Case 22: match velocity freezes its thrust direction once relative speed is small, so a near-zero
+        // (noisy / flipped) relVel can't pivot the craft past the orient gate and trigger a needless SECOND
+        // burn. Above the lock threshold it re-aims; below it, the locked direction holds.
+        private static void CheckMatchVelocityLocksDirectionWhenSlow()
+        {
+            Console.WriteLine("Case 22: match velocity locks thrust direction when slow");
+
+            StaticWorld world = new StaticWorld
+            {
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                TargetPosition = new Vector3d(1000, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = Vector3d.zero, ActiveVelocity = new Vector3d(0, 2.0, 0)   // relVel (0,2,0): 2 m/s
+            };
+
+            TerminalRendezvousExecutor exec = new TerminalRendezvousExecutor();
+            exec.Execute(RendezvousStage.MatchVelocity);
+
+            // Above the lock threshold (2 m/s): thrust opposes relVel -> (0,-1,0).
+            RendezvousCommand fast = exec.Update(world);
+            AssertVec("re-aims while fast", fast.ThrustDirection, new Vector3d(0, -1, 0));
+
+            // Relative speed now small AND pointing a different way: the locked direction must hold, not flip.
+            world.ActiveVelocity = new Vector3d(0.3, 0, 0);   // relVel (0.3,0,0): 0.3 m/s (< 0.5 lock)
+            RendezvousCommand slow = exec.Update(world);
+            AssertVec("holds locked direction when slow", slow.ThrustDirection, new Vector3d(0, -1, 0));
         }
 
         private static double CircularPeriod(double radius)

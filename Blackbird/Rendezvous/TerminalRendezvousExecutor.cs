@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel.Design;
+using Blackbird.Docking;
 using Blackbird.Mathematics;
 using UnityEngine;
 using VehiclePhysics;
@@ -58,25 +59,31 @@ namespace Blackbird.Rendezvous
         private const double MatchTaperBandMetersPerSecond = 3.0;          // throttle tapers over the last few m/s
         private const double MatchStallSeconds = 2.0;                      // cut if rel speed stops dropping...
         private const double MatchStallSpeedFloor = 1.0;                   // ...and is already near nulled
+        private const double MatchSteerLockMetersPerSecond = 0.5;          // below this, freeze the thrust direction
 
         // --- close-approach tuning --------------------------------------------------------------
         private double ClosestApproach = double.PositiveInfinity;          // live predicted CA (fed in by the handler)
         private double TimeToClosestApproach = double.PositiveInfinity;    // seconds until that predicted CA
-        // We only trust the predicted CA to trigger a COAST when the approach is IMMINENT and NEARBY: a short
-        // horizon keeps the two-body projection accurate (and, for two close craft, they share perturbations
-        // so the relative motion barely drifts even under Principia). A small CA that is many orbits away, or
-        // computed from far off, must NOT make us coast.
-        private const double CaCoastHorizonSeconds = 300.0;   // only coast on a projected approach within this long
-        private const double CaTrustRangeMeters = 5000.0;     // ...and only when we are at least this close
+        // We trust the predicted CA to trigger a COAST only when NEARBY: within a few km, two close craft share
+        // their perturbations so the relative two-body CA barely drifts even under Principia, however far out in
+        // time it is. Beyond that the projection can't be trusted (and the closing controller is the right tool).
+        private const double CaTrustRangeMeters = 5000.0;     // only coast on a projected CA when within this range
         public const double ParkingDistanceDefaultMeters = 10.0;    // default park distance from the target
         // Settable park distance ("match velocities at X m" from the UI); set back to the default when the UI option is off
         public double ParkingDistance = ParkingDistanceDefaultMeters;
         public bool UseMatchVelocitiesDuringApproach = true;
-        // private const double ParkingDistanceBuffer = 0.0;       // complete once within parking + this (~ when we do relvel kill burn) FIXME: set to 0 because it literally leaves us DesiredDistance + X above where we want to be.
+        // Extra slack past the park distance allowed when declaring "parked". 0 = stop exactly at the desired
+        // distance: any positive value just leaves us DesiredDistance + X short of where we asked to be.
+        private const double ParkingDistanceBuffer = 0.0;
         private const double RendezParkedSpeedMetersPerSecond = 0.5; // ...and relative speed below this
         private const double RendezDistanceApproachGain = 0.2;              // rate of which we close distance to target relative to the total distance
         private const double RendezMaxApproachSpeedMetersPerSecond = 5.0;  // cap on commanded closing speed (braking margin) todo: does increasing this yield more effective burns? if YES, make an input because we'll burn a fuckton of RCS doing these micro-adjustments
-        private const double RendezBurnDeadbandMetersPerSecond = 0.1;       // no burn within this velocity error
+        private const double RendezBurnDeadbandMetersPerSecond = 0.1;       // base (close-in) velocity-error deadband
+        // ...relaxed with range: holding the closing velocity to 0.1 m/s at km distance just burns RCS fighting
+        // orbital drift for no gain (the "micro-burn at 4 km" problem), so the deadband grows with distance up
+        // to a cap and tightens back to the base value as we close in for precision.
+        private const double RendezBurnDeadbandPerMeter = 0.0005;           // deadband added per metre of range
+        private const double RendezBurnDeadbandMaxMetersPerSecond = 2.0;    // cap on the relaxed deadband
         private const double RendezThrottleTaperMetersPerSecond = 3.0;         // throttle tapers over this much velocity error
         // Braking lead: we must START the retro/match burn early enough to null the closing rate before the
         // parking distance, or we overshoot / collide. The distance needed = (coast while we flip to retro) +
@@ -114,10 +121,20 @@ namespace Blackbird.Rendezvous
         private bool _matchArmed;                  // match baseline captured for the current Executing phase
         private double _matchMinRelSpeed;          // smallest relative speed reached, for stall detection
         private double _matchLastProgressUt;       // UT of the last new minimum, for stall detection
+        private Vector3d _matchSteerDirection;     // thrust direction, frozen once relative speed is small
 
         // Close-approach terminal brake: latched once we reach the (speed-dependent) brake point, so we keep
         // braking to a stop instead of popping back into the closing controller as the brake trigger shrinks.
         private bool _closeBraking;
+
+        // Docking stage: the active gated leg (Approach -> Final -> Contact) and the live port transforms fed
+        // in by the handler each tick. PortsValid is false until the operator has targeted a docking port and
+        // is controlling from one of their own (the handler supplies them); StepDocking idles until then.
+        private DockingLeg _dockingLeg;
+        private bool _dockingPortsValid;
+        private PortState _chaserPort;
+        private PortState _targetPort;
+        public DockingLeg DockingLeg => _dockingLeg;
 
         public TerminalRendezvousExecutor()
         {
@@ -130,6 +147,8 @@ namespace Blackbird.Rendezvous
             Phase = RendezvousPhase.Idle;
             Stage = RendezvousStage.Intercept;
             ClearBurnState();
+            _dockingLeg = DockingLeg.Approach;
+            _dockingPortsValid = false;
             HasInterceptPlan = false;
             InterceptPlan = default(InterceptSolution);
             HasLastInterceptBurnReport = false;
@@ -162,6 +181,33 @@ namespace Blackbird.Rendezvous
             _closeBraking = false;
             HasLastInterceptBurnReport = false;
             return true;
+        }
+
+        // User gate for the docking stage. Starting docking fresh (from any non-busy state) resets to the
+        // first leg (Approach); resuming from Coast after a leg finished continues with the queued leg, so the
+        // operator clicks once per gate (Approach -> Final -> Contact). Invalid mid-burn or while Aborted.
+        public bool ExecuteDocking()
+        {
+            if (Phase == RendezvousPhase.Executing || Phase == RendezvousPhase.Aborted) return false;
+            if (Stage == RendezvousStage.Docking && Phase == RendezvousPhase.Coast)
+            {
+                Phase = RendezvousPhase.Executing;   // resume the next queued leg
+                return true;
+            }
+            Stage = RendezvousStage.Docking;
+            _dockingLeg = DockingLeg.Approach;
+            Phase = RendezvousPhase.Executing;
+            ClearBurnState();
+            return true;
+        }
+
+        // The handler feeds the live docking-port transforms each tick (world frame). When invalid (no target
+        // port / not controlling from a port) the docking stage idles with guidance for the operator.
+        public void SetDockingPorts(bool valid, PortState chaserPort, PortState targetPort)
+        {
+            _dockingPortsValid = valid;
+            _chaserPort = chaserPort;
+            _targetPort = targetPort;
         }
 
         // Called by the actuation layer (RendezvousHandler) on every frame it is HOLDING throttle while it
@@ -241,6 +287,8 @@ namespace Blackbird.Rendezvous
                 return StepMatchVelocity(world, out stageComplete);
             if (Stage == RendezvousStage.CloseApproach)
                 return StepCloseApproach(world, out stageComplete);
+            if (Stage == RendezvousStage.Docking)
+                return StepDocking(world, out stageComplete);
 
             stageComplete = true;
             return Idle(Stage + " (stub: no burn wired)");
@@ -382,6 +430,7 @@ namespace Blackbird.Rendezvous
             {
                 _matchMinRelSpeed = relSpeed;
                 _matchLastProgressUt = world.UniversalTime;
+                _matchSteerDirection = relSpeed > 1e-6 ? (-relVel).normalized : Vector3d.zero;
                 _matchArmed = true;
             }
             if (relSpeed < _matchMinRelSpeed)
@@ -408,8 +457,15 @@ namespace Blackbird.Rendezvous
                 return Idle(string.Format("match velocity: cutoff (stalled at {0:F2} m/s)", relSpeed));
             }
 
-            // Burn opposite the relative velocity, re-aimed each tick; taper throttle over the last few m/s.
-            Vector3d thrustDir = (-relVel).normalized;
+            // Burn opposite the relative velocity. Re-aim only while the relative speed is still large enough
+            // that its DIRECTION is meaningful; below the lock threshold the near-zero relVel direction is
+            // noise-dominated and swings (and an overshoot flips it ~180°), which would pivot the craft past
+            // the orient gate and fire a needless SECOND burn. Once locked, hold the last good direction —
+            // throttle still tapers on the (frame-independent) magnitude and the cutoff is magnitude-based, so
+            // freezing the direction changes neither, it just stops the end-of-burn pivot.
+            if (relSpeed > MatchSteerLockMetersPerSecond)
+                _matchSteerDirection = (-relVel).normalized;
+            Vector3d thrustDir = _matchSteerDirection != Vector3d.zero ? _matchSteerDirection : (-relVel).normalized;
             double throttle = MathHelpers.Clamp(relSpeed / MatchTaperBandMetersPerSecond, BurnMinThrottle, 1.0);
             return Burn(thrustDir, throttle, string.Format("match velocity {0:F2} m/s remaining", relSpeed));
         }
@@ -464,15 +520,20 @@ namespace Blackbird.Rendezvous
                     return StepMatchVelocity(world, out stageComplete);
             }
 
-            // COAST: not braking yet, but our trajectory already reaches the parking band — stop adding speed
-            // and let it carry us in. Only trust the projection when the approach is imminent AND nearby (so a
-            // far / multi-orbit CA, where the two-body prediction drifts under Principia, can't trigger a coast).
+            // COAST: our trajectory ALREADY reaches the parking band, so do NOT burn to cut the current range —
+            // hold heading and let it carry us in. This is the guard against the "re-run close approach and it
+            // pushes us farther out" bug: the CLOSE controller below targets instantaneous line-of-sight range,
+            // so if the predicted closest approach is already inside the band it would still fire a pursuit burn
+            // that wrecks a perfectly good incoming trajectory. Trust the two-body projection only when NEARBY
+            // (within the trust range) — at a few km two close craft share their perturbations, so the relative
+            // CA barely drifts even under Principia, however far out in TIME it is. (Far away the projection
+            // can't be trusted, but there the closing controller is the right tool anyway.)
             if (MathHelpers.IsFinite(ClosestApproach) && ClosestApproach <= parkedBand
-                && TimeToClosestApproach <= CaCoastHorizonSeconds
                 && distanceToTarget <= CaTrustRangeMeters)
             {
                 return Burn(bearing, 0.0, string.Format(
-                    "close approach: coasting to terminal ({0:F0} m, CA {1:F0} m)", distanceToTarget, ClosestApproach));
+                    "close approach: coasting to terminal ({0:F0} m, CA {1:F0} m already in band)",
+                    distanceToTarget, ClosestApproach));
             }
 
             // CLOSE: command a closing speed toward the target, tapered to zero at the parking distance and
@@ -487,14 +548,56 @@ namespace Blackbird.Rendezvous
 
             // Within the deadband: hold heading at zero throttle instead of going Idle (Idle would make the
             // actuation layer release control and reset the orient gate — the cause of the stop-start micro-
-            // burns); this keeps us pointed so the next correction fires without re-orienting.
-            if (closingSpeedVelocityGap <= RendezBurnDeadbandMetersPerSecond)
+            // burns); this keeps us pointed so the next correction fires without re-orienting. The deadband is
+            // relaxed with range so we don't micro-correct the closing velocity to 0.1 m/s when km out.
+            double velocityDeadband = MathHelpers.Clamp(distanceToTarget * RendezBurnDeadbandPerMeter,
+                RendezBurnDeadbandMetersPerSecond, RendezBurnDeadbandMaxMetersPerSecond);
+            if (closingSpeedVelocityGap <= velocityDeadband)
                 return Burn(bearing, 0.0,
                     string.Format("close approach: holding at {0:F0} m ({1:F2} m/s)", distanceToTarget, relSpeed));
 
             double throttle = MathHelpers.Clamp(closingSpeedVelocityGap / RendezThrottleTaperMetersPerSecond, BurnMinThrottle, 1.0);
             return Burn(commandedVelocityGap, throttle, string.Format(
                 "close approach: {0:F0} m, closing {1:F2}/{2:F2} m/s", distanceToTarget, closingSpeed, commandedClosingSpeed));
+        }
+
+        // Docking stage closed loop: hold the head-on mated heading and RCS-translate the chaser port onto the
+        // target port axis, leg by leg (Approach -> Final -> Contact). The translation/alignment math is the
+        // pure DockingController; this wires it to the gated-leg state machine. Idles with operator guidance
+        // until the handler reports valid port transforms.
+        private RendezvousCommand StepDocking(IRendezvousWorld world, out bool stageComplete)
+        {
+            stageComplete = false;
+            if (!_dockingPortsValid)
+                return Idle("docking: target a docking port and 'Control From Here' on yours");
+
+            Vector3d relVel = world.ActiveVelocity - world.TargetVelocity;   // chaser relative to target
+            DockingCommand dc = DockingController.Compute(_chaserPort, _targetPort, relVel, _dockingLeg);
+
+            if (dc.LegComplete)
+            {
+                stageComplete = true;   // CompleteStage advances the leg (or finishes docking at Contact)
+                return Idle(dc.Status + " — leg complete");
+            }
+
+            return DockCommand(dc);
+        }
+
+        // Builds a docking command: hold attitude along the mated heading (no main engine) and request the
+        // RCS translation velocity. Throttle stays 0 — docking is RCS-only.
+        private RendezvousCommand DockCommand(DockingCommand dc)
+        {
+            return new RendezvousCommand
+            {
+                Phase = Phase,
+                Stage = Stage,
+                HasBurn = true,                        // attitude is actively driven (to the mated heading)
+                ThrustDirection = dc.FacingWorld.normalized,
+                Throttle = 0.0,                        // RCS-only; no main engine
+                HasTranslation = true,
+                TranslationVelocityWorld = dc.TranslationVelocityWorld,
+                Status = dc.Status
+            };
         }
 
         // Plans a conic intercept from the current measured state. Target prediction is two-body
@@ -570,7 +673,21 @@ namespace Blackbird.Rendezvous
         private void CompleteStage()
         {
             ClearBurnState();
-            if (Stage == RendezvousStage.CloseApproach)
+            if (Stage == RendezvousStage.Docking)
+            {
+                // Docking advances by LEG, not by stage: each finished leg coasts awaiting the next gate;
+                // Contact (the last leg) ends the sequence.
+                if (_dockingLeg == DockingLeg.Contact)
+                {
+                    Phase = RendezvousPhase.Complete;
+                }
+                else
+                {
+                    _dockingLeg = DockingController.NextLeg(_dockingLeg);
+                    Phase = RendezvousPhase.Coast;
+                }
+            }
+            else if (Stage == RendezvousStage.CloseApproach)
             {
                 Phase = RendezvousPhase.Complete;
             }
@@ -595,6 +712,7 @@ namespace Blackbird.Rendezvous
             _matchArmed = false;
             _matchMinRelSpeed = 0.0;
             _matchLastProgressUt = 0.0;
+            _matchSteerDirection = Vector3d.zero;
 
             _closeBraking = false;
         }

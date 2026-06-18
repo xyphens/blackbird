@@ -1,4 +1,5 @@
 using System;
+using Blackbird.Docking;
 using Blackbird.Rendezvous;
 using UnityEngine;
 
@@ -126,6 +127,11 @@ namespace Blackbird.Modules
                 ApplyCloseStandoff();
                 _handler.Execute(RendezvousStage.CloseApproach);
             }
+
+            // Docking: staged RCS gates (Approach -> Final -> Contact). One click runs the current leg; on
+            // completion it coasts awaiting the next gate. Needs a targeted docking port + "Control From Here".
+            DockingLeg nextLeg = _handler.Stage == RendezvousStage.Docking ? _handler.DockingLeg : DockingLeg.Approach;
+            if (GUILayout.Button($"Execute: Dock ({nextLeg})")) _handler.ExecuteDocking();
             GUI.enabled = true;
 
             // Close-approach park distance: when checked, close in to (and velocity-match at) the input
@@ -232,6 +238,7 @@ namespace Blackbird.Modules
             {
                 case RendezvousStage.Intercept:     return "Intercept";
                 case RendezvousStage.MatchVelocity: return "Match Velocity";
+                case RendezvousStage.Docking:       return "Docking";
                 default:                            return "Close Approach";
             }
         }

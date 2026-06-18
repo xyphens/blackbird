@@ -57,7 +57,11 @@ namespace Blackbird
             _launchHandler.Update(activeVessel);
 
             ITargetable target = FlightGlobals.fetch != null ? FlightGlobals.fetch.VesselTarget : null;
-            _rendezvousHandler.Update(activeVessel, target as Vessel);
+            // A targeted docking port is a ModuleDockingNode, not a Vessel; resolve to its vessel so the
+            // rendezvous stages still get a target (the docking stage reads the port itself from the target).
+            Vessel targetVessel = target as Vessel;
+            if (targetVessel == null && target is ModuleDockingNode targetNode) targetVessel = targetNode.vessel;
+            _rendezvousHandler.Update(activeVessel, targetVessel);
         }
         private void OnFlyByWire(FlightCtrlState state)
         {
