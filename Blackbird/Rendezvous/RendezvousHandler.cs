@@ -2,6 +2,7 @@ using System;
 using Blackbird.Guidance;
 using Blackbird.Logging;
 using Blackbird.Mathematics;
+using Blackbird.Models;
 using Blackbird.Trajectory;
 using UnityEngine;
 
@@ -24,6 +25,14 @@ namespace Blackbird.Rendezvous
         private bool _engaged;
         private bool _burningLastApply;   // were we actuating thrust on the previous fly-by-wire pass?
 
+        // Soft-enable RCS: while we are actively driving a maneuver we turn RCS on so torque-poor craft can
+        // still point (reaction wheels aren't guaranteed); when we hand control back we RESTORE the player's
+        // prior RCS setting so we don't permanently override their preference.
+        // DU: disabled for now
+        //private bool _rcsForcedOn;        // are we currently holding RCS on for a maneuver?
+        //private bool _rcsPriorState;      // the player's RCS setting captured when we took control
+        private bool _principiaProbed;    // ran the one-shot Principia compatibility probe this engage?
+
         // Live closest-approach monitor: recomputed off the draw path on a throttle so it can be watched
         // collapse during/after a burn, independent of any plan. Searches out to the synodic period
         // (capped) so the time-to-CA is real and decreases, instead of pinning at one orbital period.
@@ -35,6 +44,10 @@ namespace Blackbird.Rendezvous
         // Plan preview refresh throttle (so the panel shows ΔV/CA before the user Executes).
         private const double PreviewIntervalSeconds = 0.5;
         private double _lastPreviewUt = double.NegativeInfinity;
+
+        // Close-approach braking params (decel from TWR, slew lead to flip retro) refreshed on this throttle.
+        private const double BrakeParamsIntervalSeconds = 0.5;
+        private double _lastBrakeParamsUt = double.NegativeInfinity;
 
         // Burn-log throttle so a multi-second burn doesn't write megabytes to the glog.
         private const double BurnLogIntervalSeconds = 0.25;
@@ -91,12 +104,26 @@ namespace Blackbird.Rendezvous
 
         // Master enable. Disengaging also drops attitude control so the player regains the craft.
         public void Engage() { _engaged = true; }
-        public void Disengage() { _engaged = false; _attitude.Reset(); }
+        public void Disengage() { _engaged = false; _attitude.Reset(); _principiaProbed = false; }
 
         // User gates (pass-through to the executor). Executing a stage cancels any warp.
         public bool Execute() { StopWarp(); return _executor.Execute(); }
         // Execute a specific stage out of order (e.g. Match Velocity any time, to kill a closing rate).
         public bool Execute(RendezvousStage stage) { StopWarp(); return _executor.Execute(stage); }
+
+        // Close-approach park distance ("match velocities at X m"). The default is restored when the UI
+        // option is off, so a one-off custom distance never silently persists into the next approach.
+        public double ParkingDistanceMeters
+        {
+            get { return _executor.ParkingDistance; }
+            set { _executor.ParkingDistance = value; }
+        }
+        public bool AutoMatchVelocityDistance
+        {
+            get { return _executor.UseMatchVelocitiesDuringApproach; }
+            set { _executor.UseMatchVelocitiesDuringApproach = value;  }
+        }
+        public const double CloseStandoffDefaultMeters = TerminalRendezvousExecutor.ParkingDistanceDefaultMeters;
         public void Abort() { _executor.Abort(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
         public void ResetSequence() { _executor.Reset(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
 
@@ -180,6 +207,14 @@ namespace Blackbird.Rendezvous
 
             if (!_engaged) return;
 
+            // One-shot Principia compatibility probe (logs to compatibility.log) the first engaged tick we
+            // have a target — exploratory, for reviewing whether the n-body CA API is reachable. Never throws.
+            if (!_principiaProbed && target != null)
+            {
+                Compatibility.Principia.Probe(active, target);
+                _principiaProbed = true;
+            }
+
             VesselRendezvousWorld world = new VesselRendezvousWorld(active, target);
 
             // Keep a fresh plan preview for the pending stage so the panel shows ΔV/CA before Execute.
@@ -200,7 +235,29 @@ namespace Blackbird.Rendezvous
                 }
             }
 
-            _command = _executor.Update(world);
+            // Feed the close-approach brake its braking-distance inputs from the live craft: available
+            // deceleration (thrust / mass) and the time to flip to a retrograde-relative attitude. Throttled,
+            // and only while the close stage is current. Guarded so a bad reading just keeps the last/default.
+            if (_executor.Stage == RendezvousStage.CloseApproach && now - _lastBrakeParamsUt >= BrakeParamsIntervalSeconds)
+            {
+                _lastBrakeParamsUt = now;
+                VesselState vs = VesselState.FromVessel(active);
+                if (vs != null && MathHelpers.IsFinite(vs.AvailableThrust) && vs.AvailableThrust > 0.0
+                    && MathHelpers.IsFinite(vs.TotalMass) && vs.TotalMass > 0.0)
+                    _executor.BrakingDecelMetersPerSecondSquared = vs.AvailableThrust / vs.TotalMass;
+
+                Vector3d brakeDir = TrajectoryProvider.GetVelocity(target) - TrajectoryProvider.GetVelocity(active);
+                if (brakeDir.sqrMagnitude > 0.0)
+                    _executor.BrakingSlewLeadSeconds =
+                        AttitudeControl.EstimateSlewTimeSeconds(active, brakeDir, OrientPaddingSeconds);
+            }
+
+            // Feed the executor the live predicted CA + time-to-CA so the close-approach stage can decide
+            // when to coast (projection reaches the parking band) vs keep closing.
+            double closestApproach = MathHelpers.IsFinite(LiveClosestApproachMeters) ? LiveClosestApproachMeters : double.NaN;
+            double timeToClosestApproach = MathHelpers.IsFinite(LiveTimeToClosestApproachSeconds)
+                ? LiveTimeToClosestApproachSeconds : double.NaN;
+            _command = _executor.Update(world, closestApproach, timeToClosestApproach);
             _hasCommand = true;
 
             // One-shot diagnostic on entering a stage burn: dumps the measured state so we can confirm
@@ -331,6 +388,15 @@ namespace Blackbird.Rendezvous
 
             if (wantBurn)
             {
+                // Soft-enable RCS for the duration of the maneuver (capture the player's setting once, on the
+                // rising edge, so we can restore it when we release control below).
+                //if (!_rcsForcedOn)
+                //{
+                //    _rcsPriorState = vessel.ActionGroups[KSPActionGroup.RCS];
+                //    vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
+                //    _rcsForcedOn = true;
+                //}
+
                 // Always steer toward the burn vector; throttle only once the craft is pointed AND has
                 // settled (low rotation rate) and held that for the dwell — orient, stabilize, then burn.
                 _attitude.DriveInertial(vessel, state, _command.ThrustDirection, 0.0);
@@ -395,6 +461,13 @@ namespace Blackbird.Rendezvous
                 state.mainThrottle = 0.0f;   // cut throttle on the first non-burning frame after a burn
                 _burningLastApply = false;
             }
+
+            // Maneuver done / control released: restore the player's prior RCS setting.
+            //if (_rcsForcedOn)
+            //{
+            //    vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, _rcsPriorState);
+            //    _rcsForcedOn = false;
+            //}
         }
 
         // Angle (degrees) between the craft's current facing (control-reference nose) and the desired

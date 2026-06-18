@@ -664,6 +664,9 @@ namespace Blackbird.RendezvousHarness
 
             double rangeBefore = (sim.TargetPosition - sim.ActivePosition).magnitude;
 
+            // Park at 100 m for this test (independent of the default), so the standoff-band asserts are meaningful.
+            ex.ParkingDistance = 100.0;
+
             AssertTrue("execute close", ex.Execute());
             const double maxAccel = 20.0;
             double dt = 0.05;

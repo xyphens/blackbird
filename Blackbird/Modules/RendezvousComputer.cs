@@ -20,6 +20,10 @@ namespace Blackbird.Modules
         private RendezvousHandler _handler;
         public bool IsVisible { get; set; }
 
+        // Close-approach "match velocities at X m" option (see ApplyCloseStandoff).
+        private bool _matchAtEnabled;
+        private string _matchAtMetersText = "100";
+
         public void Initialize(RendezvousHandler handler) => _handler = handler;
         public void Toggle() => IsVisible = !IsVisible;
 
@@ -55,12 +59,12 @@ namespace Blackbird.Modules
             GUILayout.Label($"Target: {_handler.Target.vesselName}");
             if (_handler.HasRelative)
             {
-                GUILayout.Label($"Range: {_handler.Relative.Range / 1000.0:F2} km   "
-                              + $"rel speed: {_handler.Relative.RelativeVelocityWorld.magnitude:F1} m/s");
+                GUILayout.Label($"Range: {FormatDistance(_handler.Relative.Range)}   "
+                              + $"rel speed: {FormatSpeed(_handler.Relative.RelativeVelocityWorld.magnitude)}");
             }
             if (IsFinite(_handler.LiveClosestApproachMeters))
             {
-                GUILayout.Label($"Closest approach: {_handler.LiveClosestApproachMeters / 1000.0:F2} km "
+                GUILayout.Label($"Closest approach: {FormatDistance(_handler.LiveClosestApproachMeters)} "
                               + $"in {FormatTime(_handler.LiveTimeToClosestApproachSeconds)}");
 
                 // Closest approach is now AND we're separating ⇒ no natural approach within an orbit;
@@ -117,8 +121,20 @@ namespace Blackbird.Modules
             GUI.enabled = canExecute;
             if (GUILayout.Button("Execute: Intercept")) _handler.Execute(RendezvousStage.Intercept);
             if (GUILayout.Button("Execute: Match Velocity")) _handler.Execute(RendezvousStage.MatchVelocity);
-            if (GUILayout.Button("Execute: Close Approach")) _handler.Execute(RendezvousStage.CloseApproach);
+            if (GUILayout.Button("Execute: Close Approach"))
+            {
+                ApplyCloseStandoff();
+                _handler.Execute(RendezvousStage.CloseApproach);
+            }
             GUI.enabled = true;
+
+            // Close-approach park distance: when checked, close in to (and velocity-match at) the input
+            // distance instead of the default ~100 m. Always editable so it can be set before executing.
+            GUILayout.BeginHorizontal();
+            _matchAtEnabled = GUILayout.Toggle(_matchAtEnabled, " Match velocities at:", GUILayout.Width(160));
+            _matchAtMetersText = GUILayout.TextField(_matchAtMetersText, GUILayout.Width(60));
+            GUILayout.Label("m");
+            GUILayout.EndHorizontal();
 
             // Warp to closest approach (auto-stops short; cancelled if a burn starts).
             if (_handler.Warping)
@@ -130,7 +146,7 @@ namespace Blackbird.Modules
                 GUI.enabled = _handler.Phase != RendezvousPhase.Executing
                               && IsFinite(_handler.LiveTimeToClosestApproachSeconds)
                               && _handler.LiveTimeToClosestApproachSeconds > 10.0;
-                if (GUILayout.Button("Warp to Closest Approach")) _handler.WarpToClosestApproach();
+                if (GUILayout.Button("Warp to Next Closest Approach")) _handler.WarpToClosestApproach();
                 GUI.enabled = true;
             }
 
@@ -191,6 +207,25 @@ namespace Blackbird.Modules
             }
         }
 
+        // Apply the "match velocities at X m" option to the executor before a close-approach run: when
+        // enabled with a valid positive number, park/match at that distance; otherwise restore the default.
+        private void ApplyCloseStandoff()
+        {
+            double meters;
+            if (_matchAtEnabled
+                && double.TryParse(_matchAtMetersText, out meters)
+                && !double.IsNaN(meters) && meters > 0.0)
+            {
+                _handler.ParkingDistanceMeters = meters;
+                _handler.AutoMatchVelocityDistance = true;
+            }
+            else
+            {
+                _handler.ParkingDistanceMeters = RendezvousHandler.CloseStandoffDefaultMeters;
+                _handler.AutoMatchVelocityDistance = false;
+            }
+        }
+
         private static string StageName(RendezvousStage stage)
         {
             switch (stage)
@@ -207,6 +242,26 @@ namespace Blackbird.Modules
             if (seconds < 60.0) return $"{seconds:F0}s";
             if (seconds < 3600.0) return $"{seconds / 60.0:F1} min";
             return $"{seconds / 3600.0:F1} h";
+        }
+
+        // Distance with a unit that suits the magnitude: mm / m / km (so 900 m doesn't read "0.90 km").
+        private static string FormatDistance(double meters)
+        {
+            if (!IsFinite(meters)) return "--";
+            double a = Math.Abs(meters);
+            if (a < 1.0) return $"{meters * 1000.0:F0} mm";
+            if (a < 1000.0) return $"{meters:F0} m";
+            return $"{meters / 1000.0:F2} km";
+        }
+
+        // Speed with a unit that suits the magnitude: mm/s / m/s / km/s (so 0.1 m/s reads "100 mm/s").
+        private static string FormatSpeed(double metersPerSecond)
+        {
+            if (!IsFinite(metersPerSecond)) return "--";
+            double a = Math.Abs(metersPerSecond);
+            if (a < 1.0) return $"{metersPerSecond * 1000.0:F0} mm/s";
+            if (a < 1000.0) return $"{metersPerSecond:F1} m/s";
+            return $"{metersPerSecond / 1000.0:F2} km/s";
         }
 
         private static bool IsFinite(double v) => !double.IsNaN(v) && !double.IsInfinity(v);

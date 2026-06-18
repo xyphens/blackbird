@@ -52,8 +52,6 @@ namespace Blackbird.Rendezvous
                 RangeRate = rangeRate
             };
 
-            // todo: i was going to create a log record here, but it's probably better to do that where this is called instead
-
             return state;
         }
 
