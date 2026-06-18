@@ -470,15 +470,17 @@ namespace Blackbird.Rendezvous
             return Burn(thrustDir, throttle, string.Format("match velocity {0:F2} m/s remaining", relSpeed));
         }
 
-        // Final-approach closed loop, in four states ordered PARKED -> BRAKE -> COAST -> CLOSE:
+        // Final-approach closed loop, in states ordered PARKED -> TERMINAL(coast/haven-burn) -> BRAKE -> CLOSE:
         //   PARKED (within the parking band AND matched): done — hand control back.
-        //   BRAKE (within the speed-dependent brake point): kill the relative velocity (match velocity) so we
-        //     stop by the parking distance. The brake point = ParkingDistance + (flip-to-retro coast) +
-        //     (decel-to-stop), so a fast / low-TWR craft starts braking earlier. Latched once entered so the
-        //     shrinking trigger can't bounce us back into CLOSE and start pushing closer again.
-        //   COAST (projected CA <= band, imminent + nearby): our trajectory already reaches the band, so stop
-        //     adding closing speed and hold heading; let it carry us in. Gated on time-to-CA + range so a far
-        //     / multi-orbit CA (where the two-body projection drifts under Principia) can't trigger a coast.
+        //   TERMINAL (projected CA already <= band, nearby): our trajectory already reaches the band, so do NOT
+        //     brake early or actively close — ride it in. Orient to the match attitude at ZERO throttle (in
+        //     position, no slew left), and null the relative velocity only once we ARRIVE inside the parking
+        //     band (the "safe haven" burn). Checked BEFORE brake so a low-TWR brake point can't fire a full
+        //     match burn hundreds of metres short and wreck a good closest approach.
+        //   BRAKE (CA not yet in band, within the speed-dependent brake point): kill the relative velocity so we
+        //     stop by the parking distance. Brake point = ParkingDistance + (flip-to-retro coast) + (decel-to-
+        //     stop), so a fast / low-TWR craft starts braking earlier. Latched once entered so the shrinking
+        //     trigger can't bounce us back into CLOSE and start pushing closer again.
         //   CLOSE (otherwise): command a closing velocity toward the target (tapered to the parking distance,
         //     capped) and burn to match it, which also nulls lateral drift.
         private RendezvousCommand StepCloseApproach(IRendezvousWorld world, out bool stageComplete)
@@ -493,13 +495,6 @@ namespace Blackbird.Rendezvous
 
             double parkedBand = ParkingDistance + ParkingDistanceBuffer;   // close enough to declare "parked"
 
-            // Speed-dependent point at which we must begin braking to stop by the parking distance: the
-            // distance we'd cover flipping to retrograde-relative plus the distance to decelerate to a stop.
-            double closingSpeed = Math.Max(0.0, Vector3d.Dot(relVel, bearing));   // toward-target component
-            double brakingDistance = closingSpeed * BrakingSlewLeadSeconds
-                + closingSpeed * closingSpeed / (2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared));
-            double brakeTrigger = ParkingDistance + brakingDistance;
-
             // PARKED: within the band AND matched -> done, hand control back.
             if (distanceToTarget <= parkedBand && relSpeed <= RendezParkedSpeedMetersPerSecond)
             {
@@ -509,28 +504,53 @@ namespace Blackbird.Rendezvous
                     "close approach: parked at {0:F0} m ({1:F2} m/s) - control returned", distanceToTarget, relSpeed));
             }
 
-            // BRAKE (match-velocity mode only): latch once we reach the brake point and stay braking until
-            // parked (the latch stops the shrinking trigger from bouncing us back into the closing controller).
-            // With match-during-approach OFF we skip this and let the closing controller taper us to a stop at
-            // the parking distance instead (the "just close the distance" mode).
+            // Is our CURRENT trajectory already going to carry us inside the parking band? Trust the two-body
+            // projection only when NEARBY (CaTrustRangeMeters): at a few km two close craft share their
+            // perturbations, so the relative CA barely drifts even under Principia, however far out in TIME it is.
+            bool caInBand = MathHelpers.IsFinite(ClosestApproach)
+                && ClosestApproach <= parkedBand && distanceToTarget <= CaTrustRangeMeters;
+
             if (UseMatchVelocitiesDuringApproach)
             {
+                // TERMINAL TRAJECTORY (CA already in band): do NOT brake early or actively close — ride the
+                // trajectory in. ORIENT to the match attitude (anti relative-velocity) at ZERO throttle so the
+                // craft is already in position with no slew left to do, and null the relative velocity only once
+                // we ARRIVE at the safe haven (inside the parking band). caInBand guarantees the closest approach
+                // is <= the band, so coasting always reaches the band — "arrived" needs no separate CA test.
+                //
+                // THIS IS THE FIX for the early-burn bug: the brake point below = ParkingDistance + (flip coast)
+                // + (decel-to-stop) balloons on a low-TWR craft, so BRAKE used to latch hundreds of metres out
+                // and fire a full match burn that stopped the craft dead far short of the target, wrecking a good
+                // 8 m closest approach. Orient early = good; burn early = bad. (Checked before BRAKE so it wins.)
+                if (caInBand)
+                {
+                    if (_closeBraking || distanceToTarget <= parkedBand)
+                    {
+                        _closeBraking = true;   // latch: keep nulling to a stop, don't bounce back out
+                        return StepMatchVelocity(world, out stageComplete);
+                    }
+                    Vector3d holdDir = relSpeed > 1e-6 ? (-relVel).normalized : bearing;
+                    return Burn(holdDir, 0.0, string.Format(
+                        "close approach: terminal trajectory ({0:F0} m, CA {1:F0} m in band) - oriented, holding for the safe-haven burn",
+                        distanceToTarget, ClosestApproach));
+                }
+
+                // CA NOT yet in band: actively close (CLOSE controller below) and brake to a stop at the parking
+                // distance. The brake point = ParkingDistance + (flip-to-retro coast) + (decel-to-stop), so a
+                // fast / low-TWR craft starts braking earlier; latched once entered so the shrinking trigger
+                // can't bounce us back into the closing controller.
+                double closingSpeed = Math.Max(0.0, Vector3d.Dot(relVel, bearing));   // toward-target component
+                double brakingDistance = closingSpeed * BrakingSlewLeadSeconds
+                    + closingSpeed * closingSpeed / (2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared));
+                double brakeTrigger = ParkingDistance + brakingDistance;
                 if (distanceToTarget <= brakeTrigger) _closeBraking = true;
                 if (_closeBraking)
                     return StepMatchVelocity(world, out stageComplete);
             }
-
-            // COAST: our trajectory ALREADY reaches the parking band, so do NOT burn to cut the current range —
-            // hold heading and let it carry us in. This is the guard against the "re-run close approach and it
-            // pushes us farther out" bug: the CLOSE controller below targets instantaneous line-of-sight range,
-            // so if the predicted closest approach is already inside the band it would still fire a pursuit burn
-            // that wrecks a perfectly good incoming trajectory. Trust the two-body projection only when NEARBY
-            // (within the trust range) — at a few km two close craft share their perturbations, so the relative
-            // CA barely drifts even under Principia, however far out in TIME it is. (Far away the projection
-            // can't be trusted, but there the closing controller is the right tool anyway.)
-            if (MathHelpers.IsFinite(ClosestApproach) && ClosestApproach <= parkedBand
-                && distanceToTarget <= CaTrustRangeMeters)
+            else if (caInBand)
             {
+                // Match-velocities OFF ("close as possible / impact"): keep the guard so the closing controller
+                // doesn't fire a pursuit burn that wrecks an already-good incoming trajectory — just hold heading.
                 return Burn(bearing, 0.0, string.Format(
                     "close approach: coasting to terminal ({0:F0} m, CA {1:F0} m already in band)",
                     distanceToTarget, ClosestApproach));
@@ -557,8 +577,9 @@ namespace Blackbird.Rendezvous
                     string.Format("close approach: holding at {0:F0} m ({1:F2} m/s)", distanceToTarget, relSpeed));
 
             double throttle = MathHelpers.Clamp(closingSpeedVelocityGap / RendezThrottleTaperMetersPerSecond, BurnMinThrottle, 1.0);
+            double actualClosingSpeed = Math.Max(0.0, Vector3d.Dot(relVel, bearing));   // toward-target component, for status
             return Burn(commandedVelocityGap, throttle, string.Format(
-                "close approach: {0:F0} m, closing {1:F2}/{2:F2} m/s", distanceToTarget, closingSpeed, commandedClosingSpeed));
+                "close approach: {0:F0} m, closing {1:F2}/{2:F2} m/s", distanceToTarget, actualClosingSpeed, commandedClosingSpeed));
         }
 
         // Docking stage closed loop: hold the head-on mated heading and RCS-translate the chaser port onto the

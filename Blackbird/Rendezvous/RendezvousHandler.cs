@@ -72,9 +72,13 @@ namespace Blackbird.Rendezvous
         // polarity — VERIFY IN-GAME and flip any that come out mirrored (control-frame sign conventions vary).
         private const double DockTranslationGain = 5.0;
         private const float DockTranslationDeadband = 0.05f;
-        private const float TranslateRightSign = 1.0f;   // state.X (+ = right)
-        private const float TranslateUpSign = 1.0f;      // state.Y (+ = dorsal/up)
-        private const float TranslateFwdSign = 1.0f;     // state.Z (+ = toward the controlled port / nose)
+        // FlightCtrlState translation axes are inverted relative to the world-direction dot products below:
+        // a positive command fires RCS in the +axis direction, which pushes the craft the OTHER way. In-game
+        // testing (2026-06-18) confirmed all-+1 signs translated the craft AWAY from the target on every axis,
+        // so all three are negated to push toward the commanded velocity error.
+        private const float TranslateRightSign = -1.0f;  // state.X (KSP convention inverted vs rt.right)
+        private const float TranslateUpSign = -1.0f;     // state.Y (KSP convention inverted vs dorsal/up)
+        private const float TranslateFwdSign = -1.0f;    // state.Z (KSP convention inverted vs port/nose)
         private Vector3d _lastTargetVelocityWorld = Vector3d.zero;   // target velocity, refreshed each engaged tick
 
         // Warp-to-closest-approach (user convenience). Absolute target UT; auto-stops a lead time short of

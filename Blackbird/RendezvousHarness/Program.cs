@@ -41,6 +41,7 @@ namespace Blackbird.RendezvousHarness
             CheckDockingGeometry();
             CheckDockingController();
             CheckCloseApproachCoastsWhenCaInBand();
+            CheckCloseApproachHoldsThenBurnsAtHaven();
             CheckCloseApproachDeadbandRelaxesWithRange();
             CheckMatchVelocityLocksDirectionWhenSlow();
 
@@ -1015,6 +1016,58 @@ namespace Blackbird.RendezvousHarness
             closeExec.Execute(RendezvousStage.CloseApproach);
             RendezvousCommand close = closeExec.Update(world, 2000.0, 600.0);
             AssertTrue("closes when CA out of band", close.Throttle > 0.0);
+        }
+
+        // Case 23: the early-burn regression guard. On a terminal trajectory (predicted CA already inside the
+        // parking band) while still CLOSING and far out, the stage must HOLD — orient to the braking attitude
+        // (anti relative-velocity) at zero throttle and ride the trajectory in — NOT fire a full match burn at
+        // range. This is the in-game bug: an 8 m CA at ~500 m on a low-TWR craft (which inflates the brake
+        // point past the current range) used to brake immediately and stop the craft dead, blowing CA out to
+        // 800 m+. Then, once inside the safe haven (range <= parking distance), it MUST burn to match.
+        private static void CheckCloseApproachHoldsThenBurnsAtHaven()
+        {
+            Console.WriteLine("Case 23: close approach holds on a CA-in-band terminal trajectory, burns at the safe haven");
+
+            // Far + closing: 500 m out, closing along +X at 30 m/s, predicted CA = 8 m (inside the 10 m band).
+            StaticWorld far = new StaticWorld
+            {
+                Mu = KerbinMu,
+                ReferenceNormal = new Vector3d(0, 0, 1),
+                TargetPosition = new Vector3d(500.0, 0, 0),
+                ActivePosition = Vector3d.zero,             // 500 m apart, target ahead on +X
+                TargetVelocity = new Vector3d(0, 100.0, 0),
+                ActiveVelocity = new Vector3d(30.0, 100.0, 0)  // closing at 30 m/s toward the target
+            };
+
+            TerminalRendezvousExecutor holdExec = new TerminalRendezvousExecutor();
+            // Low-TWR craft: small decel + long flip lead inflate the brake point past 500 m, the exact
+            // condition that made the old BRAKE-before-COAST ordering fire a full match burn here.
+            holdExec.BrakingDecelMetersPerSecondSquared = 1.0;
+            holdExec.BrakingSlewLeadSeconds = 20.0;
+            holdExec.Execute(RendezvousStage.CloseApproach);
+            RendezvousCommand hold = holdExec.Update(far, 8.0, 60.0);
+
+            AssertTrue("holds heading (has command)", hold.HasBurn);
+            AssertScalar("hold throttle is zero (no early burn)", hold.Throttle, 0.0);
+            AssertTrue("did not complete", hold.Phase != RendezvousPhase.Complete);
+            // Oriented to the braking attitude: opposite the closing relative velocity (-X here).
+            AssertVecRel("oriented retrograde-relative", hold.ThrustDirection, new Vector3d(-1, 0, 0), 1e-6);
+
+            // Inside the safe haven (8 m < 10 m band) and still moving: now it MUST burn to match velocity.
+            StaticWorld haven = new StaticWorld
+            {
+                Mu = KerbinMu,
+                ReferenceNormal = new Vector3d(0, 0, 1),
+                TargetPosition = new Vector3d(8.0, 0, 0),
+                ActivePosition = Vector3d.zero,             // 8 m apart, inside the band
+                TargetVelocity = new Vector3d(0, 100.0, 0),
+                ActiveVelocity = new Vector3d(2.0, 100.0, 0)   // still 2 m/s of relative velocity to null
+            };
+
+            TerminalRendezvousExecutor havenExec = new TerminalRendezvousExecutor();
+            havenExec.Execute(RendezvousStage.CloseApproach);
+            RendezvousCommand burn = havenExec.Update(haven, 8.0, 60.0);
+            AssertTrue("burns once inside the safe haven", burn.Throttle > 0.0);
         }
 
         // Case 21: the close-approach velocity deadband relaxes with range. The SAME small closing-velocity
