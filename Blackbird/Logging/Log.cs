@@ -16,7 +16,8 @@ namespace Blackbird.Logging
         Debug,
         Psg,
         Rendezvous,
-        Compatibility
+        Compatibility,
+        Docking
     }
 
     // BlackbirdLog: lightweight, fire-and-forget file logger for offline diagnosis.
@@ -48,6 +49,7 @@ namespace Blackbird.Logging
             { LogContext.Psg, "psg.log" },
             { LogContext.Rendezvous, "rendezvous.log" },
             { LogContext.Compatibility, "compatibility.log" },
+            { LogContext.Docking, "docking.log" },
             { LogContext.Debug, "debug.log" },
         };
 

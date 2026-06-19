@@ -30,7 +30,10 @@ namespace Blackbird.Docking
 
         private readonly bool efficientTranslation; // conserve fuel, should be an input
         private readonly double minRcsTranslationMagnitude = 0.05; // don't use RCS if required thrust is below this
-        public double timeConstant; // tunes that RCS PID rather than hand-tuning PID gains
+        // Controller time constant (MechJeb's "Tf"): the single knob the PID gains are derived from.
+        // MUST default to 1.0 (MechJeb's default) — SetParameters floors it at 0.02, so a 0 default would
+        // produce ~300x gains (Kp ∝ 1/Tf²) and slam the RCS. At Tf=1, Kp works out to ~0.125.
+        public double timeConstant = 1.0; // tunes the RCS PID rather than hand-tuning PID gains
         // PID gains (K) initialized with defaults
         public double Kp = 0.125; // proportional
         public double Ki = 0.07; // integral
@@ -82,7 +85,7 @@ namespace Blackbird.Docking
             TranslationType = TranslationTypes.TARGET_WORLD_VELOCITY;
         }
 
-        public void Update(FlightCtrlState ctrlState, VesselState vs, Vessel v)
+        public void Drive(FlightCtrlState ctrlState, VesselState vs, Vessel v)
         {
             SetParameters();
             State = vs;

@@ -71,16 +71,22 @@ namespace Blackbird.Mathematics
             Negative = Vector3d.zero;
         }
 
+        // Bin a vector's POSITIVE projection onto each of the 6 basis directions, so each bin holds the
+        // (positive) magnitude available pushing in that direction. Must be > 0 (matching MechJeb's Vector6):
+        // consumers read the raw bins and gate on `> 0` (see RcsController.Drive), so storing negative values
+        // there silently yields zero authority and no translation is ever commanded.
         public void Add(Vector3d v)
         {
             for (int i = 0; i < OrientationValues.Length; i++)
             {
                 Orientation o = OrientationValues[i];
                 double projection = Vector3d.Dot(v, Orientations[(int) o]);
-                if (projection < 0) this[o] += projection;
+                if (projection > 0) this[o] += projection;
             }
         }
 
+        // Available magnitude in a given direction = quadrature sum of the bins this direction projects
+        // positively onto, scaled by those projections.
         public double GetMagnitude(Vector3d d)
         {
             double sqrMag = 0;
@@ -88,25 +94,13 @@ namespace Blackbird.Mathematics
             {
                 Orientation o = OrientationValues[i];
                 double projection = Vector3d.Dot(d.normalized, Orientations[(int)o]);
-                
-                if (projection < 0) sqrMag += Math.Pow(projection * this[o], 2);
+
+                if (projection > 0) sqrMag += Math.Pow(projection * this[o], 2);
             }
 
             return Math.Sqrt(sqrMag);
         }
 
         public double MaxMagnitude() => Math.Max(MathHelpers.MaxMagnitude(Positive), MathHelpers.MaxMagnitude(Negative));
-        // note: CLAUDE - what's our actual input here?  mechjeb takes ConfigNode (an empty class)
-        public void Init(Vector3d v, bool isPositive)
-        {
-            if (isPositive)
-            {
-                Positive = v;
-            }
-            else
-            {
-                 Negative = v;
-            }
-        }
     }
 }

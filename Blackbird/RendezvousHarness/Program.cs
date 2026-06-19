@@ -44,6 +44,8 @@ namespace Blackbird.RendezvousHarness
             CheckCloseApproachHoldsThenBurnsAtHaven();
             CheckCloseApproachDeadbandRelaxesWithRange();
             CheckMatchVelocityLocksDirectionWhenSlow();
+            CheckThrustEnvelope();
+            CheckDockingSchedule();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -1068,6 +1070,76 @@ namespace Blackbird.RendezvousHarness
             havenExec.Execute(RendezvousStage.CloseApproach);
             RendezvousCommand burn = havenExec.Update(haven, 8.0, 60.0);
             AssertTrue("burns once inside the safe haven", burn.Throttle > 0.0);
+        }
+
+        // Case 24: ThrustEnvelope bins POSITIVE authority into each of the 6 directions and reads it back.
+        // This guards the sign convention: a thruster pushing +x must register as Right (not negative Left),
+        // and GetMagnitude in a direction must equal the authority pushing that way. (The original < 0 binning
+        // made every bin negative, so the RcsController's `orAvail > 0` gate saw zero authority and never
+        // commanded translation — this case fails loudly on that.)
+        private static void CheckThrustEnvelope()
+        {
+            Console.WriteLine("Case 24: thrust envelope bins positive authority + GetMagnitude");
+
+            ThrustEnvelope e = new ThrustEnvelope();
+            e.Add(new Vector3d(10, 0, 0));   // thrust pushing +x (right)
+            e.Add(new Vector3d(0, 0, -4));   // pushing -z (back)
+            e.Add(new Vector3d(0, 6, 0));    // pushing +y (up)
+
+            AssertScalar("right bin = 10", e[ThrustEnvelope.Orientation.RIGHT], 10.0);
+            AssertScalar("back bin = 4", e[ThrustEnvelope.Orientation.BACK], 4.0);
+            AssertScalar("up bin = 6", e[ThrustEnvelope.Orientation.UP], 6.0);
+            AssertScalar("left bin = 0 (no -x thrust)", e[ThrustEnvelope.Orientation.LEFT], 0.0);
+
+            AssertScalar("GetMagnitude(+x) = 10", e.GetMagnitude(new Vector3d(1, 0, 0)), 10.0);
+            AssertScalar("GetMagnitude(back) = 4", e.GetMagnitude(new Vector3d(0, 0, -1)), 4.0);
+            AssertScalar("GetMagnitude(-x) = 0 (no left authority)", e.GetMagnitude(new Vector3d(-1, 0, 0)), 0.0);
+        }
+
+        // Case 25: DockingSchedule entry-step selection, transitions, and the approach speed schedule (pure).
+        // Covers the "behind" threshold fix (|zSep| > halfBox => switch sides, not back straight up) and that
+        // the final Docking step actually closes toward the port at a capped speed.
+        private static void CheckDockingSchedule()
+        {
+            Console.WriteLine("Case 25: docking schedule entry-step, transitions, and approach speeds");
+
+            DockingConfig c = new DockingConfig
+            {
+                SafeDistance = 20.0, TargetSize = 5.0, AcquireRange = 0.3,
+                DockingCorridorRadius = 1.0, SpeedLimit = 1.0, VesselBoundingSize = 4.0
+            };
+            Vector3d axis = new Vector3d(1, 0, 0);
+
+            // Entry-step selection.
+            DockingGeom front = new DockingGeom { ZSep = 50, LateralMag = 0.2, ZAxis = axis, LateralDir = Vector3d.zero };
+            AssertTrue("on-axis in front -> Docking", DockingSchedule.PickEntryStep(front, c) == DockingSteps.Docking);
+
+            DockingGeom offAxis = new DockingGeom { ZSep = 50, LateralMag = 5, ZAxis = axis, LateralDir = new Vector3d(0, 1, 0) };
+            AssertTrue("off-axis far in front -> MovingToStart", DockingSchedule.PickEntryStep(offAxis, c) == DockingSteps.MovingToStart);
+
+            DockingGeom behindFar = new DockingGeom { ZSep = -10, LateralMag = 1, ZAxis = axis, LateralDir = new Vector3d(0, 1, 0) };
+            AssertTrue("far behind (>halfBox) -> WrongSideBackingUp", DockingSchedule.PickEntryStep(behindFar, c) == DockingSteps.WrongSideBackingUp);
+
+            DockingGeom behindClose = new DockingGeom { ZSep = -1, LateralMag = 0.2, ZAxis = axis, LateralDir = Vector3d.zero };
+            AssertTrue("just behind (<halfBox) -> BackingUp", DockingSchedule.PickEntryStep(behindClose, c) == DockingSteps.BackingUp);
+
+            // Transitions.
+            DockingGeom backedUp = new DockingGeom { ZSep = 6, LateralMag = 0.5, ZAxis = axis, LateralDir = Vector3d.zero };
+            AssertTrue("BackingUp past targetSize -> MovingToStart",
+                DockingSchedule.Advance(DockingSteps.BackingUp, backedUp, c) == DockingSteps.MovingToStart);
+
+            DockingGeom contact = new DockingGeom { ZSep = 0.2, LateralMag = 0.1, ZAxis = axis, LateralDir = Vector3d.zero };
+            AssertTrue("Docking within acquire range -> Off",
+                DockingSchedule.Advance(DockingSteps.Docking, contact, c) == DockingSteps.Off);
+
+            // Approach speeds: the Docking step closes toward the port at a positive, capped speed.
+            Func<Vector3d, double> accel = _ => 1.0;   // 1 m/s^2 available in every direction
+            DockingGeom closing = new DockingGeom { ZSep = 20, LateralMag = 0.0, ZAxis = axis, LateralDir = Vector3d.zero };
+            DockingPlan plan = DockingSchedule.Plan(DockingSteps.Docking, closing, c, accel);
+            AssertTrue("docking closes (z speed > 0)", plan.ZSpeed > 0.0);
+            AssertTrue("docking z speed capped at limit", plan.ZSpeed <= c.SpeedLimit + 1e-9);
+            AssertTrue("adjustment points toward the port (+zAxis)", Vector3d.Dot(plan.Adjustment, axis) > 0.0);
+            AssertTrue("docking aligns to the port", plan.Align);
         }
 
         // Case 21: the close-approach velocity deadband relaxes with range. The SAME small closing-velocity

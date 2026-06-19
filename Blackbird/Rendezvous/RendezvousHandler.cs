@@ -22,6 +22,12 @@ namespace Blackbird.Rendezvous
         private readonly AttitudeControl _attitude = new AttitudeControl();
         private readonly BlackbirdLog _log = new BlackbirdLog(LogContext.Rendezvous);
 
+        // Docking autopilot (re-derived from MechJeb). Independent of the rendezvous executor: it reads the
+        // chaser's own targeted port and runs its own staged sequence + RCS actuation. Wired here loosely for
+        // the first pass; it is built to lift out into its own module/handler with minimal change.
+        private readonly DockingAutopilot _docking = new DockingAutopilot();
+        private bool _dockingEngaged;
+
         private RendezvousCommand _command;
         private bool _hasCommand;
         private bool _engaged;
@@ -131,6 +137,17 @@ namespace Blackbird.Rendezvous
         public bool ExecuteDocking() { StopWarp(); return _executor.ExecuteDocking(); }
         public DockingLeg DockingLeg => _executor.DockingLeg;
 
+        // New docking autopilot gates (independent of the rendezvous engage / executor). Engaging forces a
+        // fresh run; disengaging hands the craft back. RCS is forced on while engaged (in Update) so the
+        // thrust table is populated and translation is available.
+        public bool DockingEngaged => _dockingEngaged;
+        public DockingSteps DockingStep => _docking.CurrentStep;
+        public string DockingStatus => _docking.status;
+        public double DockingZSep => _docking.ZSep;
+        public double DockingLateralMeters => _docking.LateralMeters;
+        public void EngageDocking() { StopWarp(); _dockingEngaged = true; _docking.Engage(); }
+        public void DisengageDocking() { _dockingEngaged = false; _docking.Disengage(); }
+
         // Close-approach park distance ("match velocities at X m"). The default is restored when the UI
         // option is off, so a one-off custom distance never silently persists into the next approach.
         public double ParkingDistanceMeters
@@ -196,7 +213,25 @@ namespace Blackbird.Rendezvous
             _hasCommand = false;
             HasRelative = false;
 
-            if (active == null || target == null || ReferenceEquals(active, target))
+            if (active == null)
+            {
+                StopWarp();
+                return;
+            }
+
+            // Docking autopilot is its own path: it reads the chaser's targeted port (an ITargetable that is
+            // a docking node, not a Vessel, so it can't arrive via `target` here) and runs independently of
+            // the rendezvous executor and its target. Force RCS on first so VesselState's thrust table is
+            // populated this frame, then tick the state machine. Skips the rendezvous flow entirely.
+            if (_dockingEngaged)
+            {
+                if (!active.ActionGroups[KSPActionGroup.RCS])
+                    active.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
+                _docking.OnFixedUpdate(active, VesselState.FromVessel(active));
+                return;
+            }
+
+            if (target == null || ReferenceEquals(active, target))
             {
                 StopWarp();
                 return;
@@ -416,8 +451,16 @@ namespace Blackbird.Rendezvous
         {
             if (state == null || vessel == null) return;
 
-            // Docking uses 6-DOF RCS translation (hold heading + translate), not the main-engine orient/burn
-            // path below. Branch out before any of that logic so the two never interfere.
+            // Docking autopilot owns actuation when engaged (its own attitude + RCS translation). Independent
+            // path, checked first so it never interferes with the rendezvous burn logic below.
+            if (_dockingEngaged)
+            {
+                _docking.Drive(state);
+                return;
+            }
+
+            // (Legacy) executor-driven docking translation. Left inert while the new autopilot is the docking
+            // path; only reachable if the executor itself reaches the Docking stage with a translation command.
             if (_engaged && _hasCommand && _command.Stage == RendezvousStage.Docking && _command.HasTranslation
                 && _command.ThrustDirection.sqrMagnitude > 0.0)
             {

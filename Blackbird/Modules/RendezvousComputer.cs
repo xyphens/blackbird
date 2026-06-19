@@ -128,11 +128,22 @@ namespace Blackbird.Modules
                 _handler.Execute(RendezvousStage.CloseApproach);
             }
 
-            // Docking: staged RCS gates (Approach -> Final -> Contact). One click runs the current leg; on
-            // completion it coasts awaiting the next gate. Needs a targeted docking port + "Control From Here".
-            DockingLeg nextLeg = _handler.Stage == RendezvousStage.Docking ? _handler.DockingLeg : DockingLeg.Approach;
-            if (GUILayout.Button($"Execute: Dock ({nextLeg})")) _handler.ExecuteDocking();
             GUI.enabled = true;
+
+            // Docking autopilot (independent of the rendezvous engage): re-derived MechJeb sequence. Needs a
+            // targeted docking port + "Control From Here" on the chaser's port. Toggle on/off; status shows
+            // the active step + separation while running.
+            GUILayout.Space(4);
+            bool docking = GUILayout.Toggle(_handler.DockingEngaged, " Docking autopilot");
+            if (docking != _handler.DockingEngaged)
+            {
+                if (docking) _handler.EngageDocking(); else _handler.DisengageDocking();
+            }
+            if (_handler.DockingEngaged)
+            {
+                GUILayout.Label($"  {_handler.DockingStep}: {_handler.DockingStatus}");
+                GUILayout.Label($"  axial {_handler.DockingZSep:F1} m / lateral {_handler.DockingLateralMeters:F1} m");
+            }
 
             // Close-approach park distance: when checked, close in to (and velocity-match at) the input
             // distance instead of the default ~100 m. Always editable so it can be set before executing.

@@ -2,7 +2,7 @@
 
 namespace Blackbird.Mathematics
 {
-    internal class MathHelpers
+    public static class MathHelpers
     {
         // convert negative degrees to a real radian
         public static double NormalizeDegrees(double degrees)

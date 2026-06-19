@@ -70,6 +70,7 @@
   <ItemGroup>
     <Compile Include="Compatibility\Principia.cs" />
     <Compile Include="Docking\DockingAutopilot.cs" />
+    <Compile Include="Docking\DockingSchedule.cs" />
     <Compile Include="Docking\RcsController.cs" />
     <Compile Include="Docking\DockingGeometry.cs" />
     <Compile Include="Docking\DockingController.cs" />
