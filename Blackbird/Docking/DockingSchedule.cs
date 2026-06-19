@@ -182,14 +182,19 @@ namespace Blackbird.Docking
 
                 case DockingSteps.Docking:
                     // Coordinate axial vs lateral so we stay in the corridor: if we'd reach the port before we
-                    // are centred, slow the axial speed and speed up the lateral correction.
-                    double timeToAxis = Math.Abs(g.LateralMag / lat);
-                    double timeToTargetSize = Math.Abs(g.ZSep / z);
-                    if ((g.ZSep <= g.LateralMag * 10.0 || timeToTargetSize <= timeToAxis * 10.0)
-                        && timeToAxis > 0.0 && timeToTargetSize > 0.0)
+                    // are centred, slow the axial speed and speed up the lateral correction. Guard against zero
+                    // speeds (e.g. RCS empty => accel 0 => both speeds 0): the time ratios would be inf/inf=NaN
+                    // and poison the command, so only coordinate when both speeds are actually nonzero.
+                    if (Math.Abs(z) > 1e-9 && Math.Abs(lat) > 1e-9)
                     {
-                        z *= Math.Min(timeToTargetSize / timeToAxis, 1.0);
-                        lat = ClampSpeed(lat * 2.0, c.SpeedLimit);
+                        double timeToAxis = Math.Abs(g.LateralMag / lat);
+                        double timeToTargetSize = Math.Abs(g.ZSep / z);
+                        if ((g.ZSep <= g.LateralMag * 10.0 || timeToTargetSize <= timeToAxis * 10.0)
+                            && timeToAxis > 0.0 && timeToTargetSize > 0.0)
+                        {
+                            z *= Math.Min(timeToTargetSize / timeToAxis, 1.0);
+                            lat = ClampSpeed(lat * 2.0, c.SpeedLimit);
+                        }
                     }
 
                     status = string.Format("Docking at {0:F2} / {1:F2} m/s", z, lat);

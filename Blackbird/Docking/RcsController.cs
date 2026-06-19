@@ -85,6 +85,20 @@ namespace Blackbird.Docking
             TranslationType = TranslationTypes.TARGET_WORLD_VELOCITY;
         }
 
+        // Raw translation: thrust along a world-frame direction with NO velocity matching (like holding the
+        // H/N/I/J/K/L keys). worldVelocityDelta is the error the controller nulls, so a delta of -dv makes it
+        // thrust toward +dv; we set it directly here instead of deriving it from a target velocity, so there is
+        // no drift correction on the other axes.
+        public void SetWorldVelocityError(Vector3d dv)
+        {
+            worldVelocityDelta = -dv;
+            if (TranslationType != TranslationTypes.WORLD_VELOCITY_ERROR)
+            {
+                lastWorldVelocityDelta = worldVelocityDelta;   // avoid a one-frame derivative spike on the mode switch
+                TranslationType = TranslationTypes.WORLD_VELOCITY_ERROR;
+            }
+        }
+
         public void Drive(FlightCtrlState ctrlState, VesselState vs, Vessel v)
         {
             SetParameters();

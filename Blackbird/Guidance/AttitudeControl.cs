@@ -132,6 +132,25 @@ namespace Blackbird.Guidance
             Drive(vessel, state, headingDeg, pitchDeg, rollDeg);
         }
 
+        // Holds the craft's CURRENT attitude, killing all rotation (incl. roll). This is the analog of
+        // MechJeb's attitudeTo(QuaternionD.LookRotation(transform.up, -transform.forward), INERTIAL): the
+        // requested attitude is the current one, so the position error is ~0 and the inner rate loop drives
+        // the angular velocity to zero. Re-captured every call (like MechJeb), so it brakes a tumble to a stop.
+        public void DriveHoldAttitude(Vessel vessel, FlightCtrlState state)
+        {
+            if (vessel == null || state == null) return;
+            if (vessel.ReferenceTransform == null) return;
+
+            vessel.ActionGroups.SetGroup(KSPActionGroup.SAS, false);
+
+            QuaternionD requestedAttitude =
+                (QuaternionD)vessel.ReferenceTransform.rotation * Euler(-90.0, 0.0, 0.0);
+
+            Vector3d torqueAvailable = EstimateTorqueAvailable(vessel);
+            Vector3d actuation = UpdatePredictionPI(vessel, requestedAttitude, torqueAvailable);
+            ApplyActuation(state, actuation);
+        }
+
         private Vector3d UpdatePredictionPI(
             Vessel vessel,
             QuaternionD requestedAttitude,

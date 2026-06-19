@@ -3,6 +3,7 @@ using Blackbird.Guidance;
 using KSP.UI.Screens;
 using Blackbird.Modules;
 using Blackbird.Rendezvous;
+using Blackbird.Docking;
 
 namespace Blackbird
 {
@@ -21,10 +22,12 @@ namespace Blackbird
         private bool _toolbarIconOwned;
 
         private readonly RendezvousHandler _rendezvousHandler = new RendezvousHandler();
+        private readonly DockingHandler _dockingHandler = new DockingHandler();
 
         private readonly Planner _planner = new Planner();
         private readonly GuidanceComputer _guidanceComputer = new GuidanceComputer();
         private readonly RendezvousComputer _rendezvousComputer = new RendezvousComputer();
+        private readonly DockingComputer _dockingComputer = new DockingComputer();
 
         public void Start()
         {
@@ -32,6 +35,7 @@ namespace Blackbird
             _planner.Initialize(_launchHandler);
             _guidanceComputer.Initialize(_launchHandler);
             _rendezvousComputer.Initialize(_rendezvousHandler);
+            _dockingComputer.Initialize(_dockingHandler);
             GameEvents.onGUIApplicationLauncherReady.Add(AddToolbarButton);
             GameEvents.onGUIApplicationLauncherDestroyed.Add(RemoveToolbarButton);
 
@@ -62,6 +66,7 @@ namespace Blackbird
             Vessel targetVessel = target as Vessel;
             if (targetVessel == null && target is ModuleDockingNode targetNode) targetVessel = targetNode.vessel;
             _rendezvousHandler.Update(activeVessel, targetVessel);
+            _dockingHandler.Update(activeVessel);
         }
         private void OnFlyByWire(FlightCtrlState state)
         {
@@ -69,6 +74,7 @@ namespace Blackbird
 
             _launchHandler.ApplyFlightControls(state, _flyByWireVessel);
             _rendezvousHandler.ApplyFlightControls(state, _flyByWireVessel);
+            _dockingHandler.ApplyFlightControls(state, _flyByWireVessel);
         }
 
         public void OnDestroy()
@@ -94,6 +100,7 @@ namespace Blackbird
             _planner.Draw();
             _guidanceComputer.Draw();
             _rendezvousComputer.Draw();
+            _dockingComputer.Draw();
         }
 
         private void DrawMainMenu(int _windowId)
@@ -118,6 +125,7 @@ namespace Blackbird
             _planner.IsVisible = GUILayout.Toggle(_planner.IsVisible, "Planner");
             _guidanceComputer.IsVisible = GUILayout.Toggle(_guidanceComputer.IsVisible, "Guidance Computer");
             _rendezvousComputer.IsVisible = GUILayout.Toggle(_rendezvousComputer.IsVisible, "Rendezvous");
+            _dockingComputer.IsVisible = GUILayout.Toggle(_dockingComputer.IsVisible, "Docking");
             GUILayout.EndHorizontal();
         }
 

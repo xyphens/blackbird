@@ -48,9 +48,17 @@ namespace Blackbird.Docking
         private Vessel targetVessel;
         private ITargetable targetObject;
         private VesselState vs;
-        private readonly RcsController rcs = new RcsController();
-        private readonly AttitudeControl attitude = new AttitudeControl();
+        private readonly RcsController rcs;
+        private readonly AttitudeControl attitude;
         private readonly BlackbirdLog log = new BlackbirdLog(LogContext.Docking);
+
+        // The RCS translation engine and attitude controller are SHARED with the owning DockingHandler, so
+        // its manual fine-tuning controls and this guidance drive the same actuators.
+        public DockingAutopilot(RcsController rcsController, AttitudeControl attitudeControl)
+        {
+            rcs = rcsController;
+            attitude = attitudeControl;
+        }
 
         // UI accessors.
         public string status = "";

@@ -70,6 +70,7 @@
   <ItemGroup>
     <Compile Include="Compatibility\Principia.cs" />
     <Compile Include="Docking\DockingAutopilot.cs" />
+    <Compile Include="Docking\DockingHandler.cs" />
     <Compile Include="Docking\DockingSchedule.cs" />
     <Compile Include="Docking\RcsController.cs" />
     <Compile Include="Docking\DockingGeometry.cs" />
@@ -109,6 +110,7 @@
     <Compile Include="Planning\LaunchPlanner.cs" />
     <Compile Include="BlackBird.cs" />
     <Compile Include="Modules\GuidanceComputer.cs" />
+    <Compile Include="Modules\DockingComputer.cs" />
     <Compile Include="Modules\Planner.cs" />
     <Compile Include="Models\OrbitInfo.cs" />
     <Compile Include="Math\OrbitMath.cs" />
