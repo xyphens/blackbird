@@ -70,9 +70,6 @@ C:\Users\David\source\repos\Blackbird\Blackbird\bin\Debug\KSPAssets.XmlSerialize
 C:\Users\David\source\repos\Blackbird\Blackbird\obj\Debug\Blackbird.csproj.Up2Date
 C:\Users\David\source\repos\Blackbird\Blackbird\obj\Debug\Blackbird.dll
 C:\Users\David\source\repos\Blackbird\Blackbird\obj\Debug\Blackbird.pdb
-C:\Users\David\source\repos\Blackbird\Blackbird\bin\Debug\ksp_plugin_adapter.dll
-C:\Users\David\source\repos\Blackbird\Blackbird\bin\Debug\ksp_plugin_adapter.pdb
-C:\Users\David\source\repos\Blackbird\Blackbird\bin\Debug\ksp_plugin_adapter.dll.config
 C:\Users\David\source\repos\Blackbird\Blackbird\obj\Debug\Blackbird.Properties.Resources.resources
 C:\Users\David\source\repos\Blackbird\Blackbird\obj\Debug\Blackbird.csproj.GenerateResource.cache
 C:\Users\CodexSandboxOffline\.codex\.sandbox\cwd\9d450aaf437ed67d\bin\Debug\Blackbird.dll

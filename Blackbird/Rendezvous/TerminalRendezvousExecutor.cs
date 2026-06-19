@@ -76,8 +76,14 @@ namespace Blackbird.Rendezvous
         // distance: any positive value just leaves us DesiredDistance + X short of where we asked to be.
         private const double ParkingDistanceBuffer = 0.0;
         private const double RendezParkedSpeedMetersPerSecond = 0.5; // ...and relative speed below this
-        private const double RendezDistanceApproachGain = 0.2;              // rate of which we close distance to target relative to the total distance
-        private const double RendezMaxApproachSpeedMetersPerSecond = 5.0;  // cap on commanded closing speed (braking margin) todo: does increasing this yield more effective burns? if YES, make an input because we'll burn a fuckton of RCS doing these micro-adjustments
+        // Commanded closing speed = clamp(range * gain, 0, maxSpeed). Both are user-settable (UI) so a long-
+        // range close can be flown as a few LARGE burns (raise maxSpeed) instead of a forever-crawl at the cap
+        // that chips ~10 m per burn and dumps RCS. The auto-BRAKE point scales with the closing speed, so a
+        // higher cap just means it accelerates, coasts, then brakes earlier — at the cost of looser precision.
+        public const double RendezDistanceApproachGainDefault = 0.2;
+        public double RendezDistanceApproachGain = RendezDistanceApproachGainDefault;             // closing speed per metre of range
+        public const double RendezMaxApproachSpeedDefaultMetersPerSecond = 5.0;
+        public double RendezMaxApproachSpeedMetersPerSecond = RendezMaxApproachSpeedDefaultMetersPerSecond;  // cap on commanded closing speed
         private const double RendezBurnDeadbandMetersPerSecond = 0.1;       // base (close-in) velocity-error deadband
         // ...relaxed with range: holding the closing velocity to 0.1 m/s at km distance just burns RCS fighting
         // orbital drift for no gain (the "micro-burn at 4 km" problem), so the deadband grows with distance up

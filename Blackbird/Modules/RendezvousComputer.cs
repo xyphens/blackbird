@@ -25,6 +25,11 @@ namespace Blackbird.Modules
         private bool _matchAtEnabled;
         private string _matchAtMetersText = "100";
 
+        // Close-approach closing-speed tuning (applied live; see ApplyCloseApproachParams). Raise the max
+        // speed to close a long-range gap as a few large burns instead of a slow capped crawl.
+        private string _closeGainText = "0.2";
+        private string _closeMaxSpeedText = "5";
+
         public void Initialize(RendezvousHandler handler) => _handler = handler;
         public void Toggle() => IsVisible = !IsVisible;
 
@@ -138,6 +143,19 @@ namespace Blackbird.Modules
             GUILayout.Label("m");
             GUILayout.EndHorizontal();
 
+            // Close-approach closing-speed levers. Max speed is the big one for long-range gaps: raise it so
+            // the stage accelerates, coasts, then auto-brakes instead of crawling at the cap. Applied live.
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Close gain (speed/m):", GUILayout.Width(160));
+            _closeGainText = GUILayout.TextField(_closeGainText, GUILayout.Width(60));
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Max closing speed:", GUILayout.Width(160));
+            _closeMaxSpeedText = GUILayout.TextField(_closeMaxSpeedText, GUILayout.Width(60));
+            GUILayout.Label("m/s");
+            GUILayout.EndHorizontal();
+            ApplyCloseApproachParams();
+
             // Warp to closest approach (auto-stops short; cancelled if a burn starts).
             if (_handler.Warping)
             {
@@ -226,6 +244,16 @@ namespace Blackbird.Modules
                 _handler.ParkingDistanceMeters = RendezvousHandler.CloseStandoffDefaultMeters;
                 _handler.AutoMatchVelocityDistance = false;
             }
+        }
+
+        // Apply the close-approach closing-speed levers live (each draw). Invalid/empty text keeps the last
+        // good value. Raising the max speed turns a long-range crawl into a few large burns + coast + brake.
+        private void ApplyCloseApproachParams()
+        {
+            if (double.TryParse(_closeGainText, out double gain) && !double.IsNaN(gain) && gain > 0.0)
+                _handler.CloseApproachGain = gain;
+            if (double.TryParse(_closeMaxSpeedText, out double maxSpeed) && !double.IsNaN(maxSpeed) && maxSpeed > 0.0)
+                _handler.CloseApproachMaxSpeedMetersPerSecond = maxSpeed;
         }
 
         private static string StageName(RendezvousStage stage)

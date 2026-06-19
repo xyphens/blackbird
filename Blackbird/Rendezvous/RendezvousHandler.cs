@@ -144,6 +144,21 @@ namespace Blackbird.Rendezvous
             set { _executor.UseMatchVelocitiesDuringApproach = value;  }
         }
         public const double CloseStandoffDefaultMeters = TerminalRendezvousExecutor.ParkingDistanceDefaultMeters;
+
+        // Close-approach closing-speed tuning (UI-settable): raise the max speed to close a long-range gap as a
+        // few large burns instead of a slow capped crawl. Gain = closing speed per metre of range.
+        public double CloseApproachGain
+        {
+            get { return _executor.RendezDistanceApproachGain; }
+            set { _executor.RendezDistanceApproachGain = value; }
+        }
+        public double CloseApproachMaxSpeedMetersPerSecond
+        {
+            get { return _executor.RendezMaxApproachSpeedMetersPerSecond; }
+            set { _executor.RendezMaxApproachSpeedMetersPerSecond = value; }
+        }
+        public const double CloseApproachGainDefault = TerminalRendezvousExecutor.RendezDistanceApproachGainDefault;
+        public const double CloseApproachMaxSpeedDefault = TerminalRendezvousExecutor.RendezMaxApproachSpeedDefaultMetersPerSecond;
         public void Abort() { _executor.Abort(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
         public void ResetSequence() { _executor.Reset(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
 
