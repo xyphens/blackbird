@@ -6,6 +6,7 @@ using UnityEngine;
 
 namespace Blackbird.Trajectory
 {
+    // TODO: swap in Principia handlers - currently using stockfallback
     public sealed class PrincipiaTrajectoryProvider : ITrajectoryProvider
     {
         private const string AdapterTypeName = "principia.ksp_plugin_adapter.PrincipiaPluginAdapter, ksp_plugin_adapter";
@@ -110,6 +111,11 @@ namespace Blackbird.Trajectory
         {
             TrajectoryState state = GetCurrentState(vessel);
             return state != null && state.IsValid ? state.WorldVelocity : _stockFallback.GetVelocity(vessel);
+        }
+        // Returns the osculating two-body orbital velocity, otherwise stock patched conic orbit velocity
+        public Vector3d GetOrbitalVelocity(Vessel vessel)
+        {
+            return vessel == null ? Vector3d.zero : vessel.orbit.GetVel();
         }
 
         // Returns surface-relative velocity through the provider boundary.

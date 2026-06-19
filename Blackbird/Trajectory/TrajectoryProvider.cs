@@ -61,6 +61,13 @@ namespace Blackbird.Trajectory
                 : Stock.GetSurfaceVelocity(vessel);
         }
 
+        public static Vector3d GetOrbitalVelocity(Vessel vessel)
+        {
+            return Principia.IsAvailable
+                ? Principia.GetOrbitalVelocity(vessel)
+                : Stock.GetOrbitalVelocity(vessel);
+        }
+
         // Returns orbit plane normal from the active provider.
         public static Vector3d GetOrbitNormal(Vessel vessel)
         {

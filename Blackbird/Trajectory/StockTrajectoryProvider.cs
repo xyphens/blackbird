@@ -1,6 +1,7 @@
 using Blackbird.Mathematics;
 using Blackbird.Models;
 using UnityEngine;
+using static UnityEngine.GraphicsBuffer;
 
 namespace Blackbird.Trajectory
 {
@@ -29,7 +30,7 @@ namespace Blackbird.Trajectory
                 ReferenceBody = body,
                 UniversalTime = Planetarium.GetUniversalTime(),
                 WorldPosition = worldPosition,
-                WorldVelocity = vessel.obt_velocity,
+                WorldVelocity = vessel.obt_velocity, // du: why are we using orbit velocity for a variable named WorldVelocity?
                 RelativePosition = relativePosition,
                 RelativeVelocity = vessel.obt_velocity,
                 AltitudeMeters = OrbitMath.GetAltitudeAtPosition(body, worldPosition),
@@ -82,6 +83,12 @@ namespace Blackbird.Trajectory
             return normal.sqrMagnitude > 0.0
                 ? normal.normalized
                 : Vector3d.zero;
+        }
+
+        // Returns stock two-body osculating orbital velocity from KSP
+        public Vector3d GetOrbitalVelocity(Vessel vessel)
+        {
+            return vessel == null ? Vector3d.zero : vessel.orbit.GetVel();
         }
 
         // Returns stock apoapsis altitude for orbit summaries and UI.

@@ -69,6 +69,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Compatibility\Principia.cs" />
+    <Compile Include="Docking\DockingAutopilot.cs" />
+    <Compile Include="Docking\RcsController.cs" />
     <Compile Include="Docking\DockingGeometry.cs" />
     <Compile Include="Docking\DockingController.cs" />
     <Compile Include="Guidance\AscentGuidance.cs" />
@@ -80,12 +82,14 @@
     <Compile Include="Guidance\DirectionTracking.cs" />
     <Compile Include="Guidance\LaunchGuidanceState.cs" />
     <Compile Include="Guidance\LaunchHandler.cs" />
+    <Compile Include="Guidance\RcsPID.cs" />
     <Compile Include="Guidance\WarpHelper.cs" />
     <Compile Include="Guidance\PIDTranslation.cs" />
     <Compile Include="Guidance\PoweredAscentGuidance.cs" />
     <Compile Include="Helpers\Helpers.cs" />
     <Compile Include="Logging\Log.cs" />
     <Compile Include="Math\Helpers.cs" />
+    <Compile Include="Math\ThrustEnvelope.cs" />
     <Compile Include="Models\AscentGuidanceInfo.cs" />
     <Compile Include="Models\InsertionTarget.cs" />
     <Compile Include="Models\LaunchCandidate.cs" />
@@ -109,6 +113,8 @@
     <Compile Include="Math\OrbitMath.cs" />
     <Compile Include="Math\TwoBody.cs" />
     <Compile Include="Math\LambertSolver.cs" />
+    <Compile Include="RCS\Balancer.cs" />
+    <Compile Include="RCS\Controller.cs" />
     <Compile Include="Rendezvous\LvlhFrame.cs" />
     <Compile Include="Rendezvous\RelativeState.cs" />
     <Compile Include="Rendezvous\InterceptSolver.cs" />

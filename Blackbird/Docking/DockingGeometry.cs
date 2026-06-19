@@ -4,6 +4,25 @@ using UnityEngine;
 
 namespace Blackbird.Docking
 {
+    public struct Box3d
+    {
+        public Vector3d center;
+        public Vector3d size;
+    }
+
+    public struct VectorPair
+    {
+        public Vector3 P1;
+
+        public Vector3 P2;
+
+        public VectorPair(Vector3 point1, Vector3 point2)
+        {
+            P1 = point1;
+            P2 = point2;
+        }
+    }
+
     // A docking port reduced to the two world-frame quantities the guidance needs: where it is and which
     // way it faces. Axis is the OUTWARD normal of the port's mating face (in-game: nodeTransform.forward) —
     // the direction you approach FROM. For two ports to mate, the chaser port must sit on the target port's
@@ -60,5 +79,62 @@ namespace Blackbird.Docking
                 Range = offset.magnitude
             };
         }
-    }
+
+        public static VectorPair _getBoundingBox(Part part)
+        {
+            Vector3 minBounds = new Vector3();
+            Vector3 maxBounds = new Vector3();
+
+            foreach (Transform t in part.FindModelComponents<Transform>())
+            {
+                MeshFilter mf = t.GetComponent<MeshFilter>();
+                if (mf == null)
+                    continue;
+                Mesh m = mf.mesh;
+
+                if (m == null)
+                    continue;
+
+                Matrix4x4 matrix = part.vessel.transform.worldToLocalMatrix * t.localToWorldMatrix;
+
+                foreach (Vector3 vertex in m.vertices)
+                {
+                    Vector3 v = matrix.MultiplyPoint3x4(vertex);
+                    maxBounds.x = Mathf.Max(maxBounds.x, v.x);
+                    minBounds.x = Mathf.Min(minBounds.x, v.x);
+                    maxBounds.y = Mathf.Max(maxBounds.y, v.y);
+                    minBounds.y = Mathf.Min(minBounds.y, v.y);
+                    maxBounds.z = Mathf.Max(maxBounds.z, v.z);
+                    minBounds.z = Mathf.Min(minBounds.z, v.z);
+                }
+            }
+
+            return new VectorPair(maxBounds, minBounds);
+        }
+
+        public static Box3d GetBoundingBox(Vessel vessel)
+        {
+            Vector3 minBounds = new Vector3();
+            Vector3 maxBounds = new Vector3();
+
+            for (int i = 0; i < vessel.Parts.Count; i++) {
+                Part part = vessel.parts[i];
+                VectorPair partBox = _getBoundingBox(part);
+
+                maxBounds.x = Mathf.Max(maxBounds.x, partBox.P1.x);
+                minBounds.x = Mathf.Min(minBounds.x, partBox.P2.x);
+                maxBounds.y = Mathf.Max(maxBounds.y, partBox.P1.y);
+                minBounds.y = Mathf.Min(minBounds.y, partBox.P2.y);
+                maxBounds.z = Mathf.Max(maxBounds.z, partBox.P1.z);
+                minBounds.z = Mathf.Min(minBounds.z, partBox.P2.z);
+            }
+
+            Box3d box = new Box3d();
+
+            box.center = new Vector3d((maxBounds.x + minBounds.x) / 2, (maxBounds.y + minBounds.y) / 2, (maxBounds.z + minBounds.z) / 2);
+            box.size = new Vector3d(Math.Abs(box.center.x - maxBounds.x), Math.Abs(box.center.y - maxBounds.y), Math.Abs(box.center.z - maxBounds.z));
+
+            return box;
+        }
+     }
 }

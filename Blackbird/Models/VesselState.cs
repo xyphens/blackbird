@@ -41,6 +41,8 @@ namespace Blackbird.Models
         public double TotalMass { get; private set; }
         public double RemainingDeltaV { get; private set; }
         public double AvailableThrust { get; private set; }
+        public ThrustEnvelope AvailableRcsThrust = new ThrustEnvelope();
+        public ThrustEnvelope AvailableRcsTorque = new ThrustEnvelope();
         public double CurrentThrust { get; private set; }
         public double ThrustToWeight { get; private set; }
         public double VacuumSpecificImpulse { get; private set; }
@@ -57,8 +59,11 @@ namespace Blackbird.Models
         public double BodyGravParameter { get; private set; }
         public double BodySurfaceGravity { get; private set; }
         public double BodyRotationPeriod { get; private set; }
+        public Vector3d GravityForce { get; private set; }
 
         public PlanetScale.PlanetScaleEnum Scale { get; private set; }
+
+        private readonly bool UseRcsBalancer = false; // todo: not implemented
 
         public static VesselState FromVessel(Vessel vessel)
         {
@@ -69,8 +74,10 @@ namespace Blackbird.Models
             OrbitInfo orbitInfo = TrajectoryProvider.GetOrbitInfo(vessel);
             double surfaceSpeed = vessel.srfSpeed;
             double verticalSpeed = vessel.verticalSpeed;
-            double totalMass = GetDouble(vessel, "totalMass", double.NaN);
+            double totalMass = vessel.totalMass; // du: was GetDouble("totalMass") but no idea why?
             PropulsionInfo propulsion = GetPropulsionInfo(vessel, totalMass, body);
+
+            (ThrustEnvelope rcsThrust, ThrustEnvelope rcsTorque) = GetRCS(vessel, false);
 
             return new VesselState
             {
@@ -97,6 +104,9 @@ namespace Blackbird.Models
                 CurrentInclinationDeg = orbitInfo != null ? orbitInfo.InclinationDeg : double.NaN,
                 CurrentLanDeg = orbitInfo != null ? orbitInfo.LanDeg : double.NaN,
 
+                AvailableRcsThrust = rcsThrust,
+                AvailableRcsTorque = rcsTorque,
+
                 TotalMass = totalMass,
                 RemainingDeltaV = GetRemainingDeltaV(vessel),
                 AvailableThrust = propulsion.AvailableThrust,
@@ -106,6 +116,7 @@ namespace Blackbird.Models
                 AtmosphericSpecificImpulse = propulsion.AtmosphericSpecificImpulse,
                 CurrentStage = vessel.currentStage,
                 PoweredStages = GetPoweredStages(vessel),
+                GravityForce = FlightGlobals.getGeeForceAtPosition(vessel.CoMD), // there's a CoM and CoMD -> CoMD maps to a Vector3d so i'm using that
 
                 DynamicPressureKpa = GetDouble(vessel, "dynamicPressurekPa", double.NaN),
                 StaticPressureKpa = GetDouble(vessel, "staticPressurekPa", double.NaN),
@@ -272,6 +283,82 @@ namespace Blackbird.Models
             public double ThrustToWeight { get; set; }
             public double VacuumSpecificImpulse { get; set; }
             public double AtmosphericSpecificImpulse { get; set; }
+        }
+        // Re-calculates the remaining thrust and torque for our RCS
+        public static (ThrustEnvelope thrust, ThrustEnvelope torque) GetRCS(Vessel vessel, bool useBalancer)
+        {
+            ThrustEnvelope _thrust = new ThrustEnvelope();
+            ThrustEnvelope _torque = new ThrustEnvelope();
+
+            // RCS not enabled
+            if (!vessel.ActionGroups[KSPActionGroup.RCS]) return (_thrust, _torque);
+
+            //Guid vesselId = vessel == null ? Guid.Empty : vessel.id;
+            if (useBalancer)
+            {
+                // todo: not implemented
+            }
+
+            Vector3d movingCoM = vessel.CurrentCoM;
+            for (int i = 0; i < vessel.Parts.Count; i++)
+            {
+                Part part = vessel.Parts[i];
+                for (int m = 0; m < part.Modules.Count; m++)
+                {
+                    ModuleRCS rcs = part.Modules[m] as ModuleRCS;
+                    // not an RCS part
+                    if (rcs == null) continue;
+
+                    if (!part.ShieldedFromAirstream
+                        && rcs.rcsEnabled
+                        && rcs.isEnabled
+                        && !rcs.isJustForShow
+                        && !rcs.flameout && rcs.rcs_active)
+                    {
+                        Vector3 attitude = new Vector3(rcs.enablePitch ? 1 : 0, rcs.enableRoll ? 1 : 0, rcs.enableYaw ? 1 : 0);
+                        Vector3 translation = new Vector3(rcs.enableX ? 1 : 0f, rcs.enableZ ? 1 : 0, rcs.enableY ? 1 : 0);
+                        for (int j = 0; j < rcs.thrusterTransforms.Count; j++)
+                        {
+                            Transform t = rcs.thrusterTransforms[j];
+
+                            // remove inactive RCS part variants
+                            if (!t.gameObject.activeInHierarchy) continue;
+
+                            Vector3d thrusterPos = t.position - movingCoM;
+                            Vector3d thrustDir = rcs.useZaxis ? -t.forward : -t.up;
+                            float power = rcs.thrusterPower * rcs.thrustPercentage * 0.01f;
+
+                            if (FlightInputHandler.fetch.precisionMode)
+                            {
+                                if (rcs.useLever)
+                                {
+                                    // move the RCS thrust lever if enabled
+                                    float lever = rcs.GetLeverDistance(t, thrustDir, movingCoM);
+                                    if (lever > 1)
+                                    {
+                                        power = power / lever;
+                                    }
+                                }
+                                else
+                                {
+                                    power *= rcs.precisionFactor;
+                                }
+                            }
+
+                            // update thrust
+                            Vector3d thrusterLevel = thrustDir * power;
+                            _thrust.Add(Vector3.Scale(vessel.GetTransform().InverseTransformDirection(thrusterLevel), translation));
+
+                            // update torque
+                            Vector3d thrusterTorque = Vector3d.Cross(thrusterPos, thrusterLevel);
+                            _torque.Add(Vector3d.Scale(vessel.GetTransform().InverseTransformDirection(thrusterTorque), attitude));
+
+                        }
+                    }
+                }
+            }
+
+            return (_thrust, _torque);
         }
 
         // Measures active engine capability so guidance can scale throttle to the current vehicle.

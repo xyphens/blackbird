@@ -5,6 +5,7 @@ using Blackbird.Logging;
 using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Trajectory;
+using Blackbird.RCS;
 using UnityEngine;
 
 namespace Blackbird.Rendezvous
@@ -516,32 +517,34 @@ namespace Blackbird.Rendezvous
         // on for the maneuver. No main engine. Validated in-game (the offline harness has no actuation path).
         private void ApplyDockingControls(FlightCtrlState state, Vessel vessel)
         {
-            if (vessel.ReferenceTransform == null) return;
-            vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
+            
+            // DU TODO: wire the new docking logic
+            //if (vessel.ReferenceTransform == null) return;
+            //vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
 
-            // Hold the head-on heading so the chaser port faces the target port; no throttle in docking.
-            _attitude.DriveInertial(vessel, state, _command.ThrustDirection, 0.0);
-            state.mainThrottle = 0.0f;
-            AlignmentErrorDeg = AttitudeErrorDeg(vessel, _command.ThrustDirection);
-            Orienting = false;
-            Stabilizing = false;
-            _burningLastApply = false;
+            //// Hold the head-on heading so the chaser port faces the target port; no throttle in docking.
+            //_attitude.DriveInertial(vessel, state, _command.ThrustDirection, 0.0);
+            //state.mainThrottle = 0.0f;
+            //AlignmentErrorDeg = AttitudeErrorDeg(vessel, _command.ThrustDirection);
+            //Orienting = false;
+            //Stabilizing = false;
+            //_burningLastApply = false;
 
-            // Velocity error between the commanded approach velocity and our actual relative velocity.
-            Vector3d relVel = TrajectoryProvider.GetVelocity(vessel) - _lastTargetVelocityWorld;
-            Vector3d velError = _command.TranslationVelocityWorld - relVel;
+            //// Velocity error between the commanded approach velocity and our actual relative velocity.
+            //Vector3d relVel = TrajectoryProvider.GetVelocity(vessel) - _lastTargetVelocityWorld;
+            //Vector3d velError = _command.TranslationVelocityWorld - relVel;
 
-            // Map the world-frame error onto the control-transform axes. For the controlled part: up = the
-            // outward port/nose axis, right = starboard, forward = the belly ("down"). KSP FlightCtrlState
-            // translation: X = right, Y = dorsal/up, Z = forward (toward the nose/port).
-            Transform rt = vessel.ReferenceTransform;
-            double x = TranslateRightSign * Vector3d.Dot(velError, rt.right) * DockTranslationGain;
-            double y = TranslateUpSign * Vector3d.Dot(velError, -(Vector3d)rt.forward) * DockTranslationGain;
-            double z = TranslateFwdSign * Vector3d.Dot(velError, rt.up) * DockTranslationGain;
+            //// Map the world-frame error onto the control-transform axes. For the controlled part: up = the
+            //// outward port/nose axis, right = starboard, forward = the belly ("down"). KSP FlightCtrlState
+            //// translation: X = right, Y = dorsal/up, Z = forward (toward the nose/port).
+            //Transform rt = vessel.ReferenceTransform;
+            //double x = TranslateRightSign * Vector3d.Dot(velError, rt.right) * DockTranslationGain;
+            //double y = TranslateUpSign * Vector3d.Dot(velError, -(Vector3d)rt.forward) * DockTranslationGain;
+            //double z = TranslateFwdSign * Vector3d.Dot(velError, rt.up) * DockTranslationGain;
 
-            state.X = TranslationInput((float)x);
-            state.Y = TranslationInput((float)y);
-            state.Z = TranslationInput((float)z);
+            //state.X = TranslationInput((float)x);
+            //state.Y = TranslationInput((float)y);
+            //state.Z = TranslationInput((float)z);
         }
 
         // Clamps an RCS translation command to [-1, 1] and zeroes it inside the deadband (anti-chatter).

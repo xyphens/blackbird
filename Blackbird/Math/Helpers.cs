@@ -53,7 +53,49 @@ namespace Blackbird.Mathematics
         public static bool IsFinite(Vector3d vec) => IsFinite(vec.x) && IsFinite(vec.y) && IsFinite(vec.z); // overloaded
         public static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value); // overloaded
         public static bool IsNonZeroFinite(Vector3d v) => v != Vector3d.zero && IsFinite(v);
-
+        public static double MaxMagnitude(this Vector3d vector) => Math.Max(Math.Max(Math.Abs(vector.x), Math.Abs(vector.y)), Math.Abs(vector.z));
         public static double ApplyDeadband(double value, double deadband) => Math.Abs(value) < deadband ? 0.0 : value - Math.Sign(value) * deadband;
+        public class MovingAverage
+        {
+            private readonly double[] _store;
+            private readonly int _storeSize;
+            private int _nextIndex;
+
+            public double Value
+            {
+                get
+                {
+                    double tmp = 0;
+                    for (int i = 0; i < _store.Length; i++)
+                    {
+                        tmp += _store[i];
+                    }
+
+                    return tmp / _storeSize;
+                }
+                set
+                {
+                    _store[_nextIndex] = value;
+                    _nextIndex = (_nextIndex + 1) % _storeSize;
+                }
+            }
+
+            public MovingAverage(int size = 10, double startingValue = 0)
+            {
+                _storeSize = size;
+                _store = new double[size];
+                Force(startingValue);
+            }
+
+            private void Force(double newValue)
+            {
+                for (int i = 0; i < _storeSize; i++)
+                {
+                    _store[i] = newValue;
+                }
+            }
+
+            public static implicit operator double(MovingAverage v) => v.Value;
+        }
     }
 }
