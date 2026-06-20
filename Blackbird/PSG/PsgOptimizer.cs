@@ -88,6 +88,8 @@ namespace Blackbird.Psg
                 "PSG");
         }
 
+        // uses AlgLib's MinNLC (Minimization with Non-Linear Constraints) library to resolve
+        // a thrust vector using our current momentum, angle and weight
         private PsgOptimizationResult RunPass(
             PsgProblem problem,
             PsgSolution warmStart,

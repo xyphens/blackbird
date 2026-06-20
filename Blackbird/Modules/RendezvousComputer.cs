@@ -98,8 +98,7 @@ namespace Blackbird.Modules
                 && (_handler.Phase == RendezvousPhase.Idle || _handler.Phase == RendezvousPhase.Coast))
             {
                 InterceptSolution plan = _handler.InterceptPlan;
-                GUILayout.Label($"Plan: ΔV {plan.DeltaVMagnitude:F1} m/s  ->  CA {plan.PredictedClosestApproach:F0} m  "
-                              + $"(arc {FormatTime(plan.TimeOfFlight)})");
+                GUILayout.Label($"Plan: ΔV {plan.DeltaVMagnitude:F1} m/s  for {plan.PredictedClosestApproach:F0} m  encounter (arriving in {FormatTime(plan.TimeOfFlight)})";
 
                 // A single-rev intercept across a big phase gap is legitimately huge (can even escape).
                 // Warn before the user commits — the cheap move from a close flyby is Match Velocity.
@@ -192,35 +191,34 @@ namespace Blackbird.Modules
         private string GetInstruction()
         {
             if (!_handler.Engaged)
-                return "Enable the autopilot above to begin.";
+                return "Autopilot not enabled";
 
             switch (_handler.Phase)
             {
                 case RendezvousPhase.Idle:
-                    return "Ready. Execute Intercept any time — the plan re-solves from your "
-                         + "current position, so there is no window to miss.";
+                    return "Ready for execution.";
 
                 case RendezvousPhase.Executing:
                     if (_handler.Stabilizing)
-                        return $"Aligned ({_handler.AlignmentErrorDeg:F1} deg) - settling before burn...";
+                        return $"Stabilizing alignment: {_handler.AlignmentErrorDeg:F1}° error";
                     if (_handler.Orienting)
-                        return $"Orienting to burn attitude ({_handler.AlignmentErrorDeg:F0} deg off)...";
+                        return $"Orienting to burn attitude ({_handler.AlignmentErrorDeg:F0}° remaining)...";
                     return _handler.HasCommand ? _handler.Command.Status : "Executing...";
 
                 case RendezvousPhase.Coast:
                     if (_handler.Stage == RendezvousStage.MatchVelocity)
                         return "Intercept done. Coasting toward closest approach "
-                             + $"(in {FormatTime(_handler.LiveTimeToClosestApproachSeconds)}). "
+                             + $"in {FormatTime(_handler.LiveTimeToClosestApproachSeconds)}. "
                              + "Execute Match Velocity as you near it.";
                     if (_handler.Stage == RendezvousStage.CloseApproach)
-                        return "Matched. Execute Close Approach to close in to ~100 m and hand back control.";
+                        return "Velocities matched.";
                     return $"Stage done. Execute {StageName(_handler.Stage)} when ready.";
 
                 case RendezvousPhase.Complete:
                     return "Rendezvous complete - control returned to you.";
 
                 case RendezvousPhase.Aborted:
-                    return "Aborted. Reset to start over.";
+                    return "Execution aborted.";
 
                 default:
                     return string.Empty;

@@ -38,7 +38,7 @@ namespace Blackbird.Rendezvous
         // Live closest-approach monitor: recomputed off the draw path on a throttle so it can be watched
         // collapse during/after a burn, independent of any plan. Searches out to the synodic period
         // (capped) so the time-to-CA is real and decreases, instead of pinning at one orbital period.
-        private const double CaRecomputeIntervalSeconds = 0.5;
+        private const double CaRecomputeIntervalSeconds = 0.5; // internal FPS
         private const int CaSampleCount = 240;
         private const double CaMaxHorizonSeconds = 6.0 * 3600.0;   // cap the synodic search at 6 hours
         private double _lastCaComputeUt = double.NegativeInfinity;
