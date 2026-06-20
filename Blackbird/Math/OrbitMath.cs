@@ -1,7 +1,9 @@
-﻿using System;
+﻿using Blackbird.Models;
 using Blackbird.Trajectory;
+using System;
 using UnityEngine;
 using static SpaceObjectCollider;
+using static Vect;
 
 namespace Blackbird.Mathematics
 {
@@ -30,8 +32,54 @@ namespace Blackbird.Mathematics
         }
     }
 
+    // mass length velocity
+    public readonly struct  MLV 
+    {
+        public readonly double M;
+        public readonly double L;
+        public readonly double V;
+
+        public MLV(double m, double l, double v)
+        {
+            M = m;
+            L = l; 
+            V = v; 
+        }
+
+        public double TimeScale => L / V;
+        public double Accel => V / TimeScale;
+        public double Force => M * Accel;
+        public double MDot => M / TimeScale;
+        public double Area => L * L;
+        public double Volume => Area * L;
+        public double Density => M / Volume;
+        public double Pressure => Force / Area;
+
+        public static MLV Init(double mu, double r0, double m0 = 1.0)
+        {
+            double mS = m0;
+            double lS = r0;
+            double vS = Math.Sqrt(mu / lS);
+            return new MLV(mS, lS, vS);
+        }
+
+        public MLV Convert(MLV other)
+        {
+            return new MLV(
+                other.M / M,
+                other.L / L,
+                other.V / V
+               );
+        }
+    }
+
     internal class OrbitMath
     {
+        // Diagnostic log for the Hohmann optimizer (HOHMANN-OPT lines in rendezvous.log): per-window
+        // dt1/tt/dv1/dv2 + the chosen transfer, so a bad plan can be traced to window selection vs the solve.
+        private static readonly Blackbird.Logging.BlackbirdLog HohmannLog =
+            new Blackbird.Logging.BlackbirdLog(Blackbird.Logging.LogContext.Rendezvous);
+
         // Computes surface gravity from the body's gravitational parameter and radius.
         public static double GetSurfaceGravity(CelestialBody body)
         {
@@ -132,6 +180,11 @@ namespace Blackbird.Mathematics
             double sign = Math.Sign(Vector3d.Dot(cross, orbitNormal));
 
             return MathHelpers.NormalizeDegrees(angle * sign);
+        }
+
+        public static double GetRelativeInclination(Vessel vessel, Vessel target) // fixme: decide if GetOrbitNormal is better
+        {
+            return Math.Abs(Vector3d.Angle(TrajectoryProvider.GetKspOrbitNormal(vessel), TrajectoryProvider.GetKspOrbitNormal(target)));
         }
 
         // Estimates the two-impulse Hohmann transfer dV between coplanar circular altitudes.
@@ -399,6 +452,223 @@ namespace Blackbird.Mathematics
             return mtx * vector;
         }
 
+        public static (double ut, double distance) NextClosestApproach(Orbit vessel, Orbit target)
+        {
+            double ut = Planetarium.GetUniversalTime();
+
+            double caTime = ut;
+            double caDistance = double.MaxValue;
+            
+            // track over parabolic orbit or use the vessel's current orbital period if its circular
+            double arcInterval = vessel.eccentricity > 1 ? 100 / vessel.meanMotion : vessel.period;
+            double _minTime = ut;
+            double _maxTime = ut + arcInterval;
+
+            int divisions = 20; // break orbit into slices for search
+            for (int i = 0; i < 8; i++)
+            {
+                double dt = (_maxTime - _minTime) / divisions;
+                for (int j = 0; j < divisions; j++)
+                {
+                    double t = _minTime + j * dt;
+                    double distance = GetSeparation(vessel, target, t);
+                    if (distance < caDistance)
+                    {
+                        caDistance = distance;
+                        caTime = t;
+                    }
+                }
+
+                _minTime = MathHelpers.Clamp(caTime - dt, ut, ut + arcInterval);
+                _maxTime = MathHelpers.Clamp(caTime + dt, ut, ut + arcInterval);
+            }
+
+            return (caTime, caDistance);
+        }
+
+        // A Hohmann transfer is two impulses: dv1 at ut1 injects onto the transfer ellipse; dv2 at ut2
+        // (= ut1 + transfer time) circularizes/matches at the target. With Capture = true the optimizer
+        // minimizes |dv1| + |dv2| (full rendezvous); dv2 is what our Match Velocity stage executes.
+        //
+        // Vessel overload: extracts state via RightHandVectorsAtUt, so the returned ΔV is in THAT frame --
+        // convert to world before applying. To stay in your own frame, use the state-vector overload below.
+        public static (Vector3d dv1, double ut1, Vector3d dv2, double ut2) DeltaVForHohmannTransfer(Vessel vessel, Vessel target, bool coplanar = false)
+        {
+            double ut = Planetarium.GetUniversalTime();
+            (Vector3d r1, Vector3d v1) = RightHandVectorsAtUt(vessel.orbit, ut);
+            (Vector3d r2, Vector3d v2) = RightHandVectorsAtUt(target.orbit, ut);
+            double mu = vessel.orbit.referenceBody.gravParameter;
+            return DeltaVForHohmannTransfer(ut, r1, v1, r2, v2, mu, coplanar);
+        }
+
+        // State-vector core (frame-agnostic): _r1/_v1 = chaser body-relative position + inertial velocity,
+        // _r2/_v2 = target, all in ONE consistent inertial frame. Returns (dv1, ut1, dv2, ut2) in that SAME
+        // frame, with ABSOLUTE UTs. Feed KSP-world vectors and the ΔV comes back KSP-world (no .xzy needed).
+        public static (Vector3d dv1, double ut1, Vector3d dv2, double ut2) DeltaVForHohmannTransfer(
+            double ut, Vector3d _r1, Vector3d _v1, Vector3d _r2, Vector3d _v2, double mu, bool coplanar = false)
+        {
+
+            // Canonical-units scale (mu -> 1) for optimizer conditioning; characteristic length = geometric
+            // mean of the two radii.
+            MLV scale = MLV.Init(mu, Math.Sqrt(_r1.magnitude * _r2.magnitude));
+
+            // Real synodic period (seconds): the recurrence window for the relative geometry. Drives the
+            // departure march; divided by TimeScale it is the canonical-unit step cap for the optimizer.
+            double synodicPeriodReal = SynodicPeriod(OrbitalPeriod(_r1, _v1, mu), OrbitalPeriod(_r2, _v2, mu));
+
+            // Optional coplanar projection: rotate the target into the chaser's plane (2D transfer). OFF by
+            // default (matches MJ's rendezvous path, which lets Lambert handle the 3D geometry). NOTE: it uses
+            // QuaternionD, a Unity NATIVE call that crashes offline (the harness has no engine), so the offline
+            // path must keep coplanar = false. Constant across iterations, so applied once here.
+            Vector3d tr2 = _r2, tv2 = _v2;
+            if (coplanar)
+            {
+                Vector3d hhat1 = Vector3d.Cross(_r1, _v1).normalized;
+                Vector3d hhat2 = Vector3d.Cross(_r2, _v2).normalized;
+                QuaternionD coPlanar = QuaternionD.FromToRotation(hhat2, hhat1);
+                tr2 = coPlanar * _r2;
+                tv2 = coPlanar * _v2;
+            }
+
+            Vector3d r1 = _r1 / scale.L;
+            Vector3d v1 = _v1 / scale.V;
+            Vector3d r2 = tr2 / scale.L;
+            Vector3d v2 = tv2 / scale.V;
+
+            var optArgs = new AlgLibArgs { R1 = r1, V1 = v1, R2 = r2, V2 = v2, Mu = 1.0, Capture = true };
+
+            // Analytic Hohmann transfer-time guess (canonical units).
+            (_, _, double ttGuess, _) = GetHohmannXferParams(1.0, r1, r2);
+
+            // dt and tt unconstrained; offset locked to 0 (matches MJ's rendezvous path). +/-Inf is
+            // unit-independent so the bounds need no scaling.
+            double[] lBnd = { double.NegativeInfinity, double.NegativeInfinity, 0.0 };
+            double[] uBnd = { double.PositiveInfinity, double.PositiveInfinity, 0.0 };
+
+            // For (near-)equal periods (co-altitude catch-up) the synodic period is infinite, which would
+            // poison the step cap and the departure march. Fall back to the longer orbital period as the
+            // search window. stpMax = 0 means "no limit" to alglib, so a non-finite window degrades safely.
+            double searchPeriod = MathHelpers.IsFinite(synodicPeriodReal)
+                ? synodicPeriodReal
+                : Math.Max(OrbitalPeriod(_r1, _v1, mu), OrbitalPeriod(_r2, _v2, mu));
+            double stpMax = MathHelpers.IsFinite(searchPeriod) ? (searchPeriod / scale.TimeScale) / 2.0 : 0.0;
+
+            const int MAX_GLOBAL_ITERATIONS = 50;
+            const double DIFF = 1e-6;
+            const double EPS = 1e-9;
+            const int MAX_ITERATIONS = 1000;
+
+            // Multi-start: march the departure guess forward by 0.1 synodic and optimize from each. We do NOT
+            // take the first feasible window ("force an intercept departing ~now" = high-ΔV at a bad phase, the
+            // old 280 m/s CA-worsening plans). But we also don't take the strict global-ΔV minimum, which chases
+            // marginal savings dozens of hours into the future (saw a 37 hr coast to save 10 m/s). Instead we
+            // collect every future-departure candidate, then pick the EARLIEST window whose total ΔV is within
+            // WINDOW_TOL of the global best -- cheapest practical departure. dtGuess stays in REAL seconds.
+            const double WINDOW_TOL = 0.20;   // accept an earlier window if it costs <=20% more than the global best
+            double dtGuess = 0.0;
+
+            double[] candTotal = new double[MAX_GLOBAL_ITERATIONS];
+            Vector3d[] candDv1 = new Vector3d[MAX_GLOBAL_ITERATIONS];
+            Vector3d[] candDv2 = new Vector3d[MAX_GLOBAL_ITERATIONS];
+            double[] candDt1List = new double[MAX_GLOBAL_ITERATIONS];
+            double[] candDt2List = new double[MAX_GLOBAL_ITERATIONS];
+            int candCount = 0;
+
+            for (int i = 0; i < MAX_GLOBAL_ITERATIONS; i++)
+            {
+                double[] x = { dtGuess / scale.TimeScale, ttGuess, 0.0 };
+
+                alglib.minbleiccreatef(x, DIFF, out alglib.minbleicstate state);
+                alglib.minbleicsetbc(state, lBnd, uBnd);
+                alglib.minbleicsetcond(state, 0.0, 0.0, EPS, MAX_ITERATIONS);
+                alglib.minbleicsetstpmax(state, stpMax);
+
+                alglib.minbleicoptimize(state, LambertSolver.NlpFunction, null, optArgs);
+                alglib.minbleicresults(state, out x, out alglib.minbleicreport rep);
+
+                if (rep.terminationtype < 0)
+                    throw new Exception($"Hohmann transfer solver terminated abnormally: {rep.terminationtype}");
+
+                (Vector3d dv1, Vector3d dv2) = LambertSolver.LambertHohmann(x[0], x[1], x[2], optArgs);
+                double total = dv1.magnitude + dv2.magnitude;          // scaled; fine for comparison
+                double candDt1 = x[0] * scale.TimeScale;
+
+                HohmannLog.Write("HOHMANN-OPT", "window " + i,
+                    "dtGuess=" + dtGuess.ToString("F0") + "s",
+                    "dt1=" + candDt1.ToString("F0") + "s",
+                    "tt=" + (x[1] * scale.TimeScale).ToString("F0") + "s",
+                    "dv1=" + (dv1.magnitude * scale.V).ToString("F2"),
+                    "dv2=" + (dv2.magnitude * scale.V).ToString("F2"));
+
+                if (candDt1 > 0.0)
+                {
+                    candTotal[candCount] = total;
+                    candDv1[candCount] = dv1 * scale.V;
+                    candDv2[candCount] = dv2 * scale.V;
+                    candDt1List[candCount] = candDt1;
+                    candDt2List[candCount] = (x[0] + x[1]) * scale.TimeScale;
+                    candCount++;
+                }
+
+                dtGuess += searchPeriod * 0.10;
+            }
+
+            if (candCount > 0)
+            {
+                double globalBest = double.PositiveInfinity;
+                for (int i = 0; i < candCount; i++)
+                    if (candTotal[i] < globalBest) globalBest = candTotal[i];
+
+                // Earliest window within tolerance of the global best (candidates were generated in dt1 order).
+                double threshold = globalBest * (1.0 + WINDOW_TOL);
+                int pick = 0;
+                double pickDt1 = double.PositiveInfinity;
+                for (int i = 0; i < candCount; i++)
+                {
+                    if (candTotal[i] <= threshold && candDt1List[i] < pickDt1)
+                    {
+                        pick = i;
+                        pickDt1 = candDt1List[i];
+                    }
+                }
+
+                Vector3d bestDv1 = candDv1[pick];
+                Vector3d bestDv2 = candDv2[pick];
+                double bestDt1 = candDt1List[pick];
+                double bestDt2 = candDt2List[pick];
+
+                HohmannLog.Write("HOHMANN-OPT", "CHOSEN",
+                    "dt1=" + bestDt1.ToString("F0") + "s",
+                    "dv1=" + bestDv1.magnitude.ToString("F2"),
+                    "dv2=" + bestDv2.magnitude.ToString("F2"),
+                    "total=" + (bestDv1.magnitude + bestDv2.magnitude).ToString("F2"),
+                    "globalBest=" + (globalBest * scale.V).ToString("F2"));
+                return (bestDv1, ut + bestDt1, bestDv2, ut + bestDt2);
+            }
+
+            // No future-departure solution within the search horizon -- signal "no plan" (ut1 = -inf).
+            HohmannLog.Write("HOHMANN-OPT", "NO FEASIBLE FUTURE-DEPARTURE SOLUTION");
+            return (Vector3d.zero, double.NegativeInfinity, Vector3d.zero, double.NegativeInfinity);
+        }
+
+        private static (double dv1, double dv2, double tt, double alpha) GetHohmannXferParams(double mu, Vector3d r1, Vector3d r2)
+        {
+            const double C = 0.35355339059327373;
+            double r1M = r1.magnitude;
+            double r2M = r2.magnitude;
+            double rsum = r1M + r2M;
+            double c1 = Math.Sqrt(2.0 * r2M / rsum);
+            double c2 = Math.Sqrt(2.0 * r1M / rsum);
+            double dv1 = Math.Sqrt(mu / r1M) * (c1 - 1);
+            double dv2 = Math.Sqrt(mu / r2M) * (1 - c2);
+            double tt = Math.PI * Math.Sqrt(rsum * rsum * rsum / (8 * mu));
+            double c3 = r1M / r2M + 1;
+            double alpha = Math.PI * (1 - C * Math.Sqrt(c3 * c3 * c3));
+            return (dv1, dv2, tt, alpha);
+        }
+
+        public static double GetSeparation(Orbit vessel, Orbit target, double ut) => (WorldPositionAtUt(vessel, ut) - WorldPositionAtUt(target, ut)).magnitude;
+
         public static Vector3d PlaneToBodyCenteredInertial(Vector3d pos, Vector3d vector)
         {
             double lat = LatFromBCI(pos);
@@ -424,6 +694,25 @@ namespace Blackbird.Mathematics
         public static Orbit PerturbedOrbit(Orbit o, double ut, Vector3d dV) => OrbitFromVectors(WorldPositionAtUt(o, ut), o.getOrbitalVelocityAtUT(ut).xzy + dV, o.referenceBody, ut);
 
         private static Vector3d WorldPositionAtUt(Orbit o, double ut) => o.referenceBody.position + o.getRelativePositionAtUT(ut).xzy;
+
+        // Time for the relative phase of two orbits to realign; infinite when the periods are equal.
+        public static double SynodicPeriod(double periodA, double periodB)
+        {
+            double diff = Math.Abs(1.0 / periodA - 1.0 / periodB);
+            return diff < 1e-12 ? double.PositiveInfinity : 1.0 / diff;
+        }
+
+        public static double OrbitalPeriod(Vector3d r, Vector3d v, double mu)
+        {
+            double rmag = r.magnitude;
+            if (rmag <= 0.0 || mu <= 0.0) return double.NaN;
+
+            double energy = 0.5 * v.sqrMagnitude - mu / rmag;
+            if (energy >= 0.0) return double.NaN;
+
+            double a = -mu / (2.0 * energy);
+            return 2.0 * Math.PI * Math.Sqrt(a * a * a / mu);
+        }
 
         public static Orbit OrbitFromVectors(Vector3d position, Vector3d velocity, CelestialBody body, double ut)
         {

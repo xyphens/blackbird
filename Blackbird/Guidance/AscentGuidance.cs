@@ -45,7 +45,7 @@ namespace Blackbird.Guidance
 
             PoweredGuidanceCommand poweredCommand = useClassic
                 ? _classicGuidance.GetCommand(vesselState, ascentProfile, profilePitch, profileHeading, targetInclinationDeg)
-                : _poweredGuidance.GetCommand(vesselState, plan, ascentProfile, profilePitch, profileHeading, profileThrottle);
+                : _poweredGuidance.GetCommand(vesselState, plan, ascentProfile, profilePitch, profileHeading, profileThrottle); // fixme: does our guidance method prevent launching into a target inclination?
             string guidancePhase = poweredCommand != null ? poweredCommand.Status : "Unavailable";
 
             double currentHeading = GetCurrentHeadingDeg(vessel);

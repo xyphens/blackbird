@@ -26,15 +26,15 @@ namespace Blackbird.Rendezvous
             if (mu <= 0.0 || coarseSamples < 2 || maxHorizonSeconds <= 0.0)
                 return new ApproachResult { Found = false };
 
-            double periodA = OrbitalPeriod(activePosition, activeVelocity, mu);
-            double periodT = OrbitalPeriod(targetPosition, targetVelocity, mu);
+            double periodA = OrbitMath.OrbitalPeriod(activePosition, activeVelocity, mu);
+            double periodT = OrbitMath.OrbitalPeriod(targetPosition, targetVelocity, mu);
 
             // Horizon: at least the longer period (to catch a near pass), out to the synodic period
             // (the natural recurrence of close approaches), but never beyond maxHorizon.
             double horizon = maxHorizonSeconds;
             if (MathHelpers.IsFinite(periodA) && MathHelpers.IsFinite(periodT) && periodA > 0.0 && periodT > 0.0)
             {
-                double synodic = SynodicPeriod(periodA, periodT);
+                double synodic = OrbitMath.SynodicPeriod(periodA, periodT);
                 double want = MathHelpers.IsFinite(synodic) ? synodic : maxHorizonSeconds;
                 horizon = Math.Min(maxHorizonSeconds, Math.Max(want, Math.Max(periodA, periodT)));
             }
@@ -76,25 +76,6 @@ namespace Blackbird.Rendezvous
                 double d = (ra - rt).magnitude;
                 if (d < minDistance) { minDistance = d; timeAtMin = t; }
             }
-        }
-
-        // Time for the relative phase of two orbits to realign; infinite when the periods are equal.
-        private static double SynodicPeriod(double periodA, double periodB)
-        {
-            double diff = Math.Abs(1.0 / periodA - 1.0 / periodB);
-            return diff < 1e-12 ? double.PositiveInfinity : 1.0 / diff;
-        }
-
-        private static double OrbitalPeriod(Vector3d r, Vector3d v, double mu)
-        {
-            double rmag = r.magnitude;
-            if (rmag <= 0.0 || mu <= 0.0) return double.NaN;
-
-            double energy = 0.5 * v.sqrMagnitude - mu / rmag;
-            if (energy >= 0.0) return double.NaN;
-
-            double a = -mu / (2.0 * energy);
-            return 2.0 * Math.PI * Math.Sqrt(a * a * a / mu);
         }
     }
 }

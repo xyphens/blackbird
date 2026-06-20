@@ -65,7 +65,6 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Compatibility\Principia.cs" />
     <Compile Include="Docking\DockingAutopilot.cs" />
     <Compile Include="Docking\DockingHandler.cs" />
     <Compile Include="Docking\DockingSchedule.cs" />
@@ -141,8 +140,6 @@
     <Compile Include="PSG\PsgTarget.cs" />
     <Compile Include="PSG\PsgTerminal.cs" />
     <Compile Include="Trajectory\ITrajectoryProvider.cs" />
-    <Compile Include="Trajectory\PrincipiaTrajectoryProvider.cs" />
-    <Compile Include="Trajectory\StockTrajectoryProvider.cs" />
     <Compile Include="Trajectory\TrajectoryProvider.cs" />
     <Compile Include="ThirdParty\alglib\*.cs" />
   </ItemGroup>

@@ -13,6 +13,16 @@ namespace Blackbird.Mathematics
         public Vector3d V2;   // velocity at r2 (arrival)
     }
 
+    public struct AlgLibArgs
+    {
+        public Vector3d R1;
+        public Vector3d V1;
+        public Vector3d R2;
+        public Vector3d V2;
+        public double Mu;
+        public bool Capture;
+    }
+
     // Universal-variable, single-revolution Lambert solver (Vallado, Algorithm 58). Given two
     // body-relative position vectors, a time of flight and mu, it finds the connecting conic via
     // bisection on the universal variable psi — so the iteration count (and thus runtime) is
@@ -21,6 +31,45 @@ namespace Blackbird.Mathematics
     public static class LambertSolver
     {
         private const int MaxIterations = 80;
+        public static void NlpFunction(double[] x, ref double func, object obj)
+        {
+            var a = (AlgLibArgs)obj;
+            double dt = x[0], tt = x[1], offset = x[2];
+
+            if (tt <= 0) { func = 1e300; return; }
+
+            // chaser propagated to the BURN point (dt from now)
+            TwoBody.Propagate(a.R1, a.V1, a.Mu, dt, out Vector3d rBurn, out Vector3d vBurn);
+            // target propagated to the ARRIVAL point (dt + tt + offset from now)
+            TwoBody.Propagate(a.R2, a.V2, a.Mu, dt + tt + offset, out Vector3d rArr, out Vector3d vArr);
+
+            LambertResult lam = Solve(
+                rBurn, rArr, tt, a.Mu,
+                prograde: true,
+                referenceNormal: Vector3d.Cross(rBurn, vBurn));   // == MJ's V3.Cross(rburn, vburn)
+            if (!lam.Success) { func = 1e300; return; }            // ours can fail; Izzo basically doesn't — guard it
+
+            Vector3d dv1 = lam.V1 - vBurn;   // departure burn   (MJ: vi - vburn)
+            Vector3d dv2 = vArr - lam.V2;    // arrival burn      (MJ: vf2 - vf)
+
+            func = a.Capture ? dv1.magnitude + dv2.magnitude : dv1.magnitude;
+        }
+        public static (Vector3d dv1, Vector3d dv2) LambertHohmann(double dt, double tt, double offset, AlgLibArgs args)
+        {
+            // chaser -> burn point (dt from now);  target -> arrival point (dt + tt + offset from now)
+            TwoBody.Propagate(args.R1, args.V1, args.Mu, dt, out Vector3d rBurn, out Vector3d vBurn);
+            TwoBody.Propagate(args.R2, args.V2, args.Mu, dt + tt + offset, out Vector3d rArr, out Vector3d vArr);
+
+            LambertResult lam = LambertSolver.Solve(
+                rBurn, rArr, tt, args.Mu,
+                prograde: true,
+                referenceNormal: Vector3d.Cross(rBurn, vBurn));
+
+            if (!lam.Success)
+                return (new Vector3d(1e150, 0, 0), new Vector3d(1e150, 0, 0)); // poison: makes the objective blow up
+
+            return (lam.V1 - vBurn, vArr - lam.V2);
+        }
 
         // Solves the transfer r1 -> r2 in time tof about a body of gravitational parameter mu.
         //   prograde         : traverse in the direction of referenceNormal (counterclockwise about it).

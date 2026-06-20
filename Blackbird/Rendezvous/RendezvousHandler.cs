@@ -33,7 +33,6 @@ namespace Blackbird.Rendezvous
         // DU: disabled for now
         //private bool _rcsForcedOn;        // are we currently holding RCS on for a maneuver?
         //private bool _rcsPriorState;      // the player's RCS setting captured when we took control
-        private bool _principiaProbed;    // ran the one-shot Principia compatibility probe this engage?
 
         // Live closest-approach monitor: recomputed off the draw path on a throttle so it can be watched
         // collapse during/after a burn, independent of any plan. Searches out to the synodic period
@@ -121,7 +120,7 @@ namespace Blackbird.Rendezvous
 
         // Master enable. Disengaging also drops attitude control so the player regains the craft.
         public void Engage() { _engaged = true; }
-        public void Disengage() { _engaged = false; _attitude.Reset(); _principiaProbed = false; }
+        public void Disengage() { _engaged = false; _attitude.Reset(); }
 
         // User gates (pass-through to the executor). Executing a stage cancels any warp.
         public bool Execute() { StopWarp(); return _executor.Execute(); }
@@ -157,6 +156,17 @@ namespace Blackbird.Rendezvous
             get { return _executor.RendezMaxApproachSpeedMetersPerSecond; }
             set { _executor.RendezMaxApproachSpeedMetersPerSecond = value; }
         }
+
+        // Secondary planner toggle: false = original single-rev intercept; true = MJ-derived Hohmann transfer
+        // (experimental). Affects both the plan preview and intercept execution.
+        public bool UseHohmannPlanner
+        {
+            get { return _executor.UseHohmannPlanner; }
+            set { _executor.UseHohmannPlanner = value; }
+        }
+
+        // Invalidate the cached plan preview so it recomputes once (planner switched / manual refresh).
+        public void RequestPlanRefresh() => _executor.RequestPlanRefresh();
         public const double CloseApproachGainDefault = TerminalRendezvousExecutor.RendezDistanceApproachGainDefault;
         public const double CloseApproachMaxSpeedDefault = TerminalRendezvousExecutor.RendezMaxApproachSpeedDefaultMetersPerSecond;
         public void Abort() { _executor.Abort(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
@@ -175,6 +185,57 @@ namespace Blackbird.Rendezvous
             _warpTargetUt = Planetarium.GetUniversalTime() + timeToCa;
             Warping = true;
         }
+
+        // Warp to a planned transfer IGNITION UT (the Hohmann picks a future departure, not the live CA).
+        // Stops a short lead before ignition so the craft can orient/settle; the executor's coast-to-ignition
+        // gate then releases the burn at ignition. Uses the same safe-warp ladder + auto-stop in Update.
+        public void WarpToIgnition(double ignitionUt)
+        {
+            if (_executor.Phase == RendezvousPhase.Executing && !CoastingToIgnition) return;
+            double now = Planetarium.GetUniversalTime();
+            double dt = ignitionUt - now;
+            double lead = ComputeIgnitionWarpLeadSeconds();
+            if (!MathHelpers.IsFinite(dt) || dt <= lead) return;
+
+            _warpLeadSeconds = lead;
+            _warpTargetUt = ignitionUt;
+            Warping = true;
+        }
+
+        // Lead to stop the warp short of the transfer ignition: the estimated slew to the burn attitude
+        // (+settle/margin) PLUS half the burn duration, so the craft is oriented and the centered burn can
+        // straddle the planned ignition. Clamped like the other warp leads.
+        private double ComputeIgnitionWarpLeadSeconds()
+        {
+            Vessel active = FlightGlobals.ActiveVessel;
+            if (active == null || !_executor.HasInterceptPlan) return WarpLeadMinSeconds;
+            double padding = OrientPaddingSeconds + StabilizeDwellSeconds;
+            double slew = AttitudeControl.EstimateSlewTimeSeconds(active, _executor.InterceptPlan.DeltaV, padding);
+            double halfBurn = HalfBurnSeconds(active, _executor.InterceptPlan.DeltaVMagnitude);
+            return MathHelpers.Clamp(slew + halfBurn, WarpLeadMinSeconds, WarpLeadMaxSeconds);
+        }
+
+        // Half the intercept burn duration = 0.5 * ΔV / (thrust/mass). 0 if thrust/mass is unavailable.
+        private static double HalfBurnSeconds(Vessel active, double dvMagnitude)
+        {
+            VesselState vs = VesselState.FromVessel(active);
+            if (vs == null || !MathHelpers.IsFinite(vs.AvailableThrust) || vs.AvailableThrust <= 0.0
+                || !MathHelpers.IsFinite(vs.TotalMass) || vs.TotalMass <= 0.0) return 0.0;
+            double accel = vs.AvailableThrust / vs.TotalMass;
+            return accel > 0.0 ? 0.5 * dvMagnitude / accel : 0.0;
+        }
+
+        // The Hohmann's frozen future-departure UT once a burn is armed (for the warp-to-ignition button).
+        public double PlannedIgnitionUt => _executor.PlannedIgnitionUt;
+
+        // True while the Hohmann intercept is armed and HOLDING for its future ignition (coast-to-ignition) --
+        // it is Executing but NOT yet burning, so warping toward the ignition window is allowed in this state.
+        public bool CoastingToIgnition =>
+            _executor.Phase == RendezvousPhase.Executing
+            && _executor.Stage == RendezvousStage.Intercept
+            && _executor.UseHohmannPlanner
+            && _executor.BurnArmed
+            && Planetarium.GetUniversalTime() < _executor.PlannedIgnitionUt;
 
         // The lead time to stop the warp short of the predicted closest approach. Stages that fire on
         // arrival need only a small fixed lead; Match Velocity must be pointed retrograde-to-relative
@@ -234,21 +295,16 @@ namespace Blackbird.Rendezvous
             if (Warping)
             {
                 double secondsToWarpTarget = _warpTargetUt - now;
-                if (_executor.Phase == RendezvousPhase.Executing || secondsToWarpTarget <= _warpLeadSeconds)
+                // Stop on an actual burn or when we reach the lead. The Hohmann coast-to-ignition is Executing
+                // but NOT burning, so let the warp continue through it toward the ignition window.
+                bool burning = _executor.Phase == RendezvousPhase.Executing && !CoastingToIgnition;
+                if (burning || secondsToWarpTarget <= _warpLeadSeconds)
                     StopWarp();
                 else
                     WarpHelper.SetSafeWarpRate(secondsToWarpTarget);
             }
 
             if (!_engaged) return;
-
-            // One-shot Principia compatibility probe (logs to compatibility.log) the first engaged tick we
-            // have a target — exploratory, for reviewing whether the n-body CA API is reachable. Never throws.
-            if (!_principiaProbed && target != null)
-            {
-                Compatibility.Principia.Probe(active, target);
-                _principiaProbed = true;
-            }
 
             VesselRendezvousWorld world = new VesselRendezvousWorld(active, target);
 
@@ -267,6 +323,12 @@ namespace Blackbird.Rendezvous
                     double padding = OrientPaddingSeconds + StabilizeDwellSeconds;
                     _executor.IgnitionLeadSeconds = AttitudeControl.EstimateSlewTimeSeconds(
                         active, _executor.InterceptPlan.DeltaV, padding);
+
+                    // Feed ship accel so the executor can center the burn (ignite half the burn duration early).
+                    VesselState vs = VesselState.FromVessel(active);
+                    if (vs != null && MathHelpers.IsFinite(vs.AvailableThrust) && vs.AvailableThrust > 0.0
+                        && MathHelpers.IsFinite(vs.TotalMass) && vs.TotalMass > 0.0)
+                        _executor.BurnAccelMetersPerSecondSquared = vs.AvailableThrust / vs.TotalMass;
                 }
             }
 

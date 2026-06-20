@@ -98,16 +98,29 @@ namespace Blackbird.Modules
                 && (_handler.Phase == RendezvousPhase.Idle || _handler.Phase == RendezvousPhase.Coast))
             {
                 InterceptSolution plan = _handler.InterceptPlan;
-                GUILayout.Label($"Plan: ΔV {plan.DeltaVMagnitude:F1} m/s  for {plan.PredictedClosestApproach:F0} m  encounter (arriving in {FormatTime(plan.TimeOfFlight)})";
+                GUILayout.Label($"Plan: ΔV {plan.DeltaVMagnitude:F1} m/s  for {plan.PredictedClosestApproach:F0} m  encounter (arriving in {FormatTime(plan.TimeOfFlight)})");
 
                 // A single-rev intercept across a big phase gap is legitimately huge (can even escape).
                 // Warn before the user commits — the cheap move from a close flyby is Match Velocity.
                 if (plan.DeltaVMagnitude > HighDeltaVWarnMetersPerSecond)
                 {
-                    GUILayout.Label("  WARNING: very large ΔV - you are likely too far / wrong phase for a");
-                    GUILayout.Label("  direct intercept. Wait for a closer pass, or match velocity instead.");
+                    GUILayout.Label("  WARNING: very large ΔV - you are likely too far / wrong phase for a direct intercept.  Wait for a closer pass, or match velocity instead.");
                 }
             }
+
+            // Secondary planner toggle (experimental): MJ-derived Hohmann transfer vs the single-rev intercept.
+            // Affects the plan preview and intercept execution. Off = original behavior. The Hohmann preview is
+            // computed ONCE and cached (not on a timer) — switching the toggle or "Recompute plan" re-solves it.
+            bool useHohmann = GUILayout.Toggle(_handler.UseHohmannPlanner, " Use Hohmann transfer planner (experimental)");
+            if (useHohmann != _handler.UseHohmannPlanner)
+            {
+                _handler.UseHohmannPlanner = useHohmann;
+                _handler.RequestPlanRefresh();   // recompute the preview once with the newly-selected planner
+            }
+            if (useHohmann && GUILayout.Button("Recompute plan"))
+                _handler.RequestPlanRefresh();
+
+            GUILayout.Space(4);
 
             // --- instruction / status: is it on the user or on an event? ---
             GUILayout.Label(GetInstruction());
@@ -156,9 +169,26 @@ namespace Blackbird.Modules
             ApplyCloseApproachParams();
 
             // Warp to closest approach (auto-stops short; cancelled if a burn starts).
+
             if (_handler.Warping)
             {
                 if (GUILayout.Button("Stop Warp")) _handler.StopWarp();
+            }
+            else if (_handler.UseHohmannPlanner && _handler.Stage == RendezvousStage.Intercept
+                     && (_handler.HasInterceptPlan || _handler.CoastingToIgnition))
+            {
+                // Hohmann: the burn ignites at a FUTURE departure UT, so warp to that window (not the live CA).
+                // While coasting (post-Execute) use the FROZEN ignition; before Execute use the previewed plan's.
+                // Warp is allowed during the coast (it is not yet burning); the executor fires at ignition.
+                double ignitionUt = _handler.CoastingToIgnition
+                    ? _handler.PlannedIgnitionUt
+                    : _handler.InterceptPlan.IgnitionUt;
+                double dtToIgnition = ignitionUt - Planetarium.GetUniversalTime();
+                GUI.enabled = (_handler.Phase != RendezvousPhase.Executing || _handler.CoastingToIgnition)
+                              && dtToIgnition > 10.0;
+                if (GUILayout.Button($"Warp to transfer ignition ({FormatTime(dtToIgnition)})"))
+                    _handler.WarpToIgnition(ignitionUt);
+                GUI.enabled = true;
             }
             else
             {

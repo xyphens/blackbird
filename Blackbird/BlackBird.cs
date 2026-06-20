@@ -133,7 +133,7 @@ namespace Blackbird
         {
             if (_toolbarButton != null) return;
 
-            Texture2D dbIcon = GameDatabase.Instance.GetTexture("BlackBird/Textures/toolbar_icon.png", false);
+            Texture2D dbIcon = GameDatabase.Instance.GetTexture("BlackBird/Textures/toolbar_icon", false);
             if (dbIcon != null)
             {
                 _toolbarIcon = dbIcon;

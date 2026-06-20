@@ -48,6 +48,7 @@ namespace Blackbird.Mathematics
             value = value < 0.0 ? value + tau : value;
             return value >= tau ? 0.0 : value;
         }
+
         public static double Rad2Deg(double value) => value * 180.0 / Math.PI;
         public static double Deg2Rad(double value) => value * Math.PI / 180.0;
         public static bool IsFinite(Vector3d vec) => IsFinite(vec.x) && IsFinite(vec.y) && IsFinite(vec.z); // overloaded
