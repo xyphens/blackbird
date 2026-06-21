@@ -94,6 +94,7 @@ namespace Blackbird.Guidance
         {
             if (State != LaunchGuidanceState.PlanAccepted) return;
             if (bbState.LaunchPlan == null || bbState.LaunchPlan.SelectedCandidate == null || !bbState.LaunchPlan.SelectedCandidate.IsValid) return;
+            _targetUt = bbState.LaunchPlan?.SelectedCandidate?.LaunchUt ?? 0;
             bbState.ActiveModule = BlackbirdModule.LaunchGuidance;
             GuidanceMode = GuidanceMode.None;
             State = LaunchGuidanceState.AwaitingLaunch;
@@ -114,8 +115,13 @@ namespace Blackbird.Guidance
                 State == LaunchGuidanceState.Complete ||
                 State == LaunchGuidanceState.Aborted)
             {
+                // release module if guidance completed successfully or was aborted
+                if (State != LaunchGuidanceState.Idle 
+                    && bbState.ActiveModule == BlackbirdModule.LaunchGuidance) bbState.ActiveModule = BlackbirdModule.None;
                 return;
             }
+
+
 
             // handle guidance
             if (State == LaunchGuidanceState.GuidingAscent)
@@ -254,10 +260,15 @@ namespace Blackbird.Guidance
                 PhasingRecommendation = null
             };
 
+            InsertionTarget it = new InsertionTarget { ApoapsisAlt = apoapsisAlt, PeriapsisAlt = periapsisAlt, Heading = headingDeg };
+            OrbitInfo oi = OrbitInfo.Create(TargetVessel != null ? TargetVessel.orbit : vessel.orbit);
+            PhasingOrbit po = PhasingOrbit.FromInsertionTarget(it, oi, FlightGlobals.currentMainBody, OrbitMath.GetPhaseAngleDeg(vessel, TargetVessel ?? vessel));
+
             bbState.LaunchPlan = new LaunchPlan
             {
-                InsertionTarget = new InsertionTarget { ApoapsisAlt = apoapsisAlt, PeriapsisAlt = periapsisAlt, Heading = headingDeg },
+                InsertionTarget = it,
                 Candidates = new[] { candidate },
+                PhasingOrbit = po,
                 SelectedCandidateIndex = 0
             };
         }
@@ -339,7 +350,7 @@ namespace Blackbird.Guidance
                 else
                 {
                     _coastAttitudeHeld = false;
-                    _attitudeControl.DriveInertial(vessel, state, GuidanceInfo.InertialDirection, 0.0);
+                    _attitudeControl.DriveInertial(vessel, state, GuidanceInfo.InertialDirection, 0.0, bbState.LockRollOnAscent);
                 }
             }
             else

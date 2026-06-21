@@ -60,8 +60,18 @@ namespace Blackbird.Docking
         public bool ResettingOrientation => _resetOrientation;
 
         // UI gates (the panel mirrors the enable/disable logic; these just enact the transitions).
-        public void RunDockingGuidance() { bbState.DockingMode = DockingControlMode.Guidance; bbState.DockingEnabled = true; _autopilot.Engage(); }
-        public void AssumeControl() { bbState.DockingMode = DockingControlMode.Manual; bbState.DockingEnabled = true; _autopilot.Disengage(); }
+        public void RunDockingGuidance() { 
+            bbState.DockingMode = DockingControlMode.Guidance; 
+            bbState.DockingEnabled = true;
+            bbState.ActiveModule = BlackbirdModule.Docking;
+            _autopilot.Engage(); 
+        }
+        public void AssumeControl() { 
+            bbState.DockingMode = DockingControlMode.Manual;
+            bbState.DockingEnabled = true;
+            bbState.ActiveModule = BlackbirdModule.None;
+            _autopilot.Disengage();
+        }
 
         // One-shot orientation reset: point at the port (if targeted) and roll to "real up" so the craft's
         // local translation axes become predictable. Latched; auto-clears when aligned. Click again to cancel.
@@ -82,16 +92,16 @@ namespace Blackbird.Docking
             bbState.DockingMode = DockingControlMode.Off;
         }
 
-        private bool ManualInputFresh() =>
-            Planetarium.GetUniversalTime() - _manualInputUt < ManualInputFreshSeconds;
+        private bool ManualInputFresh() => Planetarium.GetUniversalTime() - _manualInputUt < ManualInputFreshSeconds;
 
         // State-machine + metrics tick (from BlackBird.Update). Refreshes the readouts always; builds the
         // VesselState and ticks the autopilot only when something will actuate (so it stays cheap when idle).
         public void Update(Vessel active)
         {
             _vessel = active;
-            if (active == null || bbState == null || bbState.DockingEnabled == false)
+            if (active == null || bbState == null)
             {
+
                 HasTarget = false;
                 _vs = null;
                 return;
@@ -102,6 +112,15 @@ namespace Blackbird.Docking
             HasTarget = _targetObject != null && _targetVessel != null;
 
             UpdateMetrics();
+
+            // wait until metrics are updated before bailing
+            if (bbState.ActiveModule != BlackbirdModule.Docking)
+            {
+                // flag as off if we had guidance active but are ineligible to continue
+                if (bbState.DockingMode == DockingControlMode.Guidance) bbState.DockingMode = DockingControlMode.Off;
+                _vs = null;
+                return;
+            }
 
             bool actuating = bbState.DockingMode == DockingControlMode.Guidance
                              || (KeepPointed && HasTarget)
@@ -114,15 +133,19 @@ namespace Blackbird.Docking
             }
 
             // RCS must be on before VesselState samples the thrust table and before translation can fire.
-            if (!active.ActionGroups[KSPActionGroup.RCS])
-                active.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
+            if (!active.ActionGroups[KSPActionGroup.RCS]) active.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
+
             _vs = VesselState.FromVessel(active);
 
             if (bbState.DockingMode == DockingControlMode.Guidance)
             {
                 _autopilot.OnFixedUpdate(active, _vs);
                 // The autopilot turns Off on capture or target loss; hand control back to the operator.
-                if (_autopilot.CurrentStep == DockingSteps.Off) bbState.DockingMode = DockingControlMode.Off;
+                if (_autopilot.CurrentStep == DockingSteps.Off)
+                {
+                    bbState.DockingMode = DockingControlMode.Off;
+                    bbState.ActiveModule = BlackbirdModule.None;
+                }
             }
         }
 

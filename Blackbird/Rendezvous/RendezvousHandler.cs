@@ -100,7 +100,7 @@ namespace Blackbird.Rendezvous
         // User gates (pass-through to the executor). Executing a stage cancels any warp.
         public bool Execute() { StopWarp(); return _executor.Execute(); }
         // Execute a specific stage out of order (e.g. Match Velocity any time, to kill a closing rate).
-        public bool Execute(RendezvousMethod method) { StopWarp(); return _executor.Execute(method); }
+        public bool Execute(RendezvousMethod method) { StopWarp(); return _executor.ForceExecute(method); }
 
         // Close-approach park distance ("match velocities at X m"); the default is restored when the UI
         // option is off so a one-off custom value doesn't persist into the next approach.
@@ -111,8 +111,8 @@ namespace Blackbird.Rendezvous
         }
         public bool AutoMatchVelocityDistance
         {
-            get { return _executor.UseMatchVelocitiesDuringApproach; }
-            set { _executor.UseMatchVelocitiesDuringApproach = value;  }
+            get { return _executor.UseDistanceForMatchVelocities; }
+            set { _executor.UseDistanceForMatchVelocities = value;  }
         }
         public const double CloseStandoffDefaultMeters = TerminalRendezvousExecutor.ParkingDistanceDefaultMeters;
 
@@ -438,13 +438,12 @@ namespace Blackbird.Rendezvous
 
             if (wantBurn)
             {
-                // Always steer toward the burn vector; throttle only once the craft is pointed AND has
-                // settled (low rotation rate) and held that for the dwell — orient, stabilize, then burn.
+                // Always steer toward the burn vector; throttle only once the craft is pointed and settled
                 _attitude.DriveInertial(vessel, state, _command.ThrustDirection, 0.0);
 
                 double errorDeg = AttitudeErrorDeg(vessel, _command.ThrustDirection);
                 // Only pitch/yaw rate moves the nose off the burn vector; roll about the thrust axis doesn't,
-                // so it is excluded from the settle gate (a slow roll-null no longer delays the burn).
+                // so it is excluded from the settle gate
                 // (KSP vessel angular velocity: x=pitch, y=roll, z=yaw.)
                 Vector3d angularVel = vessel.angularVelocityD;
                 double pitchYawRateDegPerSec =
@@ -501,13 +500,6 @@ namespace Blackbird.Rendezvous
                 state.mainThrottle = 0.0f;   // cut throttle on the first non-burning frame after a burn
                 _burningLastApply = false;
             }
-
-            // Maneuver done / control released: restore the player's prior RCS setting.
-            //if (_rcsForcedOn)   // (disabled with the soft-enable block above)
-            //{
-            //    vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, _rcsPriorState);
-            //    _rcsForcedOn = false;
-            //}
         }
 
         // Angle (degrees) between the craft's current facing (control-reference nose) and the desired

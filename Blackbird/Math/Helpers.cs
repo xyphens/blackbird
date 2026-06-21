@@ -25,6 +25,7 @@ namespace Blackbird.Mathematics
             return deltaDeg / 360.0 * rotationPeriodSeconds;
         }
         public static double Clamp(double value, double min, double max) => value < min ? min : value > max ? max : value;
+        public static double Clamp01(double value) => Clamp(value, 0.0, 1.0);
         public static double ClampPi(double value, double tau)
         {
             value %= tau;

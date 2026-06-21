@@ -36,14 +36,13 @@ namespace Blackbird.Rendezvous
         private const double MatchTaperBandMetersPerSecond = 3.0;
         private const double MatchStallSeconds = 2.0;                      // cut if rel speed stops dropping...
         private const double MatchStallSpeedFloor = 1.0;                   // ...and is already near nulled
-        private const double MatchSteerLockMetersPerSecond = 0.5;          // below this, freeze the thrust dir
 
         // --- close-approach tuning ---
         private double ClosestApproach = double.PositiveInfinity;   // live predicted CA, fed in by the handler
         private const double CaTrustRangeMeters = 5000.0;          // only trust the projected CA within this range
         public const double ParkingDistanceDefaultMeters = 10.0;
         public double ParkingDistance = ParkingDistanceDefaultMeters;   // "match velocities at X m" (UI)
-        public bool UseMatchVelocitiesDuringApproach = true;
+        public bool UseDistanceForMatchVelocities = true;
         private const double ParkingDistanceBuffer = 0.0;          // extra slack when declaring "parked"
         private const double RendezParkedSpeedMetersPerSecond = 0.5;
         // Commanded closing speed = clamp(range * gain, 0, maxSpeed); both user-settable (UI).
@@ -99,8 +98,7 @@ namespace Blackbird.Rendezvous
         private double _matchLastProgressUt;
         private Vector3d _matchSteerDirection;     // thrust direction, frozen once relative speed is small
 
-        // Close-approach: latched once we reach the brake point, so the shrinking trigger can't bounce us
-        // back into the closing controller.
+        // in range to start matching velocities
         private bool _closeBraking;
 
         SharedState bbState;
@@ -114,8 +112,12 @@ namespace Blackbird.Rendezvous
         {
             bbState.RendezvousMethod = RendezvousMethod.None;
             bbState.InterceptPhase = InterceptPhase.Idle;
+            if (bbState.InterceptPhase == InterceptPhase.Complete) bbState.ActiveModule = BlackbirdModule.None;
             ClearBurnState();
             HasInterceptPlan = false;
+            _burnArmed = false;
+            _matchArmed = false;
+            _closeBraking = false;
             bbState.InterceptSolution = default(InterceptSolution);
             HasLastInterceptBurnReport = false;
             _lastInterceptBurnReport = default(InterceptBurnReport);
@@ -126,18 +128,20 @@ namespace Blackbird.Rendezvous
         {
             if (bbState.InterceptPhase != InterceptPhase.Idle && bbState.InterceptPhase != InterceptPhase.Coast) return false;
             bbState.InterceptPhase = InterceptPhase.Executing;
+            bbState.ActiveModule = BlackbirdModule.Rendezvous;
             _burnArmed = false;
             _matchArmed = false;
             HasLastInterceptBurnReport = false;
             return true;
         }
 
-        // execute a rendezvous method
-        public bool Execute(RendezvousMethod method)
+        // cancel an existing method if active then run a new one
+        public bool ForceExecute(RendezvousMethod method)
         {
-            if (bbState.InterceptPhase == InterceptPhase.Executing || bbState.InterceptPhase == InterceptPhase.Aborted) return false;
+            //if (bbState.InterceptPhase == InterceptPhase.Executing || bbState.InterceptPhase == InterceptPhase.Aborted) return false;
             bbState.RendezvousMethod = method;
             bbState.InterceptPhase = InterceptPhase.Executing;
+            bbState.ActiveModule = BlackbirdModule.Rendezvous;
 
             _burnArmed = false;
             _matchArmed = false;
@@ -162,6 +166,7 @@ namespace Blackbird.Rendezvous
         public void Abort()
         {
             bbState.InterceptPhase = InterceptPhase.Aborted;
+            if (bbState.InterceptPhase == InterceptPhase.Complete) bbState.ActiveModule = BlackbirdModule.None;
             ClearBurnState();
         }
 
@@ -255,13 +260,16 @@ namespace Blackbird.Rendezvous
 
         private RendezvousCommand StepStage(IRendezvousWorld world, out bool stageComplete)
         {
+            
             // we no longer "auto-advance" to a next stage, just flag it as complete
             if (bbState.RendezvousMethod == RendezvousMethod.Intercept)
                 return StepIntercept(world, out stageComplete);
             if (bbState.RendezvousMethod == RendezvousMethod.MatchVelocity)
-                return StepMatchVelocity(world, out stageComplete);
+                return UseDistanceForMatchVelocities 
+                    ? StepCloseApproach(world, out stageComplete, true) // piggy-back off of CA's braking logic if not an instant command
+                    : StepMatchVelocity(world, out stageComplete);
             if (bbState.RendezvousMethod == RendezvousMethod.CloseApproach)
-                return StepCloseApproach(world, out stageComplete);
+                return StepCloseApproach(world, out stageComplete, false);
 
             stageComplete = true;
             return Idle("Idle");
@@ -401,24 +409,21 @@ namespace Blackbird.Rendezvous
 
             if (relSpeed <= MatchVelocityToleranceMetersPerSecond)
             {
+                // velocity already matched
                 stageComplete = true;
                 return Idle(string.Format("match velocity: nulled ({0:F2} m/s)", relSpeed));
             }
 
             // Stall guard: once near nulled, if relative speed stops dropping the engine floor can't do better;
             // accept it (close approach trims the rest). Floored so it can't fire during the initial orient.
-            if (relSpeed <= MatchStallSpeedFloor
-                && world.UniversalTime - _matchLastProgressUt > MatchStallSeconds)
+            if (relSpeed <= MatchStallSpeedFloor && world.UniversalTime - _matchLastProgressUt > MatchStallSeconds)
             {
                 stageComplete = true;
                 return Idle(string.Format("match velocity: cutoff (stalled at {0:F2} m/s)", relSpeed));
             }
 
-            // Re-aim only while the relative speed is large enough for its direction to be meaningful; below the
-            // lock threshold the near-zero relVel direction is noise (and an overshoot flips it ~180°, pivoting
-            // the craft and firing a needless second burn). Throttle/cutoff are magnitude-based either way.
-            if (relSpeed > MatchSteerLockMetersPerSecond)
-                _matchSteerDirection = (-relVel).normalized;
+            // steer + burn in the vel null directory
+            _matchSteerDirection = (-relVel).normalized;
             Vector3d thrustDir = _matchSteerDirection != Vector3d.zero ? _matchSteerDirection : (-relVel).normalized;
             double throttle = MathHelpers.Clamp(relSpeed / MatchTaperBandMetersPerSecond, BurnMinThrottle, 1.0);
             return Burn(thrustDir, throttle, string.Format("match velocity {0:F2} m/s remaining", relSpeed));
@@ -433,7 +438,7 @@ namespace Blackbird.Rendezvous
         //            distance. Latched so the shrinking trigger can't bounce back into CLOSE.
         //   CLOSE    command a closing velocity toward the target (tapered to the parking distance, capped) and
         //            burn to match it, which also nulls lateral drift.
-        private RendezvousCommand StepCloseApproach(IRendezvousWorld world, out bool stageComplete)
+        private RendezvousCommand StepCloseApproach(IRendezvousWorld world, out bool stageComplete, bool matchVelocityOnly)
         {
             stageComplete = false;
 
@@ -445,20 +450,40 @@ namespace Blackbird.Rendezvous
 
             double parkedBand = ParkingDistance + ParkingDistanceBuffer;
 
-            if (distanceToTarget <= parkedBand && relSpeed <= RendezParkedSpeedMetersPerSecond)
+            // this technically prevents an MV from going if we still have relVel with the target (RendezParkedSpeedMetersPerSecond >= 0.1)
+            // so we're only going to Idle if user isn't forcing a match velocity
+            if (distanceToTarget <= parkedBand && relSpeed <= RendezParkedSpeedMetersPerSecond && !matchVelocityOnly)
             {
                 _closeBraking = false;
                 stageComplete = true;
-                return Idle(string.Format(
-                    "close approach: parked at {0:F0} m ({1:F2} m/s) - control returned", distanceToTarget, relSpeed));
+                return Idle(string.Format("parked at {0:F0} m ({1:F2} m/s)", distanceToTarget, relSpeed));
+            }
+
+            // only doing velocity match, do not continue CA logic after this
+            if (matchVelocityOnly)
+            {
+                Vector3d holdDir = relSpeed > 1e-6 ? (-relVel).normalized : bearing;
+                // get in position
+                if (UseDistanceForMatchVelocities && distanceToTarget > parkedBand)
+                {
+                    // target is too far away to burn, just get into position
+                    return Burn(holdDir, 0.0, string.Format(
+                        "holding position for burn({0:F0} m away, ParkingDistance {1:F0})",
+                        distanceToTarget, ClosestApproach));
+                } else if (distanceToTarget <= parkedBand)
+                {
+                    // user isn't waiting for a distance, or we're in our parking range = match velocities
+                    return StepMatchVelocity(world, out stageComplete);
+                }
+
+                return Idle("idling...");
             }
 
             // Is the current trajectory already going to carry us inside the band? Trust the projection only
             // when nearby (a few km), where the two craft share their perturbations.
-            bool caInBand = MathHelpers.IsFinite(ClosestApproach)
-                && ClosestApproach <= parkedBand && distanceToTarget <= CaTrustRangeMeters;
+            bool caInBand = MathHelpers.IsFinite(ClosestApproach) && ClosestApproach <= parkedBand && distanceToTarget <= CaTrustRangeMeters;
 
-            if (UseMatchVelocitiesDuringApproach)
+            if (UseDistanceForMatchVelocities)
             {
                 if (caInBand)
                 {
@@ -478,13 +503,10 @@ namespace Blackbird.Rendezvous
                     + closingSpeed * closingSpeed / (2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared));
                 double brakeTrigger = ParkingDistance + brakingDistance;
                 if (distanceToTarget <= brakeTrigger) _closeBraking = true;
-                if (_closeBraking)
-                    return StepMatchVelocity(world, out stageComplete);
+                if (_closeBraking) return StepMatchVelocity(world, out stageComplete);
             }
             else if (caInBand)
             {
-                // Match-velocities OFF: still guard against the closing controller wrecking a good incoming
-                // trajectory — just hold heading.
                 return Burn(bearing, 0.0, string.Format(
                     "close approach: coasting to terminal ({0:F0} m, CA {1:F0} m already in band)",
                     distanceToTarget, ClosestApproach));
@@ -589,6 +611,7 @@ namespace Blackbird.Rendezvous
             bbState.InterceptPhase = bbState.RendezvousMethod == RendezvousMethod.CloseApproach
                 ? InterceptPhase.Complete
                 : InterceptPhase.Coast;
+            if (bbState.InterceptPhase == InterceptPhase.Complete) bbState.ActiveModule = BlackbirdModule.None;
         }
 
         private void ClearBurnState()

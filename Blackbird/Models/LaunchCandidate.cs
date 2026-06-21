@@ -22,6 +22,7 @@ namespace Blackbird.Models
 
         public double PlaneErrorDeg { get; set; }
         public double PhaseErrorDeg { get; set; }
+        public double PhasingOrbit { get; set; }
         public double RelativeDistanceMeters { get; set; }
         public double Score { get; set; }
 

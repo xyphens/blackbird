@@ -22,6 +22,8 @@ namespace Blackbird.Modules
         private const float BtnW = 60f;
         private const float BtnH = 34f;
 
+        bool _wasVisible = false; // used to reset window height after closed
+
         private LaunchHandler _launchHandler;
         public void Init(LaunchHandler handler, SharedState s)
         {
@@ -31,6 +33,12 @@ namespace Blackbird.Modules
 
         public void Draw()
         {
+            if (bbState.GuidanceVisible && !_wasVisible)
+            {
+                _windowRect.height = 0f;
+                _wasVisible = true;
+            }
+
             if (bbState == null || !bbState.GuidanceVisible) return;
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Guidance Computer");
         }
@@ -115,6 +123,9 @@ namespace Blackbird.Modules
             GUILayout.Label($"Orbital velocity: {orbit.orbitalSpeed:F1} m/s");
             GUILayout.Label($"Semi-major axis: {orbit.semiMajorAxis / 1000.0:F1} km");
             GUILayout.Label($"Eccentricity: {orbit.eccentricity:F4}");
+
+            GUILayout.Space(8);
+            bbState.LockRollOnAscent = GUILayout.Toggle(bbState.LockRollOnAscent, "Lock Roll at 0°");
             GUILayout.Space(8);
 
             if (_launchHandler.GuidanceMode == GuidanceMode.Manual)
@@ -171,7 +182,6 @@ namespace Blackbird.Modules
             }
             else if (_launchHandler.GuidanceMode == GuidanceMode.Autopilot)
             {
-                GUILayout.Label("[Guidance]");
                 GUILayout.Label($"Flight Status: {guidanceInfo.GuidancePhase}");
 
                 GUILayout.Space(10);
@@ -249,7 +259,10 @@ namespace Blackbird.Modules
 
                 _showAdvancedDetails = GUILayout.Toggle(_showAdvancedDetails, "Show Advanced Details");
                 if (_showAdvancedDetails)
+                {
                     DrawAdvancedDetails(bbState.LaunchPlan, bbState.LaunchPlan.TargetVessel);
+                }
+                    
             }
 
             GUI.DragWindow();

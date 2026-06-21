@@ -1,5 +1,6 @@
 using System;
 using Blackbird.Docking;
+using Blackbird.Mathematics;
 using Blackbird.Rendezvous;
 using UnityEngine;
 
@@ -55,9 +56,11 @@ namespace Blackbird.Modules
 
         private void DrawContents(int _)
         {
+
             if (GUI.Button(new Rect(_windowRect.width - 22, 2, 18, 18), " ")) bbState.RendezvousVisible = false;
 
-            if (_handler == null || _handler.Target == null || FlightGlobals.ActiveVessel.altitude < 60000)
+            
+            if (_handler == null || _handler.Target == null || Universe.IsInSpace(FlightGlobals.ActiveVessel?.altitude ?? 0))
             {
                 GUILayout.Label("Rendezvous computer unavailable (must be in space and have a target)");
                 bbState.RendezvousEnabled = false;
@@ -72,7 +75,8 @@ namespace Blackbird.Modules
                 GUILayout.Label($"Range: {FormatDistance(_handler.Relative.Range)}   "
                               + $"rel speed: {FormatSpeed(_handler.Relative.RelativeVelocityWorld.magnitude)}");
             }
-            if (IsFinite(_handler.LiveClosestApproachMeters))
+ 
+            if (MathHelpers.IsFinite(_handler.LiveClosestApproachMeters))
             {
                 GUILayout.Label($"Closest approach: {FormatDistance(_handler.LiveClosestApproachMeters)} "
                               + $"in {FormatTime(_handler.LiveTimeToClosestApproachSeconds)}");
@@ -82,7 +86,7 @@ namespace Blackbird.Modules
                 bool separating = _handler.HasRelative && _handler.Relative.RangeRate > 0.0;
                 if (separating && _handler.LiveTimeToClosestApproachSeconds < 1.0)
                 {
-                    GUILayout.Label("  (separating - no approach this orbit; Execute Intercept to set one up)");
+                    GUILayout.Label("Status: separating");
                 }
             }
 
@@ -113,7 +117,7 @@ namespace Blackbird.Modules
             GUILayout.Space(4);
 
             // --- instruction / status: is it on the user or on an event? ---
-            GUILayout.Label(GetInstruction());
+            GUILayout.Label($"Status: {GetInstruction()}");
 
             GUILayout.Space(8);
             
@@ -161,7 +165,7 @@ namespace Blackbird.Modules
             else
             {
                 GUI.enabled = bbState.InterceptPhase != InterceptPhase.Executing
-                              && IsFinite(_handler.LiveTimeToClosestApproachSeconds)
+                              && MathHelpers.IsFinite(_handler.LiveTimeToClosestApproachSeconds)
                               && _handler.LiveTimeToClosestApproachSeconds > 10.0;
                 if (GUILayout.Button("Warp to Next Closest Approach")) _handler.WarpToClosestApproach();
                 GUI.enabled = true;
@@ -170,7 +174,8 @@ namespace Blackbird.Modules
             if (GUILayout.Button("Execute: Match Velocity"))
             {
                 bbState.RendezvousMethod = RendezvousMethod.MatchVelocity;
-                _handler.Execute();
+                ApplyCloseStandoff();
+                _handler.Execute(RendezvousMethod.MatchVelocity);
             }
                 
             if (GUILayout.Button("Execute: Close Approach"))
@@ -214,14 +219,11 @@ namespace Blackbird.Modules
         // The one line that tells the user what is happening and what to do next.
         private string GetInstruction()
         {
-            if (!bbState.RendezvousEnabled)
-                return "Autopilot not enabled";
+            if (!bbState.RendezvousEnabled) return "inactive";
 
             switch (bbState.InterceptPhase)
             {
-                case InterceptPhase.Idle:
-                    return "Ready for execution.";
-
+                case InterceptPhase.Idle: return "awaiting instructions";
                 case InterceptPhase.Executing:
                     if (_handler.Stabilizing)
                         return $"Stabilizing alignment: {_handler.AlignmentErrorDeg:F1}° error";
@@ -238,14 +240,9 @@ namespace Blackbird.Modules
                         return "Velocities matched.";
                     return $"Stage done";
 
-                case InterceptPhase.Complete:
-                    return "Rendezvous complete - control returned to you.";
-
-                case InterceptPhase.Aborted:
-                    return "Execution aborted.";
-
-                default:
-                    return string.Empty;
+                case InterceptPhase.Complete: return "completed";
+                case InterceptPhase.Aborted: return "aborted";
+                default: return string.Empty;
             }
         }
 
@@ -290,7 +287,7 @@ namespace Blackbird.Modules
 
         private static string FormatTime(double seconds)
         {
-            if (!IsFinite(seconds)) return "--";
+            if (!MathHelpers.IsFinite(seconds)) return "--";
             if (seconds < 60.0) return $"{seconds:F0}s";
             if (seconds < 3600.0) return $"{seconds / 60.0:F1} min";
             return $"{seconds / 3600.0:F1} h";
@@ -299,7 +296,7 @@ namespace Blackbird.Modules
         // Distance with a unit that suits the magnitude: mm / m / km (so 900 m doesn't read "0.90 km").
         private static string FormatDistance(double meters)
         {
-            if (!IsFinite(meters)) return "--";
+            if (!MathHelpers.IsFinite(meters)) return "--";
             double a = Math.Abs(meters);
             if (a < 1.0) return $"{meters * 1000.0:F0} mm";
             if (a < 1000.0) return $"{meters:F0} m";
@@ -309,13 +306,11 @@ namespace Blackbird.Modules
         // Speed with a unit that suits the magnitude: mm/s / m/s / km/s (so 0.1 m/s reads "100 mm/s").
         private static string FormatSpeed(double metersPerSecond)
         {
-            if (!IsFinite(metersPerSecond)) return "--";
+            if (!MathHelpers.IsFinite(metersPerSecond)) return "--";
             double a = Math.Abs(metersPerSecond);
             if (a < 1.0) return $"{metersPerSecond * 1000.0:F0} mm/s";
             if (a < 1000.0) return $"{metersPerSecond:F1} m/s";
             return $"{metersPerSecond / 1000.0:F2} km/s";
         }
-
-        private static bool IsFinite(double v) => !double.IsNaN(v) && !double.IsInfinity(v);
     }
 }

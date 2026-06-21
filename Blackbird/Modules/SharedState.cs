@@ -16,7 +16,6 @@ namespace Blackbird.Modules
 
     // environment
     public enum PlanetScaleEnum { Stock, RSS }
-    // GUIDANCE COMPUTER
     public enum LaunchGuidanceState { Idle, PlanReady, PlanAccepted, WarpingToLaunch, AwaitingLaunch, GuidingAscent, Complete, Aborted };
     public enum GuidanceMode { None, Manual, Autopilot };
     public enum PoweredGuidancePhase { None, VerticalAscent, PitchProgram, Coast, Circularize, PoweredGuidance, Terminal, Complete, InsertionCutoff, Unavailable };
@@ -52,12 +51,12 @@ namespace Blackbird.Modules
     // DOCKING
     public enum DockingMethod { Automatic, Manual };
     public enum DockingControlMode { Off, Manual, Guidance }
-
     public static class Universe
     {
         public static PlanetScaleEnum PlanetScale => FlightGlobals.currentMainBody.Radius > 1_000_000 ? PlanetScaleEnum.RSS : PlanetScaleEnum.Stock;
+        // returns true if the provided altitude is at or above the current planet/moon's atmosphere
+        public static bool IsInSpace(double altitude) => altitude >= FlightGlobals.currentMainBody.atmosphereDepth;
     }
-
     public sealed class SharedState
     {
         // general
@@ -74,6 +73,7 @@ namespace Blackbird.Modules
         public bool PlannerEnabled { get; set; } = false;
 
         // guidance
+        public bool LockRollOnAscent { get; set; } = false;
         public LaunchGuidanceState GuidanceState { get; set; } = LaunchGuidanceState.Idle;
         public GuidanceMode GuidanceMode { get; set; } = GuidanceMode.None;
         public PoweredGuidancePhase LaunchPhase { get; set; } = PoweredGuidancePhase.None;
@@ -103,6 +103,7 @@ namespace Blackbird.Modules
 
         public void Reset()
         {
+            LockRollOnAscent = false;
             LaunchPlan = null;
             SelectedLaunchCandidate = null;
             PlannerEnabled = false;

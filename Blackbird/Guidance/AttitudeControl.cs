@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Blackbird.Mathematics;
+using System;
 using UnityEngine;
 
 namespace Blackbird.Guidance
@@ -37,7 +38,7 @@ namespace Blackbird.Guidance
 
         private const double MaxStoppingTime = 2.0;
         private const double MinFlipTime = 120.0;
-        private const double RollControlRangeDeg = 5.0;
+        private const double LockRollErrorPadding = 0.5; // lock roll without constrantly running RCS
         private const double SmoothTorque = 0.10;
         private const double Soften = 0.5;
 
@@ -84,7 +85,8 @@ namespace Blackbird.Guidance
             FlightCtrlState state,
             double headingDeg,
             double pitchDeg,
-            double rollDeg
+            double rollDeg,
+            bool lockRoll = false
             )
         {
             if (vessel == null || state == null) return;
@@ -96,7 +98,7 @@ namespace Blackbird.Guidance
 
             Vector3d torqueAvailable = EstimateTorqueAvailable(vessel);
 
-            Vector3d actuation = UpdatePredictionPI(vessel, requestedAttitude, torqueAvailable);
+            Vector3d actuation = UpdatePredictionPI(vessel, requestedAttitude, torqueAvailable, lockRoll);
 
             ApplyActuation(state, actuation);
         }
@@ -105,7 +107,9 @@ namespace Blackbird.Guidance
             Vessel vessel,
             FlightCtrlState state,
             Vector3d inertialDirection,
-            double rollDeg)
+            double rollDeg,
+            bool lockRoll = false
+            )
         {
             if (vessel == null || state == null) return;
             if (vessel.mainBody == null || inertialDirection.sqrMagnitude <= 0.0) return;
@@ -118,7 +122,7 @@ namespace Blackbird.Guidance
             Vector3d direction = inertialDirection.normalized;
             Vector3d horizontal = Vector3d.Exclude(up, direction);
 
-            double pitchDeg = Math.Asin(Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)) * 180.0 / Math.PI;
+            double pitchDeg = Math.Asin(MathHelpers.Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)) * 180.0 / Math.PI;
             double headingDeg = 0.0;
 
             if (horizontal.sqrMagnitude > 0.0)
@@ -130,7 +134,7 @@ namespace Blackbird.Guidance
                 if (headingDeg < 0.0) headingDeg += 360.0;
             }
 
-            Drive(vessel, state, headingDeg, pitchDeg, rollDeg);
+            Drive(vessel, state, headingDeg, pitchDeg, rollDeg, lockRoll);
         }
 
         // Holds the craft's CURRENT attitude, killing all rotation (incl. roll). This is the analog of
@@ -155,7 +159,9 @@ namespace Blackbird.Guidance
         private Vector3d UpdatePredictionPI(
             Vessel vessel,
             QuaternionD requestedAttitude,
-            Vector3d torqueAvailable)
+            Vector3d torqueAvailable,
+            bool lockRoll = false
+            )
         {
             QuaternionD currentAttitude =
                 (QuaternionD)vessel.ReferenceTransform.rotation *
@@ -192,9 +198,9 @@ namespace Blackbird.Guidance
             {
                 maxAlpha[i] = _controlTorque[i] / vessel.MOI[i];
 
-                if (maxAlpha[i] == 0.0 || !IsFinite(maxAlpha[i])) maxAlpha[i] = 1.0;
+                if (maxAlpha[i] == 0.0 || !MathHelpers.IsFinite(maxAlpha[i])) maxAlpha[i] = 1.0;
 
-                double soften = Clamp01(Soften);
+                double soften = MathHelpers.Clamp01(Soften);
                 double posKp = PosKpDefault / warpFactor;
                 double effectiveLinearDistance = soften * soften * maxAlpha[i] / (2.0 * posKp * posKp);
 
@@ -232,11 +238,12 @@ namespace Blackbird.Guidance
                             (Math.Abs(error[i]) - effectiveLinearDistance)) *
                         Math.Sign(error[i]);
 
-                    targetOmega[i] =
-                        Clamp(targetOmega[i], -maxOmega, maxOmega);
+                    targetOmega[i] = MathHelpers.Clamp(targetOmega[i], -maxOmega, maxOmega);
                 }
 
-                if (distance * Mathf.Rad2Deg > RollControlRangeDeg)
+                double rollError = distance * Mathf.Rad2Deg;
+
+                if (lockRoll && rollError > LockRollErrorPadding)
                 {
                     targetOmega[1] = 0.0;
                     _posPid[1].Reset();
@@ -266,14 +273,13 @@ namespace Blackbird.Guidance
                 _actuation[i] =
                     -targetTorque[i] / _controlTorque[i];
 
-                if (_controlTorque[i] == 0.0 || !IsFinite(_actuation[i]))
+                if (_controlTorque[i] == 0.0 || !MathHelpers.IsFinite(_actuation[i]))
                 {
                     _actuation[i] = 0.0;
                     Reset(i);
                 }
 
-                if (Math.Abs(_actuation[i]) < 2.2204460492503131e-16)
-                    _actuation[i] = 0.0;
+                if (Math.Abs(_actuation[i]) < 2.2204460492503131e-16) _actuation[i] = 0.0;
             }
 
             return _actuation;
@@ -398,7 +404,7 @@ namespace Blackbird.Guidance
             if (target.sqrMagnitude <= 0.0) return paddingSeconds;
 
             Vector3d nose = ((Vector3d)vessel.ReferenceTransform.up).normalized;
-            double dot = Clamp(Vector3d.Dot(nose, target), -1.0, 1.0);
+            double dot = MathHelpers.Clamp(Vector3d.Dot(nose, target), -1.0, 1.0);
             double angleRad = Math.Acos(dot);
             if (angleRad <= 1e-3) return paddingSeconds;
 
@@ -407,7 +413,7 @@ namespace Blackbird.Guidance
             double alphaPitch = SafeAlpha(torque.x, moi.x);   // pitch axis
             double alphaYaw = SafeAlpha(torque.z, moi.z);     // yaw axis
             double alpha = Math.Min(alphaPitch, alphaYaw);    // worst nose-swing axis -> conservative
-            if (!IsFinite(alpha) || alpha <= 0.0) return angleRad + paddingSeconds;
+            if (!MathHelpers.IsFinite(alpha) || alpha <= 0.0) return angleRad + paddingSeconds;
 
             // Conservative accel/rate cap, matching the live controller's softening and stopping time.
             double alphaEff = alpha * Soften;
@@ -469,21 +475,5 @@ namespace Blackbird.Guidance
             };
         }
 
-        private static double Clamp(double value, double min, double max)
-        {
-            if (value < min) return min;
-            if (value > max) return max;
-            return value;
-        }
-
-        private static double Clamp01(double value)
-        {
-            return Clamp(value, 0.0, 1.0);
-        }
-
-        private static bool IsFinite(double value)
-        {
-            return !double.IsNaN(value) && !double.IsInfinity(value);
-        }
     }
 }
