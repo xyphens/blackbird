@@ -2,7 +2,7 @@ using System;
 using System.Diagnostics;
 using Blackbird.Mathematics;
 using Blackbird.Trajectory;
-using UnityEngine;
+using Blackbird.Modules;
 
 namespace Blackbird.Rendezvous
 {
@@ -17,39 +17,7 @@ namespace Blackbird.Rendezvous
         InvalidInput
     }
 
-    // Result of an intercept plan: the impulsive burn (world-frame ΔV at the ignition UT) that puts
-    // the active vessel onto a conic transfer reaching the target's predicted position, plus the
-    // arrival timing and a predicted closest approach. Execution is NOT part of this — Step 4 wires
-    // DeltaV/IgnitionUt into the executor.
-    public struct InterceptSolution
-    {
-        public bool Success;
-        public InterceptStatus Status;
 
-        public Vector3d DeltaV;                       // world-frame burn applied at IgnitionUt
-        public double DeltaVMagnitude;                // |DeltaV| (m/s)
-        public double IgnitionUt;                     // when the burn is applied (= "now")
-        public double ArrivalUt;                      // when the transfer reaches the target point
-        public double TimeOfFlight;                   // ArrivalUt - IgnitionUt (s)
-        public double PredictedClosestApproach;       // min transfer-to-target separation over the arc (m)
-
-        public Vector3d TransferDepartureVelocity;    // Lambert V1 (post-burn velocity at ignition)
-        public Vector3d TransferArrivalVelocity;      // Lambert V2 (velocity at arrival, used by Step 6 match)
-        public int SamplesEvaluated;                  // Lambert solves actually attempted
-    }
-
-    // Step 2 intercept planner (conic, on-demand). Given the active vessel's current body-relative
-    // state and a way to predict the target's position at any UT, it sweeps candidate arrival times,
-    // solves a single-rev Lambert transfer for each, and keeps the lowest-ΔV feasible solution. The
-    // burn is impulsive at "now" (IgnitionUt); the sweep varies only the arrival time.
-    //
-    // Bounded by construction: at most 'arrivalSamples' Lambert solves AND a wall-clock budget; on
-    // timeout it returns the best solution found so far flagged BudgetExhausted (contract invariant 6).
-    //
-    // The pure Solve overload takes target prediction as a delegate so it is fully offline-testable
-    // (harness injects TwoBody.Propagate); the Vessel overload injects TrajectoryProvider (Principia-
-    // accurate, Stock fallback). We plan with conic math here and let the closed loop (Steps 5-6)
-    // absorb the conic-vs-n-body gap — we never integrate n-body to plan a burn.
     public static class InterceptSolver
     {
         // Solves the intercept. All positions are body-relative (subtract the central body's center);

@@ -1,8 +1,8 @@
 using System;
-using Blackbird.Enums;
 using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Trajectory;
+using Blackbird.Modules;
 
 namespace Blackbird.Guidance
 {
@@ -36,7 +36,8 @@ namespace Blackbird.Guidance
             double profilePitch = GetProfilePitchDeg(vesselState, ascentProfile);
             double profileHeading = GetProfileHeadingDeg(vessel, plan, vesselState, ascentProfile);
             double profileThrottle = GetProfileThrottle(vesselState, ascentProfile);
-            bool useClassic = vesselState != null && vesselState.Scale == PlanetScale.PlanetScaleEnum.Stock;
+            
+            bool useClassic = vesselState != null && Universe.PlanetScale == PlanetScaleEnum.Stock;
             
             // NaN when no target orbit yet (pre-launch / no target) — classic guidance skips the
             // inclination term for a non-finite inclination rather than dereferencing a null TargetOrbit.

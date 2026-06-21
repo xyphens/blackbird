@@ -2,7 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using Blackbird.Enums;
+using Blackbird.Modules;
 using Blackbird.Mathematics;
 using Blackbird.Trajectory;
 using UnityEngine;
@@ -60,8 +60,6 @@ namespace Blackbird.Models
         public double BodySurfaceGravity { get; private set; }
         public double BodyRotationPeriod { get; private set; }
         public Vector3d GravityForce { get; private set; }
-
-        public PlanetScale.PlanetScaleEnum Scale { get; private set; }
 
         private readonly bool UseRcsBalancer = false; // todo: not implemented
 
@@ -126,11 +124,7 @@ namespace Blackbird.Models
                 BodyRadius = body != null ? body.Radius : double.NaN,
                 BodyGravParameter = body != null ? body.gravParameter : double.NaN,
                 BodySurfaceGravity = GetBodySurfaceGravity(body),
-                BodyRotationPeriod = body != null ? body.rotationPeriod : double.NaN,
-
-                Scale = body != null && body.Radius > 1000000.0
-                    ? PlanetScale.PlanetScaleEnum.RSS
-                    : PlanetScale.PlanetScaleEnum.Stock
+                BodyRotationPeriod = body != null ? body.rotationPeriod : double.NaN
             };
         }
 

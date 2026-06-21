@@ -1,5 +1,4 @@
 using System;
-using Blackbird.Enums;
 using Blackbird.Guidance;
 using Blackbird.Helpers;
 using Blackbird.Models;
@@ -9,6 +8,7 @@ namespace Blackbird.Modules
 {
     public sealed class GuidanceComputer
     {
+        private SharedState BbState;
         private static readonly int WindowId = "Blackbird.GuidanceComputer".GetHashCode();
         private Rect _windowRect = new Rect(560, 620, 380, 300);
         private string _pitchInputText = "";
@@ -23,7 +23,11 @@ namespace Blackbird.Modules
         public bool IsVisible { get; set; }
 
         public void Toggle() => IsVisible = !IsVisible;
-        public void Initialize(LaunchHandler handler) => _launchHandler = handler;
+        public void Init(LaunchHandler handler, SharedState s)
+        {
+             _launchHandler = handler;
+            BbState = s;
+        }
 
         public void Draw()
         {

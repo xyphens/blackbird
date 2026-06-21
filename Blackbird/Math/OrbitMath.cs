@@ -558,12 +558,11 @@ namespace Blackbird.Mathematics
             const double EPS = 1e-9;
             const int MAX_ITERATIONS = 1000;
 
-            // Multi-start: march the departure guess forward by 0.1 synodic and optimize from each. We do NOT
-            // take the first feasible window ("force an intercept departing ~now" = high-ΔV at a bad phase, the
-            // old 280 m/s CA-worsening plans). But we also don't take the strict global-ΔV minimum, which chases
-            // marginal savings dozens of hours into the future (saw a 37 hr coast to save 10 m/s). Instead we
-            // collect every future-departure candidate, then pick the EARLIEST window whose total ΔV is within
-            // WINDOW_TOL of the global best -- cheapest practical departure. dtGuess stays in REAL seconds.
+            // Multi-start: march the departure guess forward by 0.1 synodic and optimize from each. We take
+            // neither the first feasible window (a depart-now intercept = high ΔV at a bad phase) nor the strict
+            // global-ΔV minimum (which chases marginal savings many hours out); instead, of all future-departure
+            // candidates, pick the EARLIEST whose total ΔV is within WINDOW_TOL of the global best. dtGuess stays
+            // in REAL seconds.
             const double WINDOW_TOL = 0.20;   // accept an earlier window if it costs <=20% more than the global best
             double dtGuess = 0.0;
 

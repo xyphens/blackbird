@@ -4,12 +4,13 @@ using UnityEngine;
 
 namespace Blackbird.Docking
 {
-    // The three user-gated legs of a docking run (contract: staged gates, manual between legs):
+    // The three user-gated legs of a docking run (staged gates, manual between legs):
     //   Approach - translate to a safe standoff waypoint out on the target port axis, aligned and stopped.
     //   Final    - translate in along the axis to a short hold point just clear of the port, aligned/stopped.
     //   Contact  - creep straight in along the axis until the ports touch (magnetic capture finishes the dock).
     public enum DockingLeg
     {
+        None,
         Approach,
         Final,
         Contact

@@ -8,6 +8,7 @@ namespace Blackbird.Modules
 {
     public sealed class Planner
     {
+        private SharedState BbState;
         private static readonly int WindowId = "Blackbird.Planner".GetHashCode();
         private Rect _windowRect = new Rect(560, 200, 500, 500);
 
@@ -16,15 +17,15 @@ namespace Blackbird.Modules
         private string _insertionHdgText = "";
         private string _launchTimeText = "";
 
-        private bool _showInsertionOptions = false;
-        private LaunchPlan _selectedPlan;
-        private LaunchPlan _cachedCandidates;
-
         private LaunchHandler _launchHandler;
 
         public bool IsVisible { get; set; }
 
-        public void Initialize(LaunchHandler handler) => _launchHandler = handler;
+        public void Init(LaunchHandler handler, SharedState s)
+        {
+            _launchHandler = handler;
+            BbState = s;
+        }
 
         public void Toggle() => IsVisible = !IsVisible;
 
@@ -32,13 +33,13 @@ namespace Blackbird.Modules
         {
             if (!IsVisible) return;
             if (FlightGlobals.ActiveVessel == null) return;
-            _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Planner");
+            _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Flight Planner");
         }
 
         private void DrawContents(int _)
         {
             Vessel vessel = FlightGlobals.ActiveVessel;
-            if (vessel == null) { GUI.DragWindow(); return; }
+            if (vessel == null || !BbState.PlannerVisible) { GUI.DragWindow(); return; }
 
             Vessel targetVessel = null;
             ITargetable target = FlightGlobals.fetch.VesselTarget;
@@ -49,26 +50,14 @@ namespace Blackbird.Modules
             {
                 GUILayout.Label($"Target: {targetVessel.vesselName}");
 
-                bool prevShow = _showInsertionOptions;
-                _showInsertionOptions = GUILayout.Toggle(_showInsertionOptions, "Show Insertion Options");
-
-                if (!_showInsertionOptions && prevShow)
+                if (BbState.LaunchPlan == null)
                 {
-                    // closed show insertion options, reset state
-                    _cachedCandidates = null;
-                    _launchTimeText = "";
+                    // generate launch candidates
+                    GeneratePlan(vessel, targetVessel);
                 }
-
-                if (_showInsertionOptions)
+                else
                 {
-                    if (_cachedCandidates == null)
-                    {
-                        // generate launch candidates
-                        GenerateCachedPlan(vessel, targetVessel);
-                    } else
-                    {
-                        DisplayLaunchPlanCandidates();
-                    }
+                    DisplayLaunchPlanCandidates();
                 }
             }
 
@@ -116,9 +105,8 @@ namespace Blackbird.Modules
         private void DisplayLaunchPlanCandidates()
         {
             GUILayout.Space(10);
-            GUILayout.Label("[Launch Candidates]");
 
-            if (_cachedCandidates?.Candidates == null || _cachedCandidates.Candidates.Length == 0)
+            if (BbState.LaunchPlan == null || BbState.LaunchPlan.Candidates.Length == 0)
             {
                 GUILayout.Label("No launch candidates.");
                 return;
@@ -135,9 +123,9 @@ namespace Blackbird.Modules
             GUILayout.Label("-", GUILayout.Width(45));
             GUILayout.EndHorizontal();
 
-            for (int i = 0; i < _cachedCandidates.Candidates.Length; i++)
+            for (int i = 0; i < BbState.LaunchPlan.Candidates.Length; i++)
             {
-                LaunchCandidate candidate = _cachedCandidates.Candidates[i];
+                LaunchCandidate candidate = BbState.LaunchPlan.Candidates[i];
 
                 GUILayout.BeginHorizontal();
 
@@ -152,13 +140,13 @@ namespace Blackbird.Modules
                 GUILayout.Label(FormatValue(candidate.EstimatedRemainingDeltaV, "F0"), GUILayout.Width(45));
 
                 // start choose button ...
-                bool isSelected = _selectedPlan == _cachedCandidates && _cachedCandidates.SelectedCandidateIndex == i;
+                bool isSelected = BbState.LaunchPlan.SelectedCandidateIndex == i;
                 bool canChoose = candidate.IsValid && _launchHandler != null &&
                     (_launchHandler.State == LaunchGuidanceState.Idle ||
                      _launchHandler.State == LaunchGuidanceState.PlanReady);
 
                 GUI.enabled = canChoose && !isSelected;
-                if (GUILayout.Button(isSelected ? "Active" : "Choose", GUILayout.Width(60))) SelectCandidate(_cachedCandidates, i);
+                if (GUILayout.Button(isSelected ? "Active" : "Choose", GUILayout.Width(60))) SelectCandidate(BbState.LaunchPlan, i);
                 // ... end choose button
                 GUI.enabled = true;
 
@@ -171,11 +159,10 @@ namespace Blackbird.Modules
 
         private void SelectCandidate(LaunchPlan launchPlan, int index)
         {
-            if (launchPlan?.Candidates == null) return;
-            if (index < 0 || index >= launchPlan.Candidates.Length) return;
+            if (index < 0 || index >= launchPlan.Candidates.Length || launchPlan?.Candidates == null) return;
 
             launchPlan.SelectedCandidateIndex = index;
-            _selectedPlan = launchPlan;
+            BbState.SelectedLaunchCandidate = launchPlan.Candidates[index];
 
             LaunchCandidate c = launchPlan.Candidates[index];
             _insertionApText = c.InsertionApoapsisAlt.ToString("F0");
@@ -188,22 +175,22 @@ namespace Blackbird.Modules
         {
             if (_launchHandler == null || vessel == null) return;
 
-            if (_cachedCandidates != null)
+            if (BbState.LaunchPlan != null)
             {
                 // Full rendezvous plan already has LaunchWindow, orbits, phasing, etc. — use it directly.
-                _launchHandler.SetPlan(_cachedCandidates);
+                _launchHandler.SetPlan(BbState.LaunchPlan, BbState);
             }
             else
             {
                 InsertionTarget it = CreateInsertionTargetFromUi();
-                double launchUt = _selectedPlan?.SelectedCandidate?.LaunchUt ?? double.NaN;
+                double launchUt = BbState.SelectedLaunchCandidate?.LaunchUt ?? double.NaN;
                 _launchHandler.ConstructLaunchPlan(vessel, targetVessel, it.ApoapsisAlt, it.PeriapsisAlt, it.Heading, launchUt);
             }
 
             _launchHandler.AcceptPlan();
         }
 
-        private void GenerateCachedPlan(Vessel vessel, Vessel targetVessel)
+        private void GeneratePlan(Vessel vessel, Vessel targetVessel)
         {
             LaunchLocation ll = LaunchLocation.FromVessel(vessel);
             InsertionTarget targetIt = new InsertionTarget
@@ -212,7 +199,7 @@ namespace Blackbird.Modules
                 PeriapsisAlt = TrajectoryProvider.GetPeriapsisAlt(targetVessel),
                 Heading = 0
             };
-            _cachedCandidates = LaunchPlanner.Create(vessel, targetVessel, targetIt, ll);
+            BbState.LaunchPlan = LaunchPlanner.Create(vessel, targetVessel, targetIt, ll);
             _launchTimeText = "";
         }
 

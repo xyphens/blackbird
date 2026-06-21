@@ -60,6 +60,10 @@
     <Reference Include="UnityEngine.InputLegacyModule">
       <HintPath>D:\SteamLibrary\steamapps\common\Kerbal Space Program\KSP_x64_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath>
     </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule, Version=0.0.0.0, Culture=neutral, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>bin\Release\UnityEngine.TextRenderingModule.dll</HintPath>
+    </Reference>
     <Reference Include="UnityEngine.UI">
       <HintPath>D:\SteamLibrary\steamapps\common\Kerbal Space Program\KSP_x64_Data\Managed\UnityEngine.UI.dll</HintPath>
     </Reference>
@@ -74,16 +78,14 @@
     <Compile Include="Guidance\AscentGuidance.cs" />
     <Compile Include="Guidance\AscentProfile.cs" />
     <Compile Include="Guidance\ClassicAscentGuidance.cs" />
-    <Compile Include="Enums\GuidanceMode.cs" />
-    <Compile Include="Enums\PoweredGuidancePhase.cs" />
     <Compile Include="Guidance\AttitudeControl.cs" />
     <Compile Include="Guidance\DirectionTracking.cs" />
-    <Compile Include="Guidance\LaunchGuidanceState.cs" />
     <Compile Include="Guidance\LaunchHandler.cs" />
     <Compile Include="Guidance\RcsPID.cs" />
     <Compile Include="Guidance\WarpHelper.cs" />
     <Compile Include="Guidance\PIDTranslation.cs" />
     <Compile Include="Guidance\PoweredAscentGuidance.cs" />
+    <Compile Include="Helpers\Dropdown.cs" />
     <Compile Include="Helpers\Helpers.cs" />
     <Compile Include="Logging\Log.cs" />
     <Compile Include="Math\Helpers.cs" />
@@ -101,6 +103,7 @@
     <Compile Include="Models\PoweredGuidanceCommand.cs" />
     <Compile Include="Models\TrajectoryState.cs" />
     <Compile Include="Models\VesselState.cs" />
+    <Compile Include="Modules\SharedState.cs" />
     <Compile Include="Planning\PhasingRecommendationCalculator.cs" />
     <Compile Include="Models\PhasingRecommendationMode.cs" />
     <Compile Include="Planning\LaunchPlanner.cs" />
@@ -123,7 +126,6 @@
     <Compile Include="Rendezvous\VesselRendezvousWorld.cs" />
     <Compile Include="Rendezvous\RendezvousHandler.cs" />
     <Compile Include="Modules\RendezvousComputer.cs" />
-    <Compile Include="Enums\PlanetScale.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Properties\Resources.Designer.cs">
       <AutoGen>True</AutoGen>
@@ -139,7 +141,6 @@
     <Compile Include="PSG\PsgSolution.cs" />
     <Compile Include="PSG\PsgTarget.cs" />
     <Compile Include="PSG\PsgTerminal.cs" />
-    <Compile Include="Trajectory\ITrajectoryProvider.cs" />
     <Compile Include="Trajectory\TrajectoryProvider.cs" />
     <Compile Include="ThirdParty\alglib\*.cs" />
   </ItemGroup>
@@ -148,6 +149,12 @@
       <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
     </EmbeddedResource>
+  </ItemGroup>
+  <ItemGroup>
+    <WCFMetadata Include="Connected Services\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="UnityEngine.TextRenderingModule.dll" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>

@@ -11,11 +11,10 @@ namespace Blackbird.Rendezvous
         public double TimeSeconds;   // time from now until the closest approach
     }
 
-    // Finds the next closest approach between two coasting two-body trajectories. The search horizon is
-    // the SYNODIC period (how long until the relative phase realigns) — NOT a single orbital period —
-    // capped at maxHorizon, so a closest approach that is many orbits away is still found instead of the
-    // scan reporting the edge of a one-period window (which made the reported time appear frozen). A
-    // coarse scan brackets the global minimum, then a local refine pins the time. Pure/offline-testable.
+    // Finds the next closest approach between two coasting two-body trajectories. The search horizon is the
+    // SYNODIC period (when the relative phase realigns), capped at maxHorizon, so an approach many orbits
+    // away is still found rather than reporting the edge of a one-period window. A coarse scan brackets the
+    // global minimum, then a local refine pins the time. Pure/offline-testable.
     public static class ClosestApproachSolver
     {
         public static ApproachResult FindNextApproach(

@@ -1,6 +1,6 @@
 using System;
 using System.Threading.Tasks;
-using Blackbird.Enums;
+using Blackbird.Modules;
 using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Psg;

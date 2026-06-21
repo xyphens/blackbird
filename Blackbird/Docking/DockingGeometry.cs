@@ -43,8 +43,7 @@ namespace Blackbird.Docking
     // in, scalars + world vectors out) so it is offline-testable like RelativeState. It decomposes the
     // chaser's offset from the target port into ALONG-AXIS (how far in front of the port face) and LATERAL
     // (how far off the centerline), gives the standoff approach waypoint out on the axis, and the attitude
-    // alignment error. The docking stage (D2) steers on these; the in-game seam (D3) supplies the port
-    // transforms from the live ModuleDockingNodes.
+    // alignment error.
     public struct DockingGeometry
     {
         public double AxialDistance;      // chaser offset projected on the target axis; >0 = in front of the face

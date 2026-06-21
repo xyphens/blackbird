@@ -51,14 +51,7 @@ namespace Blackbird.Docking
             pid = new RcsPID(Kp, Ki, Kd);
         }
 
-        // [x] SetTargetWorldVelocity(Vector3d)
-
-        // [x] Drive(FlightCtrlState s) as Update()
-
-        // [x] setPIDParameters() as SetParameters()
-
-        // [x] rcsAccelFactor() → pid.Kp
-
+        // Derive the PID gains from the time constant (MechJeb's setPIDParameters), unless in manual-gain mode.
         public void SetParameters()
         {
             if (rcsManualControl)

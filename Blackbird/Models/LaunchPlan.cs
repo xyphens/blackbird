@@ -1,4 +1,3 @@
-using Blackbird.Enums;
 using Blackbird.Guidance;
 using UnityEngine;
 
@@ -43,8 +42,6 @@ namespace Blackbird.Models
             get { return SelectedCandidate != null ? SelectedCandidate.InsertionPeriapsisAlt : _recommendedPeAlt; }
             set { _recommendedPeAlt = value; }
         }
-
-        public PlanetScale.PlanetScaleEnum ScaleLabel { get; set; }
         public InsertionTarget InsertionTarget { get; set; }
         public PhasingOrbit PhasingOrbit { get; set; }
 

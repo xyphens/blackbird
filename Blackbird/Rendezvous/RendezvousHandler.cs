@@ -7,17 +7,16 @@ using Blackbird.Models;
 using Blackbird.Trajectory;
 using Blackbird.RCS;
 using UnityEngine;
+using Blackbird.Modules;
 
 namespace Blackbird.Rendezvous
 {
-    // Coordinates the terminal-rendezvous executor with the live vessel — the rendezvous-phase analogue
-    // of LaunchHandler. Each frame it builds the world seam, runs the executor, caches the resulting
-    // command + relative state, and logs while burning; on the fly-by-wire pass it actuates steering and
-    // throttle, but ONLY while a stage is actively burning, so it never fights the player otherwise.
-    // Arm/Trigger/Abort/Reset are the user gates surfaced to the UI. A master Engage toggle keeps the
-    // whole thing dormant until the user opts in.
+    // Couples the terminal-rendezvous executor to the live vessel (rendezvous analogue of LaunchHandler):
+    // each frame builds the world seam, runs the executor, caches the command + relative state; the
+    // fly-by-wire pass actuates steering/throttle only while a stage is burning. Engage gates the whole thing.
     public sealed class RendezvousHandler
     {
+        private SharedState bbState;
         private readonly TerminalRendezvousExecutor _executor = new TerminalRendezvousExecutor();
         private readonly AttitudeControl _attitude = new AttitudeControl();
         private readonly BlackbirdLog _log = new BlackbirdLog(LogContext.Rendezvous);
@@ -27,19 +26,16 @@ namespace Blackbird.Rendezvous
         private bool _engaged;
         private bool _burningLastApply;   // were we actuating thrust on the previous fly-by-wire pass?
 
-        // Soft-enable RCS: while we are actively driving a maneuver we turn RCS on so torque-poor craft can
-        // still point (reaction wheels aren't guaranteed); when we hand control back we RESTORE the player's
-        // prior RCS setting so we don't permanently override their preference.
-        // DU: disabled for now
-        //private bool _rcsForcedOn;        // are we currently holding RCS on for a maneuver?
-        //private bool _rcsPriorState;      // the player's RCS setting captured when we took control
+        // Soft-enable RCS during a maneuver so torque-poor craft can still point, restoring the player's
+        // setting on handback. Disabled for now.
+        //private bool _rcsForcedOn;
+        //private bool _rcsPriorState;
 
-        // Live closest-approach monitor: recomputed off the draw path on a throttle so it can be watched
-        // collapse during/after a burn, independent of any plan. Searches out to the synodic period
-        // (capped) so the time-to-CA is real and decreases, instead of pinning at one orbital period.
-        private const double CaRecomputeIntervalSeconds = 0.5; // internal FPS
+        // Live closest-approach monitor: recomputed off the draw path on a throttle, searching out to the
+        // synodic period (capped) so time-to-CA actually counts down rather than pinning at one period.
+        private const double CaRecomputeIntervalSeconds = 0.5;
         private const int CaSampleCount = 240;
-        private const double CaMaxHorizonSeconds = 6.0 * 3600.0;   // cap the synodic search at 6 hours
+        private const double CaMaxHorizonSeconds = 6.0 * 3600.0;
         private double _lastCaComputeUt = double.NegativeInfinity;
 
         // Plan preview refresh throttle (so the panel shows ΔV/CA before the user Executes).
@@ -54,10 +50,9 @@ namespace Blackbird.Rendezvous
         private const double BurnLogIntervalSeconds = 0.25;
         private double _lastBurnLogUt = double.NegativeInfinity;
 
-        // Orient-then-stabilize-then-burn gate: hold throttle until the craft is BOTH pointed along the
-        // burn vector (within AlignStartDeg) AND has stopped rotating (rate below MaxAngularRate), held
-        // for StabilizeDwell so it has truly settled — otherwise it fires mid-slew and flings the burn
-        // off-axis. Once burning, keep throttle while within the looser AlignKeepDeg (hysteresis).
+        // Orient-then-stabilize-then-burn gate: hold throttle until pointed (within AlignStartDeg) AND
+        // rotation has settled (below MaxAngularRate) for StabilizeDwell, else the burn fires mid-slew and
+        // flings off-axis. Once burning, AlignKeepDeg gives hysteresis.
         private const double AlignStartDeg = 2.0;
         private const double AlignKeepDeg = 20.0;
         private const double MaxAngularRateDegPerSec = 1.0;
@@ -66,25 +61,20 @@ namespace Blackbird.Rendezvous
         private double _steadySinceUt = double.NegativeInfinity;
         private bool _wasExecuting;   // edge-detect entry into a stage burn (for one-shot diagnostics)
 
-        // Docking RCS translation: map the world-frame velocity error onto the control-transform axes and
-        // command RCS. Gain converts m/s of error to translation input (saturates fast — RCS is near
-        // bang-bang); the deadband stops chatter. The Translate*Sign constants are the FlightCtrlState axis
-        // polarity — VERIFY IN-GAME and flip any that come out mirrored (control-frame sign conventions vary).
+        // Docking RCS translation (legacy; docking now lives in DockingHandler). World-frame velocity error
+        // mapped to control-transform axes; gain saturates fast (RCS is near bang-bang), deadband stops chatter.
         private const double DockTranslationGain = 5.0;
         private const float DockTranslationDeadband = 0.05f;
-        // FlightCtrlState translation axes are inverted relative to the world-direction dot products below:
-        // a positive command fires RCS in the +axis direction, which pushes the craft the OTHER way. In-game
-        // testing (2026-06-18) confirmed all-+1 signs translated the craft AWAY from the target on every axis,
-        // so all three are negated to push toward the commanded velocity error.
-        private const float TranslateRightSign = -1.0f;  // state.X (KSP convention inverted vs rt.right)
-        private const float TranslateUpSign = -1.0f;     // state.Y (KSP convention inverted vs dorsal/up)
-        private const float TranslateFwdSign = -1.0f;    // state.Z (KSP convention inverted vs port/nose)
-        private Vector3d _lastTargetVelocityWorld = Vector3d.zero;   // target velocity, refreshed each engaged tick
+        // FlightCtrlState translation axes are inverted vs the world-direction dot products: a +command fires
+        // RCS the OTHER way, so all three signs are negated to push toward the error (in-game confirmed).
+        private const float TranslateRightSign = -1.0f;  // state.X
+        private const float TranslateUpSign = -1.0f;     // state.Y
+        private const float TranslateFwdSign = -1.0f;    // state.Z
+        private Vector3d _lastTargetVelocityWorld = Vector3d.zero;
 
-        // Warp-to-closest-approach (user convenience). Absolute target UT; auto-stops a lead time short of
-        // the event so the craft can pre-orient. The lead is fixed for stages that fire on arrival, but for
-        // Match Velocity it is the estimated time to slew to the retro-relative-velocity attitude (plus a
-        // settle/safety margin), so the craft is pointed and settled by the time it reaches the approach.
+        // Warp-to-closest-approach: absolute target UT, auto-stopped a lead short so the craft can pre-orient.
+        // The lead is a fixed minimum for arrival-fired stages; for Match Velocity it is the estimated slew to
+        // the retro-relative-velocity attitude (+settle/margin).
         private const double WarpLeadMinSeconds = 10.0;    // minimum lead before the event (any stage)
         private const double WarpLeadMaxSeconds = 120.0;   // cap, so a huge slew estimate can't strand the warp
         private const double OrientPaddingSeconds = 3.0;   // safety margin on top of the estimated slew + dwell
@@ -92,11 +82,10 @@ namespace Blackbird.Rendezvous
         private double _warpLeadSeconds = WarpLeadMinSeconds;   // lead actually used for the active warp
         public bool Warping { get; private set; }
 
-        public bool Engaged => _engaged;
-        public RendezvousPhase Phase => _executor.Phase;
-        public RendezvousStage Stage => _executor.Stage;
-        public bool HasInterceptPlan => _executor.HasInterceptPlan;
-        public InterceptSolution InterceptPlan => _executor.InterceptPlan;
+        //public RendezvousPhase Phase => _executor.Phase;
+        //public RendezvousStage Stage => _executor.Stage;
+        public bool HasInterceptPlan => _executor.HasInterceptPlan; // todo: replace with sharedstate
+        public InterceptSolution InterceptSolution => _executor.InterceptSolution;
         public RendezvousCommand Command => _command;
         public bool HasCommand => _hasCommand;
         public RelativeState Relative { get; private set; }
@@ -107,31 +96,31 @@ namespace Blackbird.Rendezvous
         public double LiveClosestApproachMeters { get; private set; } = double.NaN;
         public double LiveTimeToClosestApproachSeconds { get; private set; } = double.NaN;
 
-        // Live CA captured at the instant a burn is executed, so POSTBURN-DIAG can report before -> after
-        // (whether the burn actually tightened the closest approach). Set in LogExecuteDiagnostic.
+        // Live CA captured at burn start so POSTBURN-DIAG can report before -> after.
         private double _caBeforeBurnMeters = double.NaN;
 
-        // Actuation feedback for the UI: while a burn is commanded, whether we are still orienting (true)
-        // or actually thrusting (false), whether we are aligned but waiting to settle (Stabilizing), and
-        // the current attitude error to the burn vector.
+        // UI actuation feedback while a burn is commanded: orienting vs thrusting, settling after alignment,
+        // and the current attitude error to the burn vector.
         public bool Orienting { get; private set; }
         public bool Stabilizing { get; private set; }
         public double AlignmentErrorDeg { get; private set; } = double.NaN;
 
-        // Master enable. Disengaging also drops attitude control so the player regains the craft.
-        public void Engage() { _engaged = true; }
-        public void Disengage() { _engaged = false; _attitude.Reset(); }
+        public void ToggleEngage(bool status)
+        {
+            _engaged = status;
+            if (!_engaged) _attitude.Reset();
+        }
 
         // User gates (pass-through to the executor). Executing a stage cancels any warp.
         public bool Execute() { StopWarp(); return _executor.Execute(); }
         // Execute a specific stage out of order (e.g. Match Velocity any time, to kill a closing rate).
-        public bool Execute(RendezvousStage stage) { StopWarp(); return _executor.Execute(stage); }
+        public bool Execute(RendezvousMethod method) { StopWarp(); return _executor.Execute(method); }
         // Docking gate: start docking (resets to the Approach leg) or resume the next queued leg from Coast.
         public bool ExecuteDocking() { StopWarp(); return _executor.ExecuteDocking(); }
         public DockingLeg DockingLeg => _executor.DockingLeg;
 
-        // Close-approach park distance ("match velocities at X m"). The default is restored when the UI
-        // option is off, so a one-off custom distance never silently persists into the next approach.
+        // Close-approach park distance ("match velocities at X m"); the default is restored when the UI
+        // option is off so a one-off custom value doesn't persist into the next approach.
         public double ParkingDistanceMeters
         {
             get { return _executor.ParkingDistance; }
@@ -157,14 +146,6 @@ namespace Blackbird.Rendezvous
             set { _executor.RendezMaxApproachSpeedMetersPerSecond = value; }
         }
 
-        // Secondary planner toggle: false = original single-rev intercept; true = MJ-derived Hohmann transfer
-        // (experimental). Affects both the plan preview and intercept execution.
-        public bool UseHohmannPlanner
-        {
-            get { return _executor.UseHohmannPlanner; }
-            set { _executor.UseHohmannPlanner = value; }
-        }
-
         // Invalidate the cached plan preview so it recomputes once (planner switched / manual refresh).
         public void RequestPlanRefresh() => _executor.RequestPlanRefresh();
         public const double CloseApproachGainDefault = TerminalRendezvousExecutor.RendezDistanceApproachGainDefault;
@@ -172,11 +153,13 @@ namespace Blackbird.Rendezvous
         public void Abort() { _executor.Abort(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
         public void ResetSequence() { _executor.Reset(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
 
-        // Warp toward the predicted closest approach using the shared safe-warp ladder; auto-stops a few
-        // seconds short (and is cancelled the moment a burn starts). No-op if there is no CA estimate yet.
+        public void Init(SharedState s) => bbState = s;
+
+        // Warp toward the predicted closest approach (shared safe-warp ladder), auto-stopping a lead short
+        // and cancelling the moment a burn starts. No-op without a CA estimate.
         public void WarpToClosestApproach()
         {
-            if (_executor.Phase == RendezvousPhase.Executing) return;
+            if (bbState.InterceptPhase == InterceptPhase.Executing) return;
             double timeToCa = LiveTimeToClosestApproachSeconds;
             double lead = ComputeWarpLeadSeconds();
             if (!MathHelpers.IsFinite(timeToCa) || timeToCa <= lead) return;
@@ -186,12 +169,11 @@ namespace Blackbird.Rendezvous
             Warping = true;
         }
 
-        // Warp to a planned transfer IGNITION UT (the Hohmann picks a future departure, not the live CA).
-        // Stops a short lead before ignition so the craft can orient/settle; the executor's coast-to-ignition
-        // gate then releases the burn at ignition. Uses the same safe-warp ladder + auto-stop in Update.
+        // Warp to a planned transfer ignition UT (Hohmann departs in the future, not at the live CA),
+        // stopping a lead short so the craft can orient; the coast-to-ignition gate fires the burn at ignition.
         public void WarpToIgnition(double ignitionUt)
         {
-            if (_executor.Phase == RendezvousPhase.Executing && !CoastingToIgnition) return;
+            if (bbState.InterceptPhase == InterceptPhase.Executing && !CoastingToIgnition) return;
             double now = Planetarium.GetUniversalTime();
             double dt = ignitionUt - now;
             double lead = ComputeIgnitionWarpLeadSeconds();
@@ -202,16 +184,15 @@ namespace Blackbird.Rendezvous
             Warping = true;
         }
 
-        // Lead to stop the warp short of the transfer ignition: the estimated slew to the burn attitude
-        // (+settle/margin) PLUS half the burn duration, so the craft is oriented and the centered burn can
-        // straddle the planned ignition. Clamped like the other warp leads.
+        // Warp lead before transfer ignition = estimated slew (+margin) plus half the burn duration, so the
+        // centered burn straddles the planned ignition. Clamped like the other leads.
         private double ComputeIgnitionWarpLeadSeconds()
         {
             Vessel active = FlightGlobals.ActiveVessel;
             if (active == null || !_executor.HasInterceptPlan) return WarpLeadMinSeconds;
             double padding = OrientPaddingSeconds + StabilizeDwellSeconds;
-            double slew = AttitudeControl.EstimateSlewTimeSeconds(active, _executor.InterceptPlan.DeltaV, padding);
-            double halfBurn = HalfBurnSeconds(active, _executor.InterceptPlan.DeltaVMagnitude);
+            double slew = AttitudeControl.EstimateSlewTimeSeconds(active, bbState.InterceptSolution.DeltaV, padding);
+            double halfBurn = HalfBurnSeconds(active, bbState.InterceptSolution.DeltaVMagnitude);
             return MathHelpers.Clamp(slew + halfBurn, WarpLeadMinSeconds, WarpLeadMaxSeconds);
         }
 
@@ -228,24 +209,21 @@ namespace Blackbird.Rendezvous
         // The Hohmann's frozen future-departure UT once a burn is armed (for the warp-to-ignition button).
         public double PlannedIgnitionUt => _executor.PlannedIgnitionUt;
 
-        // True while the Hohmann intercept is armed and HOLDING for its future ignition (coast-to-ignition) --
-        // it is Executing but NOT yet burning, so warping toward the ignition window is allowed in this state.
+        // True while the Hohmann intercept is armed and holding for its future ignition — Executing but not
+        // yet burning, so warping toward the ignition window is allowed.
+        
         public bool CoastingToIgnition =>
-            _executor.Phase == RendezvousPhase.Executing
-            && _executor.Stage == RendezvousStage.Intercept
-            && _executor.UseHohmannPlanner
+            bbState.InterceptPhase == InterceptPhase.Executing
+            && bbState.RendezvousMethod == RendezvousMethod.Intercept
+            && bbState.InterceptMethod == InterceptMethod.Hohmann
             && _executor.BurnArmed
             && Planetarium.GetUniversalTime() < _executor.PlannedIgnitionUt;
 
-        // The lead time to stop the warp short of the predicted closest approach. Stages that fire on
-        // arrival need only a small fixed lead; Match Velocity must be pointed retrograde-to-relative
-        // before it can burn, so it leaves the estimated slew time (from torque/MOI, via AttitudeControl)
-        // plus the settle dwell and a safety margin. Clamped so it always leaves at least the minimum and
-        // never an unbounded amount.
+        // Warp lead before the closest approach: a small fixed lead for arrival-fired stages; for Match
+        // Velocity the estimated slew to the retro-relative attitude (+settle dwell + margin), clamped.
         private double ComputeWarpLeadSeconds()
         {
-            if (_executor.Stage != RendezvousStage.MatchVelocity || !HasRelative)
-                return WarpLeadMinSeconds;
+            if (bbState.RendezvousMethod != RendezvousMethod.MatchVelocity || !HasRelative) return WarpLeadMinSeconds;
 
             Vessel active = FlightGlobals.ActiveVessel;
             if (active == null) return WarpLeadMinSeconds;
@@ -264,22 +242,21 @@ namespace Blackbird.Rendezvous
             _warpTargetUt = 0.0;
         }
 
-        // Per-frame tick (from BlackBird.Update). Computes the command + relative state and logs while
-        // executing. Bounded work; does not actuate (that is ApplyFlightControls).
+        // Per-frame tick (from BlackBird.Update): computes the command + relative state and logs while
+        // executing. Bounded; does not actuate (that is ApplyFlightControls).
         public void Update(Vessel active, Vessel target)
         {
             Target = target;
             _hasCommand = false;
             HasRelative = false;
 
-            if (active == null || target == null || ReferenceEquals(active, target))
+            if (active == null || target == null || ReferenceEquals(active, target) || bbState == null)
             {
                 StopWarp();
                 return;
             }
 
-            // Relative state + live closest approach are computed whenever a target exists, so the panel
-            // can be monitored before engaging. The CA scan is throttled to keep it cheap.
+            // Computed whenever a target exists so the panel can be watched before engaging; CA scan throttled.
             Relative = RelativeState.Compute(active, target);
             HasRelative = true;
 
@@ -290,14 +267,13 @@ namespace Blackbird.Rendezvous
                 _lastCaComputeUt = now;
             }
 
-            // Warp-to-CA monitoring: back off the rate as the event nears, stop just short, and bail if
-            // a burn starts.
+            // Warp-to-CA monitoring: back off the rate as the event nears, stop just short, bail on a burn.
             if (Warping)
             {
                 double secondsToWarpTarget = _warpTargetUt - now;
-                // Stop on an actual burn or when we reach the lead. The Hohmann coast-to-ignition is Executing
-                // but NOT burning, so let the warp continue through it toward the ignition window.
-                bool burning = _executor.Phase == RendezvousPhase.Executing && !CoastingToIgnition;
+                // Stop on a burn or at the lead; let the warp run through the Hohmann coast-to-ignition
+                // (Executing but not burning) toward the ignition window.
+                bool burning = bbState.InterceptPhase == InterceptPhase.Executing && !CoastingToIgnition;
                 if (burning || secondsToWarpTarget <= _warpLeadSeconds)
                     StopWarp();
                 else
@@ -309,20 +285,18 @@ namespace Blackbird.Rendezvous
             VesselRendezvousWorld world = new VesselRendezvousWorld(active, target);
 
             // Keep a fresh plan preview for the pending stage so the panel shows ΔV/CA before Execute.
-            if (_executor.Phase != RendezvousPhase.Executing && now - _lastPreviewUt >= PreviewIntervalSeconds)
+            if (bbState.InterceptPhase != InterceptPhase.Executing && now - _lastPreviewUt >= PreviewIntervalSeconds)
             {
-                _executor.RefreshPlanPreview(world);
+                _executor.RefreshPlanPreview(world, bbState);
                 _lastPreviewUt = now;
 
-                // Feed the executor an ignition-time-drift lead = estimated time to orient to the burn
-                // vector (+settle/margin), so the frozen plan matches the state the engine actually fires
-                // from. Uses the current preview ΔV direction; refines over successive previews as the plan
-                // settles. (See TerminalRendezvousExecutor.PlanIntercept.)
-                if (_executor.Stage == RendezvousStage.Intercept && _executor.HasInterceptPlan)
+                // Feed the ignition-time-drift lead = estimated slew to the burn vector (+settle/margin), so
+                // the frozen plan matches the state the engine fires from; refines over successive previews.
+                if (bbState.RendezvousMethod == RendezvousMethod.Intercept && _executor.HasInterceptPlan)
                 {
                     double padding = OrientPaddingSeconds + StabilizeDwellSeconds;
                     _executor.IgnitionLeadSeconds = AttitudeControl.EstimateSlewTimeSeconds(
-                        active, _executor.InterceptPlan.DeltaV, padding);
+                        active, bbState.InterceptSolution.DeltaV, padding);
 
                     // Feed ship accel so the executor can center the burn (ignite half the burn duration early).
                     VesselState vs = VesselState.FromVessel(active);
@@ -332,10 +306,9 @@ namespace Blackbird.Rendezvous
                 }
             }
 
-            // Feed the close-approach brake its braking-distance inputs from the live craft: available
-            // deceleration (thrust / mass) and the time to flip to a retrograde-relative attitude. Throttled,
-            // and only while the close stage is current. Guarded so a bad reading just keeps the last/default.
-            if (_executor.Stage == RendezvousStage.CloseApproach && now - _lastBrakeParamsUt >= BrakeParamsIntervalSeconds)
+            // Feed the close-approach brake its braking-distance inputs: available decel (thrust/mass) and the
+            // slew time to flip retrograde-relative. Throttled, close stage only; a bad reading keeps the last.
+            if (bbState.RendezvousMethod == RendezvousMethod.CloseApproach && now - _lastBrakeParamsUt >= BrakeParamsIntervalSeconds)
             {
                 _lastBrakeParamsUt = now;
                 VesselState vs = VesselState.FromVessel(active);
@@ -349,53 +322,50 @@ namespace Blackbird.Rendezvous
                         AttitudeControl.EstimateSlewTimeSeconds(active, brakeDir, OrientPaddingSeconds);
             }
 
-            // Cache the target velocity for the docking RCS controller (which runs on the fly-by-wire pass
-            // where only the active vessel is in hand).
+            // Cache the target velocity for the docking RCS controller (the fly-by-wire pass only holds the
+            // active vessel).
             _lastTargetVelocityWorld = TrajectoryProvider.GetVelocity(target);
 
-            // Feed the docking stage the live port transforms: the target docking port (the operator targets
-            // it directly) and the chaser's own port (the part being "Controlled From"). Invalid until both
-            // are present, in which case the stage idles with operator guidance.
-            if (_executor.Stage == RendezvousStage.Docking)
+            // Feed the docking stage the live port transforms (target port = the operator's target, chaser
+            // port = the Controlled-From part); invalid until both exist.
+            
+            if (bbState.DockingEnabled)
             {
                 bool portsValid = TryGetDockingPorts(active, out PortState chaserPort, out PortState targetPort);
                 _executor.SetDockingPorts(portsValid, chaserPort, targetPort);
             }
 
-            // Feed the executor the live predicted CA + time-to-CA so the close-approach stage can decide
-            // when to coast (projection reaches the parking band) vs keep closing.
+            // Feed the live predicted CA + time-to-CA so the close-approach stage can decide whether to coast
+            // (projection reaches the parking band) or keep closing.
             double closestApproach = MathHelpers.IsFinite(LiveClosestApproachMeters) ? LiveClosestApproachMeters : double.NaN;
             double timeToClosestApproach = MathHelpers.IsFinite(LiveTimeToClosestApproachSeconds)
                 ? LiveTimeToClosestApproachSeconds : double.NaN;
             _command = _executor.Update(world, closestApproach, timeToClosestApproach);
             _hasCommand = true;
 
-            // One-shot diagnostic on entering a stage burn: dumps the measured state so we can confirm
-            // in-game whether position/velocity are a consistent two-body state (SMA-from-state vs the
-            // stock orbit SMA) and whether the plan ΔV is sane. This is the decisive frame check the
-            // offline harness can't make.
-            bool executingNow = _executor.Phase == RendezvousPhase.Executing;
+            // One-shot diagnostic on entering a stage burn: dumps the measured state (SMA-from-state vs stock
+            // orbit SMA, plan ΔV) — the frame-consistency check the offline harness can't make.
+            bool executingNow = bbState.InterceptPhase == InterceptPhase.Executing;
             if (executingNow && !_wasExecuting) LogExecuteDiagnostic(active, target, world);
             if (!executingNow && _wasExecuting) LogPostBurnDiagnostic(active, target);
             _wasExecuting = executingNow;
 
-            // Throttle the per-frame burn log so a multi-second burn doesn't write megabytes.
+            // Throttle the burn log so a multi-second burn doesn't write megabytes.
             if (executingNow && now - _lastBurnLogUt >= BurnLogIntervalSeconds)
             {
-                _log.Write(_executor.Stage.ToString(), _command, Relative);
+                _log.Write(bbState.RendezvousMethod.ToString(), _command, Relative);
                 _lastBurnLogUt = now;
             }
         }
 
-        // Logs a consistency snapshot at burn start: |r|, |v|, the semi-major axis implied by the state
-        // vector vs the stock orbit's SMA (mismatch ⇒ position/velocity are in inconsistent frames), and
-        // the resulting plan. Read it from glog\Blackbird\rendezvous.log..
+        // Logs a consistency snapshot at burn start: |r|, |v|, SMA-from-state vs the stock orbit SMA (mismatch
+        // ⇒ inconsistent frames), and the resulting plan. See glog\Blackbird\rendezvous.log.
         private void LogExecuteDiagnostic(Vessel active, Vessel target, IRendezvousWorld world)
         {
             double mu = world.Mu;
             Vector3d aR = world.ActivePosition, aV = world.ActiveVelocity;
             Vector3d tR = world.TargetPosition, tV = world.TargetVelocity;
-            InterceptSolution p = _executor.InterceptPlan;
+            InterceptSolution p = _executor.InterceptSolution;
 
             double aSmaOrbit = active != null && active.orbit != null ? active.orbit.semiMajorAxis : double.NaN;
             double tSmaOrbit = target != null && target.orbit != null ? target.orbit.semiMajorAxis : double.NaN;
@@ -414,10 +384,8 @@ namespace Blackbird.Rendezvous
                 "activeV=" + aV, "planDV=" + p.DeltaV);
         }
 
-        // Logs how well the just-finished intercept burn matched its plan: planned vs delivered ΔV
-        // (magnitude shortfall + direction error) and the plan's predicted CA vs the freshly re-measured
-        // achieved CA. This is the decisive over/under-burn + execution-error data; read it from
-        // glog\Blackbird\rendezvous.log. No-op unless the completed stage was an intercept burn.
+        // Logs how well the intercept burn matched its plan: planned vs delivered ΔV (shortfall + direction
+        // error) and predicted vs re-measured achieved CA. No-op unless the stage was an intercept burn.
         private void LogPostBurnDiagnostic(Vessel active, Vessel target)
         {
             if (!_executor.HasLastInterceptBurnReport || active == null || target == null) return;
@@ -428,8 +396,8 @@ namespace Blackbird.Rendezvous
 
             double deliveredTotal = r.DeliveredVector.magnitude;
 
-            // Direction error between the actual velocity change and the planned ΔV (shows how much gravity
-            // tilted the burn off the planned axis). Small = the frozen-axis burn tracked the plan well.
+            // Direction error between actual velocity change and planned ΔV (how much gravity tilted the burn
+            // off-axis); small = the frozen-axis burn tracked the plan well.
             double dirErrorDeg = double.NaN;
             if (r.PlannedDvVector.sqrMagnitude > 0.0 && r.DeliveredVector.sqrMagnitude > 0.0)
             {
@@ -451,8 +419,8 @@ namespace Blackbird.Rendezvous
                     r.PredictedClosestApproach, LiveTimeToClosestApproachSeconds));
         }
 
-        // Semi-major axis implied by a state vector (vis-viva); NaN if unbound. Should equal the stock
-        // orbit's SMA when position and velocity are a consistent pair.
+        // Semi-major axis implied by a state vector (vis-viva); NaN if unbound. Equals the stock orbit SMA
+        // when position and velocity are a consistent pair.
         private static double SmaFromState(Vector3d r, Vector3d v, double mu)
         {
             double rmag = r.magnitude;
@@ -462,9 +430,8 @@ namespace Blackbird.Rendezvous
             return -mu / (2.0 * energy);
         }
 
-        // Finds the next true closest approach (out to the synodic period, capped), so the reported
-        // time-to-CA is real and counts down instead of pinning at one orbital period. Called off the
-        // draw path on a throttle.
+        // Finds the next true closest approach out to the synodic period (capped) so time-to-CA counts down.
+        // Off the draw path, throttled.
         private void ComputeLiveClosestApproach(Vessel active, Vessel target)
         {
             CelestialBody body = active.mainBody;
@@ -486,17 +453,14 @@ namespace Blackbird.Rendezvous
             }
         }
 
-        // Fly-by-wire actuation (from BlackBird.OnFlyByWire). Steers along the burn vector and sets
-        // throttle only while burning; cuts throttle once on the frame the burn ends, then releases
-        // control back to the player.
+        // Fly-by-wire actuation (from BlackBird.OnFlyByWire): steers along the burn vector and sets throttle
+        // only while burning; cuts throttle on the frame the burn ends, then releases control.
         public void ApplyFlightControls(FlightCtrlState state, Vessel vessel)
         {
-            if (state == null || vessel == null) return;
+            if (state == null || vessel == null || bbState == null) return;
 
-            // (Legacy) executor-driven docking translation. Inert: docking now lives in the standalone
-            // DockingHandler/DockingComputer module. Only reachable if the executor itself reaches the Docking
-            // stage with a translation command (it no longer does).
-            if (_engaged && _hasCommand && _command.Stage == RendezvousStage.Docking && _command.HasTranslation
+            // docking window open + running
+            if (_engaged && _hasCommand && bbState.DockingEnabled && bbState.DockingMode != DockingControlMode.Off && _command.HasTranslation
                 && _command.ThrustDirection.sqrMagnitude > 0.0)
             {
                 ApplyDockingControls(state, vessel);
@@ -508,24 +472,14 @@ namespace Blackbird.Rendezvous
 
             if (wantBurn)
             {
-                // Soft-enable RCS for the duration of the maneuver (capture the player's setting once, on the
-                // rising edge, so we can restore it when we release control below).
-                //if (!_rcsForcedOn)
-                //{
-                //    _rcsPriorState = vessel.ActionGroups[KSPActionGroup.RCS];
-                //    vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
-                //    _rcsForcedOn = true;
-                //}
-
                 // Always steer toward the burn vector; throttle only once the craft is pointed AND has
                 // settled (low rotation rate) and held that for the dwell — orient, stabilize, then burn.
                 _attitude.DriveInertial(vessel, state, _command.ThrustDirection, 0.0);
 
                 double errorDeg = AttitudeErrorDeg(vessel, _command.ThrustDirection);
-                // Only the pitch/yaw angular rate moves the nose off the burn vector; roll (about the
-                // thrust axis) does not affect a thrust-along-nose maneuver. Excluding roll from the
-                // settle gate means a craft that is slow to null roll no longer delays a time-sensitive
-                // burn. (KSP vessel angular velocity: x=pitch, y=roll, z=yaw.)
+                // Only pitch/yaw rate moves the nose off the burn vector; roll about the thrust axis doesn't,
+                // so it is excluded from the settle gate (a slow roll-null no longer delays the burn).
+                // (KSP vessel angular velocity: x=pitch, y=roll, z=yaw.)
                 Vector3d angularVel = vessel.angularVelocityD;
                 double pitchYawRateDegPerSec =
                     Math.Sqrt(angularVel.x * angularVel.x + angularVel.z * angularVel.z) * (180.0 / Math.PI);
@@ -560,8 +514,8 @@ namespace Blackbird.Rendezvous
                 }
                 else
                 {
-                    // Holding throttle while we orient/stabilize: pin the executor's cutoff baseline to
-                    // the current velocity so gravity during the orient isn't mistaken for delivered ΔV.
+                    // Holding throttle during orient/stabilize: pin the cutoff baseline to current velocity
+                    // so orient-phase gravity isn't counted as delivered ΔV.
                     state.mainThrottle = 0.0f;
                     _executor.HoldBurnBaseline(TrajectoryProvider.GetVelocity(vessel), now);
                 }
@@ -583,19 +537,17 @@ namespace Blackbird.Rendezvous
             }
 
             // Maneuver done / control released: restore the player's prior RCS setting.
-            //if (_rcsForcedOn)
+            //if (_rcsForcedOn)   // (disabled with the soft-enable block above)
             //{
             //    vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, _rcsPriorState);
             //    _rcsForcedOn = false;
             //}
         }
 
-        // Docking actuation (6-DOF): hold the mated heading with the attitude controller and drive RCS
-        // translation so the chaser's relative velocity tracks the commanded approach velocity. RCS is forced
-        // on for the maneuver. No main engine. Validated in-game (the offline harness has no actuation path).
+        // Docking actuation (6-DOF) — legacy stub, superseded by DockingHandler. See DU TODO.
         private void ApplyDockingControls(FlightCtrlState state, Vessel vessel)
         {
-            
+
             // DU TODO: wire the new docking logic
             //if (vessel.ReferenceTransform == null) return;
             //vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
@@ -612,9 +564,8 @@ namespace Blackbird.Rendezvous
             //Vector3d relVel = TrajectoryProvider.GetVelocity(vessel) - _lastTargetVelocityWorld;
             //Vector3d velError = _command.TranslationVelocityWorld - relVel;
 
-            //// Map the world-frame error onto the control-transform axes. For the controlled part: up = the
-            //// outward port/nose axis, right = starboard, forward = the belly ("down"). KSP FlightCtrlState
-            //// translation: X = right, Y = dorsal/up, Z = forward (toward the nose/port).
+            //// Map the world-frame error onto the control-transform axes (up = port/nose, right = starboard,
+            //// forward = belly). KSP FlightCtrlState translation: X = right, Y = dorsal/up, Z = forward.
             //Transform rt = vessel.ReferenceTransform;
             //double x = TranslateRightSign * Vector3d.Dot(velError, rt.right) * DockTranslationGain;
             //double y = TranslateUpSign * Vector3d.Dot(velError, -(Vector3d)rt.forward) * DockTranslationGain;
@@ -633,11 +584,9 @@ namespace Blackbird.Rendezvous
             return 0.0f;
         }
 
-        // Extracts the world-frame docking-port transforms for the docking stage. The TARGET port comes from
-        // the current target object (the operator targets the docking port itself — it is an ITargetable); its
-        // forward vector is the outward approach axis. The CHASER port is the active vessel's control reference
-        // (the operator does "Control From Here" on their port, so ReferenceTransform.up is its outward axis).
-        // Returns false if either is unavailable, so the executor can prompt the operator.
+        // Extracts the world-frame docking-port transforms: the TARGET port from the targeted ITargetable
+        // (forward = outward approach axis), the CHASER port from the active vessel's control reference
+        // (ReferenceTransform.up = outward axis). Returns false if either is unavailable.
         private bool TryGetDockingPorts(Vessel active, out PortState chaserPort, out PortState targetPort)
         {
             chaserPort = default(PortState);

@@ -1,6 +1,6 @@
 using System;
 using System.Linq;
-using Blackbird.Enums;
+using Blackbird.Modules;
 using Blackbird.Guidance;
 using Blackbird.Mathematics;
 using Blackbird.Models;
@@ -13,14 +13,14 @@ namespace Blackbird.Planning
     {
         // fixme: is this accurate?
         public static double GetPhasingOffset(Vessel active)
-        {
-            return PlanetScale.GetScale() == PlanetScale.PlanetScaleEnum.RSS ? 50000 : 30000;
+        { 
+            return Universe.PlanetScale == PlanetScaleEnum.RSS ? 50000 : 30000;
         }
 
         public static LaunchPlan Create(Vessel active, Vessel target, InsertionTarget insertionTarget, LaunchLocation launchSite)
         {
-            if (active == null || target == null) return null;
-            if (ReferenceEquals(active, target) || active.id == target.id) return null;
+            // must be an active vessel, have a target, target not be myself
+            if (active == null || target == null || ReferenceEquals(active, target) || active.id == target.id) return null;
 
             VesselState vesselState = VesselState.FromVessel(active);
             LaunchLocation ls = launchSite ?? LaunchLocation.FromVessel(active);
@@ -52,7 +52,6 @@ namespace Blackbird.Planning
                 RelativePeriodSeconds = targetOrbit.PeriodSeconds - activeOrbit.PeriodSeconds,
                 InsertionTarget = targetInsertion,
                 PhasingOrbit = po,
-                ScaleLabel = vesselState.Scale,
                 PhasingRecommendation = candidates.Length > 0 ? candidates[0].PhasingRecommendation : null,
                 Candidates = candidates,
                 SelectedCandidateIndex = 0

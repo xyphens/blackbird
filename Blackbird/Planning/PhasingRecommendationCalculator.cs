@@ -1,6 +1,6 @@
 ﻿using System;
 using Blackbird.Models;
-using Blackbird.Enums;
+using Blackbird.Modules;
 using Blackbird.Mathematics;
 
 namespace Blackbird.Planning
@@ -36,11 +36,9 @@ namespace Blackbird.Planning
             double bestScore = double.MaxValue;
             PhasingRecommendation best = null;
 
-            PlanetScale.PlanetScaleEnum scale = PlanetScale.GetScale();
-
-            // Coarse phasing search used for candidate generation; PSG itself consumes the selected insertion target.
-            double initOffset = scale == PlanetScale.PlanetScaleEnum.RSS ? 145000.0 : 70000.0;
-            double offsetScalar = scale == PlanetScale.PlanetScaleEnum.RSS ? 5000.0 : 1500.0;
+            // fixme: this needs to be dynamic.  these are "general estimates" for where space starts on Earth/Kerbin
+            double initOffset = Universe.PlanetScale == PlanetScaleEnum.RSS ? 145000.0 : 70000.0;
+            double offsetScalar = Universe.PlanetScale == PlanetScaleEnum.RSS ? 5000.0 : 1500.0;
 
             for (double offset = -initOffset; offset <= initOffset; offset += offsetScalar)
             {

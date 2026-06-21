@@ -1,5 +1,5 @@
 ﻿using System;
-using Blackbird.Enums;
+using Blackbird.Modules;
 using Blackbird.Mathematics;
 using Blackbird.Models;
 
@@ -9,6 +9,8 @@ namespace Blackbird.Guidance
     {
         private const double WarpStopLeadTimeSeconds = 10.0;
         private double _targetUt;
+
+        SharedState BbState;
 
         private readonly AttitudeControl _attitudeControl = new AttitudeControl();
 
@@ -35,9 +37,10 @@ namespace Blackbird.Guidance
         public LaunchPlan CurrentPlan { get; private set; }
         public Vessel TargetVessel { get; private set; }
 
-        public void SetPlan(LaunchPlan plan)
+        public void SetPlan(LaunchPlan plan, SharedState s)
         {
             CurrentPlan = plan;
+            BbState = s;
             State = plan != null ? LaunchGuidanceState.PlanReady : LaunchGuidanceState.Idle;
             _ascentGuidance.Reset();
         }
@@ -139,6 +142,7 @@ namespace Blackbird.Guidance
         public void SetGuidanceMode(GuidanceMode gMode, Vessel vessel = null)
         {
             if (GuidanceMode == gMode) return;
+
 
             if (vessel != null && CurrentPlan != null)
             {
@@ -244,7 +248,8 @@ namespace Blackbird.Guidance
                 InsertionTarget = new InsertionTarget { ApoapsisAlt = apoapsisAlt, PeriapsisAlt = periapsisAlt, Heading = headingDeg },
                 Candidates = new[] { candidate },
                 SelectedCandidateIndex = 0
-            });
+            },
+            BbState);
         }
 
         public void Reset()

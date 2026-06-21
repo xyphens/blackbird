@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace Blackbird.Trajectory
 {
-    // Single source of vessel trajectory reads. Collapsed from the former ITrajectoryProvider + Stock/
+    // Single source of vessel trajectory reads
     // Principia provider split: the Principia provider was inert (its reflection bound the wrong assembly
     // name, so IsAvailable was always false and it silently fell back to stock), so the dual-provider
     // abstraction was removed. All reads are stock / KSP patched-conic — which equal the true instantaneous

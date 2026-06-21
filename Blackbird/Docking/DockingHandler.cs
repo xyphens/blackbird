@@ -1,6 +1,7 @@
 using System;
 using Blackbird.Guidance;
 using Blackbird.Models;
+using Blackbird.Modules;
 using Blackbird.Trajectory;
 using UnityEngine;
 
@@ -16,18 +17,18 @@ namespace Blackbird.Docking
     // craft's local axes, so we never re-derive FlightCtrlState translation signs.
     public sealed class DockingHandler
     {
-        public enum DockingControlMode { Neutral, Manual, Guidance }
-
         private readonly RcsController _rcs = new RcsController();
         private readonly AttitudeControl _attitude = new AttitudeControl();
         private readonly DockingAutopilot _autopilot;
+
+        private SharedState bbState;
 
         public DockingHandler()
         {
             _autopilot = new DockingAutopilot(_rcs, _attitude);
         }
 
-        public DockingControlMode Mode { get; private set; } = DockingControlMode.Neutral;
+        public DockingControlMode Mode { get; private set; } = DockingControlMode.Off;
         public bool KeepPointed = false;
 
         // --- manual input, set by the UI each draw while a button is held; consumed (with a freshness window
@@ -75,6 +76,8 @@ namespace Blackbird.Docking
             _manualInputUt = Planetarium.GetUniversalTime();
         }
 
+        public void Init(SharedState s) => bbState = s;
+
         private bool ManualInputFresh() =>
             Planetarium.GetUniversalTime() - _manualInputUt < ManualInputFreshSeconds;
 
@@ -114,7 +117,7 @@ namespace Blackbird.Docking
             {
                 _autopilot.OnFixedUpdate(active, _vs);
                 // The autopilot turns Off on capture or target loss; hand control back to the operator.
-                if (_autopilot.CurrentStep == DockingSteps.Off) Mode = DockingControlMode.Neutral;
+                if (_autopilot.CurrentStep == DockingSteps.Off) Mode = DockingControlMode.Off;
             }
         }
 

@@ -1,4 +1,3 @@
-using System;
 using Blackbird.Docking;
 using UnityEngine;
 
@@ -10,6 +9,7 @@ namespace Blackbird.Modules
     // the combined held-button state and hands it to the handler, which actuates it on the fly-by-wire pass.
     public sealed class DockingComputer
     {
+        private SharedState BbState;
         private static readonly int WindowId = "Blackbird.DockingComputer".GetHashCode();
         private Rect _windowRect = new Rect(600, 200, 320, 430);
 
@@ -19,7 +19,12 @@ namespace Blackbird.Modules
         private DockingHandler _handler;
         public bool IsVisible { get; set; }
 
-        public void Initialize(DockingHandler handler) => _handler = handler;
+        public void Init(DockingHandler handler, SharedState s)
+        {
+            _handler = handler;
+            BbState = s;
+        }
+        
         public void Toggle() => IsVisible = !IsVisible;
 
         public void Draw()
@@ -27,6 +32,7 @@ namespace Blackbird.Modules
             if (!IsVisible) return;
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Docking");
         }
+
 
         private void DrawContents(int _)
         {
@@ -54,10 +60,9 @@ namespace Blackbird.Modules
             GUILayout.Space(6);
 
             // --- autopilot toggle buttons (see the state logic in the header of DockingHandler) ---
-            bool guidance = _handler.Mode == DockingHandler.DockingControlMode.Guidance;
+            bool guidance = _handler.Mode == DockingControlMode.Guidance;
             bool runEnabled = _handler.HasTarget && !guidance;
-            bool assumeEnabled = guidance
-                                 || (_handler.Mode == DockingHandler.DockingControlMode.Neutral && _handler.HasTarget);
+            bool assumeEnabled = guidance || (_handler.Mode == DockingControlMode.Off && _handler.HasTarget);
 
             GUILayout.BeginHorizontal();
             GUI.enabled = runEnabled;
@@ -75,7 +80,7 @@ namespace Blackbird.Modules
         // buttons are disabled while "keep pointed at target" is on; everything is disabled while guidance runs.
         private void DrawControlGrid()
         {
-            bool manualEnabled = _handler.Mode != DockingHandler.DockingControlMode.Guidance;
+            bool manualEnabled = _handler.Mode != DockingControlMode.Guidance;
             bool noseEnabled = manualEnabled && !_handler.KeepPointed;
 
             // fixme: the up/down orientations are not correct
@@ -135,12 +140,7 @@ namespace Blackbird.Modules
         private static bool Held(string label) =>
             GUILayout.RepeatButton(label, GUILayout.Width(BtnW), GUILayout.Height(BtnH));
 
-        private string DockingStatusText()
-        {
-            return _handler.Mode == DockingHandler.DockingControlMode.Guidance
-                ? _handler.DockingStep.ToString()
-                : _handler.Mode.ToString();
-        }
+        private string DockingStatusText() => _handler.Mode == DockingControlMode.Guidance ? _handler.DockingStep.ToString() : _handler.Mode.ToString();
 
         private static string FormatDistance(double meters)
         {

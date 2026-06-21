@@ -7,7 +7,7 @@ using Blackbird.Docking;
 
 namespace Blackbird
 {
-    [KSPAddon(KSPAddon.Startup.Flight, false)]
+    [KSPAddon(KSPAddon.Startup.FlightAndEditor, false)]
     public sealed class BlackBird : MonoBehaviour
     {
         private Rect _windowRect = new Rect(200, 200, 350, 200);
@@ -21,6 +21,8 @@ namespace Blackbird
         private Texture2D _toolbarIcon;
         private bool _toolbarIconOwned;
 
+        private SharedState _bbState = new SharedState();
+
         private readonly RendezvousHandler _rendezvousHandler = new RendezvousHandler();
         private readonly DockingHandler _dockingHandler = new DockingHandler();
 
@@ -32,10 +34,10 @@ namespace Blackbird
         public void Start()
         {
             Debug.Log("[BlackBird] Loaded");
-            _planner.Initialize(_launchHandler);
-            _guidanceComputer.Initialize(_launchHandler);
-            _rendezvousComputer.Initialize(_rendezvousHandler);
-            _dockingComputer.Initialize(_dockingHandler);
+            _planner.Init(_launchHandler, _bbState);
+            _guidanceComputer.Init(_launchHandler, _bbState);
+            _rendezvousComputer.Init(_rendezvousHandler, _bbState);
+            _dockingComputer.Init(_dockingHandler, _bbState);
             GameEvents.onGUIApplicationLauncherReady.Add(AddToolbarButton);
             GameEvents.onGUIApplicationLauncherDestroyed.Add(RemoveToolbarButton);
 
@@ -43,6 +45,9 @@ namespace Blackbird
             // never fires for this fresh instance and the button goes missing. Add it directly when the
             // launcher is already up (AddToolbarButton is idempotent).
             if (ApplicationLauncher.Ready) AddToolbarButton();
+
+            // pass state to all sub-modules
+            _rendezvousHandler.Init(_bbState);
         }
 
         public void Update()
@@ -120,13 +125,15 @@ namespace Blackbird
 
         private void DrawModuleToggles()
         {
-            GUILayout.BeginHorizontal();
             GUILayout.Space(10);
-            _planner.IsVisible = GUILayout.Toggle(_planner.IsVisible, "Planner");
-            _guidanceComputer.IsVisible = GUILayout.Toggle(_guidanceComputer.IsVisible, "Guidance Computer");
-            _rendezvousComputer.IsVisible = GUILayout.Toggle(_rendezvousComputer.IsVisible, "Rendezvous");
-            _dockingComputer.IsVisible = GUILayout.Toggle(_dockingComputer.IsVisible, "Docking");
-            GUILayout.EndHorizontal();
+            GUIStyle selected = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.green } };
+            _bbState.PlannerVisible = GUILayout.Toggle(_bbState.PlannerVisible, "Flight Planner", _bbState.ActiveModule == BlackbirdModule.Planner ? selected : null);
+            GUILayout.Space(5);
+            _bbState.GuidanceVisible = GUILayout.Toggle(_bbState.GuidanceVisible, "Guidance Computer", _bbState.ActiveModule == BlackbirdModule.LaunchGuidance ? selected : null);
+            GUILayout.Space(5);
+            _bbState.RendezvousVisible = GUILayout.Toggle(_bbState.RendezvousVisible, "Rendezvous Computer", _bbState.ActiveModule == BlackbirdModule.Rendezvous ? selected : null);
+            GUILayout.Space(5);
+            _bbState.DockingVisible = GUILayout.Toggle(_bbState.DockingVisible, "Docking Computer", _bbState.ActiveModule == BlackbirdModule.Docking ? selected : null);
         }
 
         private void AddToolbarButton()
