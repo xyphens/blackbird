@@ -86,7 +86,6 @@ namespace Blackbird.Helpers
             bool guiChanged = GUI.changed;
             if (GUILayout.Button("↓ " + entries[selectedIdx] + " ↓", GUILayout.ExpandWidth(expandWidth)))
             {
-
                 GUI.changed = guiChanged;
                 owner = caller;
                 _isActive = true;

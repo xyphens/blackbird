@@ -48,6 +48,7 @@ namespace Blackbird
 
             // pass state to all sub-modules
             _rendezvousHandler.Init(_bbState);
+            _dockingHandler.Init(_bbState);
         }
 
         public void Update()
@@ -64,6 +65,13 @@ namespace Blackbird
             }
 
             _launchHandler.Update(activeVessel);
+            // "Guidance running" = actively guiding the ascent. Maintained here (not in the panel) so it
+            // stays accurate whether or not the Guidance window is open.
+            _bbState.GuidanceEnabled = _launchHandler.State == LaunchGuidanceState.GuidingAscent;
+            // A manual launch never formally completes, so GuidingAscent (and thus GuidanceEnabled) can
+            // persist and wrongly block rendezvous. Once we're in orbit working a rendezvous, clear it.
+            if (_bbState.RendezvousVisible && activeVessel != null && activeVessel.altitude > 70000.0)
+                _bbState.GuidanceEnabled = false;
 
             ITargetable target = FlightGlobals.fetch != null ? FlightGlobals.fetch.VesselTarget : null;
             // A targeted docking port is a ModuleDockingNode, not a Vessel; resolve to its vessel so the
@@ -106,6 +114,10 @@ namespace Blackbird
             _guidanceComputer.Draw();
             _rendezvousComputer.Draw();
             _dockingComputer.Draw();
+
+            // Deferred dropdown popups (e.g. the rendezvous planner select) draw their own window, so they
+            // must be rendered at the top level — after the panels — not nested inside a panel window.
+            Blackbird.Helpers.Dropdown.DrawGUI();
         }
 
         private void DrawMainMenu(int _windowId)
@@ -116,8 +128,7 @@ namespace Blackbird
                 _toolbarButton?.SetFalse(false);
             }
 
-            Vessel vessel = FlightGlobals.ActiveVessel;
-            if (vessel == null) return;
+            if (FlightGlobals.ActiveVessel == null) return;
 
             DrawModuleToggles();
             GUI.DragWindow();
@@ -126,14 +137,15 @@ namespace Blackbird
         private void DrawModuleToggles()
         {
             GUILayout.Space(10);
-            GUIStyle selected = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.green } };
-            _bbState.PlannerVisible = GUILayout.Toggle(_bbState.PlannerVisible, "Flight Planner", _bbState.ActiveModule == BlackbirdModule.Planner ? selected : null);
+            GUIStyle normal = GUI.skin.toggle;
+            GUIStyle selected = new GUIStyle(normal) { normal = { textColor = Color.green }, onNormal = { textColor = Color.green } };
+            _bbState.PlannerVisible = GUILayout.Toggle(_bbState.PlannerVisible, "Flight Planner", _bbState.ActiveModule == BlackbirdModule.Planner ? selected : normal);
             GUILayout.Space(5);
-            _bbState.GuidanceVisible = GUILayout.Toggle(_bbState.GuidanceVisible, "Guidance Computer", _bbState.ActiveModule == BlackbirdModule.LaunchGuidance ? selected : null);
+            _bbState.GuidanceVisible = GUILayout.Toggle(_bbState.GuidanceVisible, "Guidance Computer", _bbState.ActiveModule == BlackbirdModule.LaunchGuidance ? selected : normal);
             GUILayout.Space(5);
-            _bbState.RendezvousVisible = GUILayout.Toggle(_bbState.RendezvousVisible, "Rendezvous Computer", _bbState.ActiveModule == BlackbirdModule.Rendezvous ? selected : null);
+            _bbState.RendezvousVisible = GUILayout.Toggle(_bbState.RendezvousVisible, "Rendezvous Computer", _bbState.ActiveModule == BlackbirdModule.Rendezvous ? selected : normal);
             GUILayout.Space(5);
-            _bbState.DockingVisible = GUILayout.Toggle(_bbState.DockingVisible, "Docking Computer", _bbState.ActiveModule == BlackbirdModule.Docking ? selected : null);
+            _bbState.DockingVisible = GUILayout.Toggle(_bbState.DockingVisible, "Docking Computer", _bbState.ActiveModule == BlackbirdModule.Docking ? selected : normal);
         }
 
         private void AddToolbarButton()

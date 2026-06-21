@@ -84,7 +84,8 @@ namespace Blackbird.Guidance
             FlightCtrlState state,
             double headingDeg,
             double pitchDeg,
-            double rollDeg)
+            double rollDeg
+            )
         {
             if (vessel == null || state == null) return;
             if (vessel.ReferenceTransform == null) return;

@@ -1,16 +1,13 @@
 using System;
-using Blackbird.Docking;
 using Blackbird.Mathematics;
 using Blackbird.Modules;
-using UnityEngine;
 
 namespace Blackbird.Rendezvous
 {
-    // Staged rendezvous state machine: Intercept -> MatchVelocity -> CloseApproach -> Docking.
-    // One user gate per stage (Execute); each stage runs a closed loop and self-terminates on its cutoff,
-    // then advances Stage and drops to Coast (so Stage names what to Execute next), or Complete at the end.
-    // Burns are executed as a steering direction + throttle (the actuation layer orients then throttles);
-    // no patched-conic maneuver nodes, so the whole thing is Principia-safe.
+    // Rendezvous execution state machine. Each method (Intercept / MatchVelocity / CloseApproach) runs
+    // independently via Execute(method): a closed loop that self-terminates on its cutoff, then drops to
+    // Coast (Complete after CloseApproach). Burns are a steering direction + throttle (the actuation layer
+    // orients then throttles); no patched-conic nodes, so it is Principia-safe. Docking is a separate module.
     public sealed class TerminalRendezvousExecutor
     {
         // --- intercept tuning (public so callers/tests can adjust) ---
@@ -67,7 +64,6 @@ namespace Blackbird.Rendezvous
 
         // Latest plan: a live preview while idle/coast, or the frozen plan while executing.
         public bool HasInterceptPlan { get; private set; }
-        public InterceptSolution InterceptSolution { get; private set; }
 
         // Post-burn report from the last intercept burn, for the actuation layer's diagnostic.
         public bool HasLastInterceptBurnReport { get; private set; }
@@ -107,19 +103,11 @@ namespace Blackbird.Rendezvous
         // back into the closing controller.
         private bool _closeBraking;
 
-        // Docking: the active gated leg and the live port transforms fed in by the handler.
-        private DockingLeg _dockingLeg;
-        private bool _dockingPortsValid;
-        private PortState _chaserPort;
-        private PortState _targetPort;
-        public DockingLeg DockingLeg => _dockingLeg;
-
         SharedState bbState;
 
-        public TerminalRendezvousExecutor()
-        {
-            Reset();
-        }
+        public TerminalRendezvousExecutor() { }
+
+        public void Init(SharedState s) => bbState = s;
 
         // Back to Idle at the first stage, clearing cached plan/burn state.
         public void Reset()
@@ -127,10 +115,8 @@ namespace Blackbird.Rendezvous
             bbState.RendezvousMethod = RendezvousMethod.None;
             bbState.InterceptPhase = InterceptPhase.Idle;
             ClearBurnState();
-            _dockingLeg = DockingLeg.Approach;
-            _dockingPortsValid = false;
             HasInterceptPlan = false;
-            InterceptSolution = default(InterceptSolution);
+            bbState.InterceptSolution = default(InterceptSolution);
             HasLastInterceptBurnReport = false;
             _lastInterceptBurnReport = default(InterceptBurnReport);
         }
@@ -146,48 +132,18 @@ namespace Blackbird.Rendezvous
             return true;
         }
 
-        // execute a rendezvous method (non-docking)
+        // execute a rendezvous method
         public bool Execute(RendezvousMethod method)
         {
             if (bbState.InterceptPhase == InterceptPhase.Executing || bbState.InterceptPhase == InterceptPhase.Aborted) return false;
             bbState.RendezvousMethod = method;
             bbState.InterceptPhase = InterceptPhase.Executing;
-            
-            // stop docking if running
-            bbState.DockingMode = DockingControlMode.Off;
-            bbState.DockingEnabled = false;
 
             _burnArmed = false;
             _matchArmed = false;
             _closeBraking = false;
             HasLastInterceptBurnReport = false;
             return true;
-        }
-
-        public bool ExecuteDocking()
-        {
-            // prevent docking if we're executing a maneuver
-            if (bbState.InterceptPhase == InterceptPhase.Executing) return false;
-            bbState.InterceptPhase = InterceptPhase.Idle;
-            bbState.RendezvousMethod = RendezvousMethod.None;
-
-            // flag docking as enabled
-            bbState.DockingEnabled = true;
-            bbState.DockingMode = DockingControlMode.Guidance;
-            bbState.ActiveModule = BlackbirdModule.Docking;
-
-            _dockingLeg = DockingLeg.Approach;
-            ClearBurnState();
-            return true;
-        }
-
-        // The handler feeds live docking-port transforms (world frame) each tick; invalid until the operator
-        // has targeted a port and is controlling from one of their own.
-        public void SetDockingPorts(bool valid, PortState chaserPort, PortState targetPort)
-        {
-            _dockingPortsValid = valid;
-            _chaserPort = chaserPort;
-            _targetPort = targetPort;
         }
 
         // Called every frame the actuation layer is HOLDING throttle to orient before an intercept burn:
@@ -215,22 +171,24 @@ namespace Blackbird.Rendezvous
 
         // Refresh the cached plan for the current (not-yet-executed) stage so the UI can show ΔV / predicted
         // CA before the user commits. No phase change. The Hohmann path computes once and caches.
-        public void RefreshPlanPreview(IRendezvousWorld world, SharedState bbState)
+        public void RefreshPlanPreview(IRendezvousWorld world)
         {
-            if (world == null || bbState.RendezvousMethod != RendezvousMethod.Intercept) return;
+            // Intercept is the only previewable plan, so compute it whenever idle/coast — regardless of the
+            // currently-selected method (which is None until the user actually Executes a stage).
+            if (world == null) return;
             if (bbState.InterceptPhase != InterceptPhase.Idle && bbState.InterceptPhase != InterceptPhase.Coast) return;
 
             if (bbState.InterceptMethod == InterceptMethod.Hohmann)
             {
                 if (_hohmannPreviewComputed) return;
                 _hohmannPreviewComputed = true;
-                InterceptSolution = BuildHohmannPlan(world);
-                HasInterceptPlan = InterceptSolution.Success;
+                bbState.InterceptSolution = BuildHohmannPlan(world);
+                HasInterceptPlan = bbState.InterceptSolution.Success;
                 return;
             }
 
-            InterceptSolution = PlanIntercept(world);
-            HasInterceptPlan = InterceptSolution.Success;
+            bbState.InterceptSolution = PlanIntercept(world);
+            HasInterceptPlan = bbState.InterceptSolution.Success;
         }
 
         // Intercept-shaped plan from the MJ-derived two-impulse Hohmann transfer. The state-vector core runs in
@@ -304,8 +262,6 @@ namespace Blackbird.Rendezvous
                 return StepMatchVelocity(world, out stageComplete);
             if (bbState.RendezvousMethod == RendezvousMethod.CloseApproach)
                 return StepCloseApproach(world, out stageComplete);
-            if (bbState.DockingEnabled && bbState.DockingMode != DockingControlMode.Off)
-                return StepDocking(world, out stageComplete);
 
             stageComplete = true;
             return Idle("Idle");
@@ -320,15 +276,16 @@ namespace Blackbird.Rendezvous
             if (!_burnArmed)
             {
                 // Hohmann: REUSE the cached preview plan so Execute fires at the same departure window the user previewed
-                InterceptSolution plan = bbState.InterceptMethod == InterceptMethod.Hohmann
+                InterceptSolution solution = bbState.InterceptMethod == InterceptMethod.Hohmann
                     ? (HasInterceptPlan ? bbState.InterceptSolution : BuildHohmannPlan(world))
                     : PlanIntercept(world);
-                HasInterceptPlan = plan.Success;
+                bbState.InterceptSolution = solution;
+                HasInterceptPlan = solution.Success;
 
-                if (!plan.Success) return Idle("intercept: no feasible plan (" + plan.Status + ")");
+                if (!solution.Success) return Idle("intercept: no feasible plan (" + solution.Status + ")");
 
                 // No-ΔV plan: done if we're genuinely close, otherwise report rather than silently completing
-                if (plan.DeltaVMagnitude <= MinUsefulDeltaV)
+                if (solution.DeltaVMagnitude <= MinUsefulDeltaV)
                 {
                     double range = (world.TargetPosition - world.ActivePosition).magnitude;
                     if (range <= AlreadyCloseMeters)
@@ -341,10 +298,10 @@ namespace Blackbird.Rendezvous
 
                 // Steer along the planned ΔV and deliver its magnitude — NOT "reach V1 from the current state"
                 // (|V1 − v| is inflated by the ignition-lead gravity, which over-burns small corrections).
-                _targetDepartureVelocity = plan.TransferDepartureVelocity;
-                _plannedDvMagnitude = plan.DeltaVMagnitude;
-                _plannedDvUnit = plan.DeltaV.normalized;
-                _plannedIgnitionUt = plan.IgnitionUt;
+                _targetDepartureVelocity = solution.TransferDepartureVelocity;
+                _plannedDvMagnitude = solution.DeltaVMagnitude;
+                _plannedDvUnit = solution.DeltaV.normalized;
+                _plannedIgnitionUt = solution.IgnitionUt;
                 double halfBurn = BurnAccelMetersPerSecondSquared > 0.0
                     ? 0.5 * _plannedDvMagnitude / BurnAccelMetersPerSecondSquared : 0.0;
                 _burnIgnitionUt = _plannedIgnitionUt - halfBurn;
@@ -412,7 +369,7 @@ namespace Blackbird.Rendezvous
                 DeliveredAlongAxis = delivered,
                 DeliveredVector = deliveredVector,
                 VelocityResidual = velocityResidual,
-                PredictedClosestApproach = InterceptSolution.PredictedClosestApproach,
+                PredictedClosestApproach = bbState.InterceptSolution.PredictedClosestApproach,
                 CutoffReason = status
             };
             HasLastInterceptBurnReport = true;
@@ -562,42 +519,6 @@ namespace Blackbird.Rendezvous
                 "close approach: {0:F0} m, closing {1:F2}/{2:F2} m/s", distanceToTarget, actualClosingSpeed, commandedClosingSpeed));
         }
 
-        // Docking loop: hold the mated heading and RCS-translate the chaser port onto the target port axis,
-        // leg by leg. The translation/alignment math is the pure DockingController.
-        private RendezvousCommand StepDocking(IRendezvousWorld world, out bool stageComplete)
-        {
-            stageComplete = false;
-            if (!_dockingPortsValid)
-                return Idle("docking: target a docking port and 'Control From Here' on yours");
-
-            Vector3d relVel = world.ActiveVelocity - world.TargetVelocity;
-            DockingCommand dc = DockingController.Compute(_chaserPort, _targetPort, relVel, _dockingLeg);
-
-            if (dc.LegComplete)
-            {
-                stageComplete = true;
-                return Idle(dc.Status + " — leg complete");
-            }
-
-            return DockCommand(dc);
-        }
-
-        // Hold attitude along the mated heading (no main engine) and request the RCS translation velocity.
-        private RendezvousCommand DockCommand(DockingCommand dc)
-        {
-            return new RendezvousCommand
-            {
-                Phase = bbState.InterceptPhase,
-                Method = bbState.RendezvousMethod,
-                HasBurn = true,                        // attitude is actively driven
-                ThrustDirection = dc.FacingWorld.normalized,
-                Throttle = 0.0,                        // RCS-only
-                HasTranslation = true,
-                TranslationVelocityWorld = dc.TranslationVelocityWorld,
-                Status = dc.Status
-            };
-        }
-
         // Conic intercept from the current measured state, with the target two-body-propagated. The arrival
         // sweep spans a fraction of the active orbit's period.
         private InterceptSolution PlanIntercept(IRendezvousWorld world)
@@ -661,33 +582,13 @@ namespace Blackbird.Rendezvous
             return 2.0 * Math.PI * Math.Sqrt(a * a * a / mu);
         }
 
-        // Advances out of a finished stage: non-final stages go to the next stage and Coast; the last stage
-        // (CloseApproach, or Docking's Contact leg) Completes. Docking advances by leg, not by stage.
+        // A finished method drops to Coast, ready for the next user-chosen method; CloseApproach Completes.
         private void CompleteStage()
         {
             ClearBurnState();
-            // i dont think docking should be managed here but maybe fine for now
-            if (bbState.DockingMode != DockingControlMode.Off && bbState.DockingEnabled == true)
-            {
-                if (_dockingLeg == DockingLeg.Contact)
-                {
-                    bbState.DockingEnabled = false;
-                    bbState.DockingMode = DockingControlMode.Off;
-                }
-                else
-                {
-                    _dockingLeg = DockingController.NextLeg(_dockingLeg);
-                    //Phase = InterceptPhase.Coast;
-                }
-            }
-            else if (bbState.RendezvousMethod == RendezvousMethod.CloseApproach)
-            {
-                bbState.InterceptPhase = InterceptPhase.Complete;
-            }
-            else
-            {
-                bbState.InterceptPhase = InterceptPhase.Coast;
-            }
+            bbState.InterceptPhase = bbState.RendezvousMethod == RendezvousMethod.CloseApproach
+                ? InterceptPhase.Complete
+                : InterceptPhase.Coast;
         }
 
         private void ClearBurnState()

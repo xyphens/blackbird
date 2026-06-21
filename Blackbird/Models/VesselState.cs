@@ -61,8 +61,6 @@ namespace Blackbird.Models
         public double BodyRotationPeriod { get; private set; }
         public Vector3d GravityForce { get; private set; }
 
-        private readonly bool UseRcsBalancer = false; // todo: not implemented
-
         public static VesselState FromVessel(Vessel vessel)
         {
             if (vessel == null) return null;

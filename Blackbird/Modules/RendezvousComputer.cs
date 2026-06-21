@@ -10,7 +10,7 @@ namespace Blackbird.Modules
     // is waiting on the user (Execute) or on an event (coast to closest approach).
     public sealed class RendezvousComputer
     {
-        private SharedState BbState;
+        private SharedState bbState;
         private static readonly int WindowId = "Blackbird.RendezvousComputer".GetHashCode();
         private Rect _windowRect = new Rect(950, 200, 360, 380);
 
@@ -18,7 +18,6 @@ namespace Blackbird.Modules
         private const double HighDeltaVWarnMetersPerSecond = 300.0;
 
         private RendezvousHandler _handler;
-        public bool IsVisible { get; set; }
 
         // Close-approach "match velocities at X m" option (see ApplyCloseStandoff).
         private bool _matchAtEnabled;
@@ -29,36 +28,39 @@ namespace Blackbird.Modules
         private string _closeGainText = "0.2";
         private string _closeMaxSpeedText = "5";
 
-        private bool _didComputePlan = false;
         private InterceptMethod _lastAlgorithm;
 
         public void Init(RendezvousHandler handler, SharedState s)
         {
             _handler = handler;
-            BbState = s;
+            bbState = s;
         }
-        public void Toggle() => IsVisible = !IsVisible;
 
         public void Draw()
         {
-            if (!IsVisible) return;
-            // parent has set this to visible, so we can flag as enabled
-            _handler.ToggleEngage(BbState.RendezvousEnabled);
+            if (bbState == null || !bbState.RendezvousVisible)
+            {
+                _handler.ToggleEngage(false);
+                if (bbState != null) bbState.RendezvousEnabled = false;   // release the cross-module lock
+                return;
+            }
+
+            // Engaged when the window is open AND a target is selected.
+            bool enabled = _handler.Target != null;
+            bbState.RendezvousEnabled = enabled;
+            _handler.ToggleEngage(enabled);
+
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Rendezvous Computer");
         }
 
         private void DrawContents(int _)
         {
-            if (_handler == null)
-            {
-                GUILayout.Label("Rendezvous computer unavailable");
-                GUI.DragWindow();
-                return;
-            }
+            if (GUI.Button(new Rect(_windowRect.width - 22, 2, 18, 18), " ")) bbState.RendezvousVisible = false;
 
-            if (_handler.Target == null)
+            if (_handler == null || _handler.Target == null || FlightGlobals.ActiveVessel.altitude < 60000)
             {
-                GUILayout.Label("Select a target vessel to begin.");
+                GUILayout.Label("Rendezvous computer unavailable (must be in space and have a target)");
+                bbState.RendezvousEnabled = false;
                 GUI.DragWindow();
                 return;
             }
@@ -84,28 +86,29 @@ namespace Blackbird.Modules
                 }
             }
 
-            // Rendezvous Intercept < burn
-            if (_handler.HasInterceptPlan && BbState.RendezvousMethod == RendezvousMethod.Intercept
-                && (BbState.InterceptPhase == InterceptPhase.Idle || BbState.InterceptPhase == InterceptPhase.Coast))
+            // Intercept plan preview (computed whenever idle/coast, before any method is chosen).
+            if (_handler.HasInterceptPlan
+                && (bbState.InterceptPhase == InterceptPhase.Idle || bbState.InterceptPhase == InterceptPhase.Coast))
             {
-                GUILayout.Label($"Plan: ΔV {_handler.InterceptSolution.DeltaVMagnitude:F1} m/s for {_handler.InterceptSolution.PredictedClosestApproach:F0} m encounter (arriving in {FormatTime(_handler.InterceptSolution.TimeOfFlight)})");
+                
+                GUILayout.Label($"Plan: ΔV {bbState.InterceptSolution.DeltaVMagnitude:F1} m/s for {bbState.InterceptSolution.PredictedClosestApproach:F0} m encounter (arriving in {FormatTime(bbState.InterceptSolution.TimeOfFlight)})");
 
                 // A single-rev intercept across a big phase gap is legitimately huge (can even escape).
                 // Warn before the user commits — the cheap move from a close flyby is Match Velocity.
-                if (_handler.InterceptSolution.DeltaVMagnitude > HighDeltaVWarnMetersPerSecond)
+                if (bbState.InterceptSolution.DeltaVMagnitude > HighDeltaVWarnMetersPerSecond)
                 {
                     GUILayout.Label("  WARNING: very large ΔV - you are likely too far / wrong phase for a direct intercept.  Wait for a closer pass, or match velocity instead.");
                 }
             }
 
-            BbState._interceptMethod = Helpers.Dropdown.SelectBox(BbState._interceptMethod, BbState.InterceptMethods, this);
-            if (BbState.InterceptMethod != _lastAlgorithm) // don't spam re-calcs
+            bbState._interceptMethod = Helpers.Dropdown.SelectBox(bbState._interceptMethod, bbState.InterceptMethods, this);
+            if (bbState.InterceptMethod != _lastAlgorithm) // don't spam re-calcs
             {
-                _lastAlgorithm = BbState.InterceptMethod;
+                _lastAlgorithm = bbState.InterceptMethod;
                 _handler.RequestPlanRefresh();
             }
 
-            if (BbState.InterceptMethod == InterceptMethod.Hohmann && GUILayout.Button("Recompute plan")) _handler.RequestPlanRefresh();
+            if (bbState.InterceptMethod == InterceptMethod.Hohmann && GUILayout.Button("Recompute plan")) _handler.RequestPlanRefresh();
 
             GUILayout.Space(4);
 
@@ -116,30 +119,63 @@ namespace Blackbird.Modules
             
 
             // --- action buttons: any stage can be executed at any time ---
-            bool canExecute = BbState.InterceptEnabled
-                              && BbState.InterceptPhase != InterceptPhase.Executing
-                              && BbState.InterceptPhase != InterceptPhase.Aborted;
-            if (BbState.InterceptPhase == InterceptPhase.Executing)
+            bool canExecute = bbState.RendezvousEnabled
+                              && !bbState.DockingEnabled && !bbState.GuidanceEnabled
+                              && bbState.InterceptPhase != InterceptPhase.Executing
+                              && bbState.InterceptPhase != InterceptPhase.Aborted;
+            if (bbState.InterceptPhase == InterceptPhase.Executing)
             {
-                GUILayout.Label($"Executing: {StageName(BbState.RendezvousMethod)}...");
+                GUILayout.Label($"Executing: {StageName(bbState.RendezvousMethod)}...");
             }
 
             GUI.enabled = canExecute;
             if (GUILayout.Button("Execute: Intercept"))
             {
-                BbState.RendezvousMethod = RendezvousMethod.Intercept;
+                bbState.RendezvousMethod = RendezvousMethod.Intercept;
                 _handler.Execute();
+            }
+
+            // Warp to closest approach (auto-stops short; cancelled if a burn starts).
+
+            if (_handler.Warping)
+            {
+                if (GUILayout.Button("Stop Warp")) _handler.StopWarp();
+            }
+            else if (bbState.InterceptMethod == InterceptMethod.Hohmann && bbState.RendezvousMethod == RendezvousMethod.Intercept
+                     && (_handler.HasInterceptPlan || _handler.CoastingToIgnition))
+            {
+                // Hohmann ignites at a future departure UT, so warp to that window: the frozen ignition while
+                // coasting (post-Execute), otherwise the previewed plan's.
+
+                double ignitionUt = _handler.CoastingToIgnition
+                    ? _handler.PlannedIgnitionUt
+                    : bbState.InterceptSolution.IgnitionUt;
+                double dtToIgnition = ignitionUt - Planetarium.GetUniversalTime();
+
+                GUI.enabled = (bbState.InterceptPhase != InterceptPhase.Executing || _handler.CoastingToIgnition)
+                              && dtToIgnition > 10.0;
+                if (GUILayout.Button($"Warp to transfer ignition ({FormatTime(dtToIgnition)})"))
+                    _handler.WarpToIgnition(ignitionUt);
+                GUI.enabled = true;
+            }
+            else
+            {
+                GUI.enabled = bbState.InterceptPhase != InterceptPhase.Executing
+                              && IsFinite(_handler.LiveTimeToClosestApproachSeconds)
+                              && _handler.LiveTimeToClosestApproachSeconds > 10.0;
+                if (GUILayout.Button("Warp to Next Closest Approach")) _handler.WarpToClosestApproach();
+                GUI.enabled = true;
             }
 
             if (GUILayout.Button("Execute: Match Velocity"))
             {
-                BbState.RendezvousMethod = RendezvousMethod.MatchVelocity;
+                bbState.RendezvousMethod = RendezvousMethod.MatchVelocity;
                 _handler.Execute();
             }
                 
             if (GUILayout.Button("Execute: Close Approach"))
             {
-                BbState.RendezvousMethod = RendezvousMethod.CloseApproach;
+                bbState.RendezvousMethod = RendezvousMethod.CloseApproach;
                 ApplyCloseStandoff();
                 _handler.Execute();
             }
@@ -167,38 +203,6 @@ namespace Blackbird.Modules
             GUILayout.EndHorizontal();
             ApplyCloseApproachParams();
 
-            // Warp to closest approach (auto-stops short; cancelled if a burn starts).
-            
-            if (_handler.Warping)
-            {
-                if (GUILayout.Button("Stop Warp")) _handler.StopWarp();
-            }
-            else if (BbState.InterceptMethod == InterceptMethod.Hohmann && BbState.RendezvousMethod == RendezvousMethod.Intercept
-                     && (_handler.HasInterceptPlan || _handler.CoastingToIgnition))
-            {
-                // Hohmann ignites at a future departure UT, so warp to that window: the frozen ignition while
-                // coasting (post-Execute), otherwise the previewed plan's.
-                
-                double ignitionUt = _handler.CoastingToIgnition
-                    ? _handler.PlannedIgnitionUt
-                    : _handler.InterceptSolution.IgnitionUt;
-                double dtToIgnition = ignitionUt - Planetarium.GetUniversalTime();
-                
-                GUI.enabled = (BbState.InterceptPhase != InterceptPhase.Executing || _handler.CoastingToIgnition)
-                              && dtToIgnition > 10.0;
-                if (GUILayout.Button($"Warp to transfer ignition ({FormatTime(dtToIgnition)})"))
-                    _handler.WarpToIgnition(ignitionUt);
-                GUI.enabled = true;
-            }
-            else
-            {
-                GUI.enabled = BbState.InterceptPhase != InterceptPhase.Executing
-                              && IsFinite(_handler.LiveTimeToClosestApproachSeconds)
-                              && _handler.LiveTimeToClosestApproachSeconds > 10.0;
-                if (GUILayout.Button("Warp to Next Closest Approach")) _handler.WarpToClosestApproach();
-                GUI.enabled = true;
-            }
-
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Abort")) _handler.Abort();
             if (GUILayout.Button("Reset")) _handler.ResetSequence();
@@ -207,23 +211,13 @@ namespace Blackbird.Modules
             GUI.DragWindow();
         }
 
-        private void DrawStageRow(int index, string title, string description, int currentIndex, bool complete)
-        {
-            bool done = complete || index < currentIndex;
-            bool active = !complete && index == currentIndex;
-            string mark = done ? "[x]" : active ? "[>]" : "[ ]";
-
-            GUILayout.Label($"{mark} {title}");
-            if (active) GUILayout.Label("        " + description);
-        }
-
         // The one line that tells the user what is happening and what to do next.
         private string GetInstruction()
         {
-            if (!BbState.RendezvousEnabled)
+            if (!bbState.RendezvousEnabled)
                 return "Autopilot not enabled";
 
-            switch (BbState.InterceptPhase)
+            switch (bbState.InterceptPhase)
             {
                 case InterceptPhase.Idle:
                     return "Ready for execution.";
@@ -236,13 +230,13 @@ namespace Blackbird.Modules
                     return _handler.HasCommand ? _handler.Command.Status : "Executing...";
 
                 case InterceptPhase.Coast:
-                    if (BbState.RendezvousMethod == RendezvousMethod.MatchVelocity)
+                    if (bbState.RendezvousMethod == RendezvousMethod.MatchVelocity)
                         return "Intercept done. Coasting toward closest approach "
                              + $"in {FormatTime(_handler.LiveTimeToClosestApproachSeconds)}. "
                              + "Execute Match Velocity as you near it.";
-                    if (BbState.RendezvousMethod == RendezvousMethod.CloseApproach)
+                    if (bbState.RendezvousMethod == RendezvousMethod.CloseApproach)
                         return "Velocities matched.";
-                    return $"Stage done. Execute {StageName(BbState.RendezvousMethod)} when ready.";
+                    return $"Stage done";
 
                 case InterceptPhase.Complete:
                     return "Rendezvous complete - control returned to you.";

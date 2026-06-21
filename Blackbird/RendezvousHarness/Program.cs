@@ -1,6 +1,7 @@
 using System;
 using Blackbird.Docking;
 using Blackbird.Mathematics;
+using Blackbird.Modules;
 using Blackbird.Rendezvous;
 using UnityEngine;
 
@@ -250,35 +251,37 @@ namespace Blackbird.RendezvousHarness
         {
             Console.WriteLine("Case 7: terminal executor gating + abort/reset");
 
-            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
             SimWorld world = MakeCatchupSim(250000.0, 15.0);
 
-            AssertTrue("starts Idle", ex.Phase == RendezvousPhase.Idle);
-            AssertTrue("starts at Intercept", ex.Stage == RendezvousStage.Intercept);
+            AssertTrue("starts Idle", state.InterceptPhase == InterceptPhase.Idle);
+            AssertTrue("no method until chosen", state.RendezvousMethod == RendezvousMethod.None);
             AssertTrue("idle update has no burn", !ex.Update(world).HasBurn);
 
+            // Choose Intercept, then preview its plan while still idle.
+            state.RendezvousMethod = RendezvousMethod.Intercept;
             ex.RefreshPlanPreview(world);
             AssertTrue("preview plan available", ex.HasInterceptPlan);
 
             AssertTrue("execute ok", ex.Execute());
-            AssertTrue("executing phase", ex.Phase == RendezvousPhase.Executing);
+            AssertTrue("executing phase", state.InterceptPhase == InterceptPhase.Executing);
             AssertTrue("execute blocked while executing", !ex.Execute());
             RendezvousCommand first = ex.Update(world);
-            AssertTrue("intercept burn started", first.HasBurn && ex.Phase == RendezvousPhase.Executing);
+            AssertTrue("intercept burn started", first.HasBurn && state.InterceptPhase == InterceptPhase.Executing);
 
             ex.Abort();
-            AssertTrue("aborted phase", ex.Phase == RendezvousPhase.Aborted);
+            AssertTrue("aborted phase", state.InterceptPhase == InterceptPhase.Aborted);
             AssertTrue("aborted update has no burn", !ex.Update(world).HasBurn);
             AssertTrue("execute blocked when aborted", !ex.Execute());
 
             ex.Reset();
-            AssertTrue("reset to idle", ex.Phase == RendezvousPhase.Idle && ex.Stage == RendezvousStage.Intercept);
+            AssertTrue("reset to idle", state.InterceptPhase == InterceptPhase.Idle && state.RendezvousMethod == RendezvousMethod.None);
 
             // Out-of-order execution: jump straight to Match Velocity from Idle (the on-demand safety gate).
-            AssertTrue("execute match directly", ex.Execute(RendezvousStage.MatchVelocity));
-            AssertTrue("jumped to match stage",
-                ex.Stage == RendezvousStage.MatchVelocity && ex.Phase == RendezvousPhase.Executing);
-            AssertTrue("execute(stage) blocked mid-burn", !ex.Execute(RendezvousStage.Intercept));
+            AssertTrue("execute match directly", ex.Execute(RendezvousMethod.MatchVelocity));
+            AssertTrue("jumped to match method",
+                state.RendezvousMethod == RendezvousMethod.MatchVelocity && state.InterceptPhase == InterceptPhase.Executing);
+            AssertTrue("execute(method) blocked mid-burn", !ex.Execute(RendezvousMethod.Intercept));
             ex.Reset();
         }
 
@@ -299,8 +302,8 @@ namespace Blackbird.RendezvousHarness
                 sim.ActivePosition, sim.ActiveVelocity, sim.TargetPosition, sim.TargetVelocity,
                 KerbinMu, CircularPeriod(R), 720);
 
-            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
-            ex.Execute();       // start the intercept stage; plan is frozen on the first executing tick
+            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
+            ex.Execute(RendezvousMethod.Intercept);   // plan is frozen on the first executing tick
 
             const double maxAccel = 200.0;   // m/s^2 sim engine; high enough that the burn is near-impulsive
             const double dt = 0.01;
@@ -310,16 +313,16 @@ namespace Blackbird.RendezvousHarness
             double appliedAlongPlan = 0.0;
             int ticks = 0;
 
-            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 200000)
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 200000)
             {
                 RendezvousCommand cmd = ex.Update(sim);
                 if (!planCaptured && ex.HasInterceptPlan)
                 {
-                    plan = ex.InterceptPlan;
+                    plan = state.InterceptSolution;
                     dvUnit = plan.DeltaV.normalized;
                     planCaptured = true;
                 }
-                if (ex.Phase != RendezvousPhase.Executing) break;   // burn completed inside Update
+                if (state.InterceptPhase != InterceptPhase.Executing) break;   // burn completed inside Update
 
                 if (cmd.HasBurn)
                 {
@@ -331,7 +334,7 @@ namespace Blackbird.RendezvousHarness
             }
 
             AssertTrue("plan captured", planCaptured);
-            AssertTrue("burn completed -> coast", ex.Phase == RendezvousPhase.Coast);
+            AssertTrue("burn completed -> coast", state.InterceptPhase == InterceptPhase.Coast);
             AssertTrue("applied ΔV ~ planned", Math.Abs(appliedAlongPlan - plan.DeltaVMagnitude) < 2.0);
 
             // Closest approach from the post-burn state to the planned arrival.
@@ -343,10 +346,10 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("burn collapses CA vs coast", postCA < coastCA * 0.05);
             AssertTrue("post-burn CA small (<3 km)", postCA < 3000.0);
 
-            // After intercept the stage auto-advances to Match Velocity (queued for Execute). The full
-            // match -> close traversal is exercised end-to-end in Case 13.
-            AssertTrue("stage advanced to match", ex.Stage == RendezvousStage.MatchVelocity);
-            AssertTrue("coast awaiting match", ex.Phase == RendezvousPhase.Coast);
+            // Methods are independent now: intercept finishing drops to Coast with the method unchanged
+            // (no auto-advance). The user picks the next method explicitly (exercised in Case 13).
+            AssertTrue("intercept done -> coast", state.InterceptPhase == InterceptPhase.Coast);
+            AssertTrue("method stays intercept (no auto-advance)", state.RendezvousMethod == RendezvousMethod.Intercept);
 
             Console.WriteLine(string.Format(
                 "    plan ΔV={0:F2} applied={1:F2} m/s  coastCA={2:F0} m  postCA={3:F1} m  ticks={4}",
@@ -476,22 +479,22 @@ namespace Blackbird.RendezvousHarness
             Console.WriteLine("Case 12: intercept burn terminates under weak thrust (stall cutoff)");
 
             SimWorld sim = MakeCatchupSim(250000.0, 15.0);
-            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
-            ex.Execute();
+            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
+            ex.Execute(RendezvousMethod.Intercept);
 
             const double maxAccel = 0.5;   // weak engine -> long burn -> axis saturates before reaching planned
             const double dt = 0.2;
             int ticks = 0;
-            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 500000)
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 500000)
             {
                 RendezvousCommand cmd = ex.Update(sim);
-                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
                 if (cmd.HasBurn)
                     sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
                 sim.Advance(dt);
             }
 
-            AssertTrue("weak-thrust burn terminates", ex.Phase == RendezvousPhase.Coast);
+            AssertTrue("weak-thrust burn terminates", state.InterceptPhase == InterceptPhase.Coast);
             AssertTrue("terminated within tick budget", ticks < 500000);
             Console.WriteLine(string.Format("    terminated after {0} ticks ({1:F0}s sim)", ticks, ticks * dt));
         }
@@ -505,40 +508,39 @@ namespace Blackbird.RendezvousHarness
             Console.WriteLine("Case 13: match-velocity nulls relative velocity at closest approach");
 
             SimWorld sim = MakeCatchupSim(250000.0, 15.0);
-            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
 
             const double maxAccel = 50.0;   // near-impulsive engine so both burns finish quickly
             double dt = 0.02;
 
             // --- intercept burn to completion (as in Case 8) ---
-            ex.Execute();
+            ex.Execute(RendezvousMethod.Intercept);
             InterceptSolution plan = default(InterceptSolution);
             bool planCaptured = false;
             int ticks = 0;
-            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 500000)
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 500000)
             {
                 RendezvousCommand cmd = ex.Update(sim);
-                if (!planCaptured && ex.HasInterceptPlan) { plan = ex.InterceptPlan; planCaptured = true; }
-                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (!planCaptured && ex.HasInterceptPlan) { plan = state.InterceptSolution; planCaptured = true; }
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
                 if (cmd.HasBurn)
                     sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
                 sim.Advance(dt);
             }
             AssertTrue("plan captured", planCaptured);
-            AssertTrue("intercept -> match stage",
-                ex.Stage == RendezvousStage.MatchVelocity && ex.Phase == RendezvousPhase.Coast);
+            AssertTrue("intercept done -> coast", state.InterceptPhase == InterceptPhase.Coast);
 
             // --- coast to the closest approach the intercept aimed at ---
             while (sim.UniversalTime < plan.ArrivalUt - dt) sim.Advance(dt);
             double relBefore = (sim.ActiveVelocity - sim.TargetVelocity).magnitude;
 
-            // --- match-velocity burn to completion ---
-            AssertTrue("execute match", ex.Execute());
+            // --- match-velocity burn to completion (explicitly chosen now that stages are independent) ---
+            AssertTrue("execute match", ex.Execute(RendezvousMethod.MatchVelocity));
             ticks = 0;
-            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 500000)
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 500000)
             {
                 RendezvousCommand cmd = ex.Update(sim);
-                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
                 if (cmd.HasBurn)
                     sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
                 sim.Advance(dt);
@@ -546,7 +548,7 @@ namespace Blackbird.RendezvousHarness
             double relAfter = (sim.ActiveVelocity - sim.TargetVelocity).magnitude;
 
             AssertTrue("match completed -> coast",
-                ex.Phase == RendezvousPhase.Coast && ex.Stage == RendezvousStage.CloseApproach);
+                state.InterceptPhase == InterceptPhase.Coast && state.RendezvousMethod == RendezvousMethod.MatchVelocity);
             AssertTrue("relative velocity nulled (<0.3 m/s)", relAfter < 0.3);
             AssertTrue("match reduced relative speed", relAfter < relBefore);
 
@@ -571,26 +573,26 @@ namespace Blackbird.RendezvousHarness
                 sim.ActivePosition, sim.ActiveVelocity, sim.TargetPosition, sim.TargetVelocity,
                 KerbinMu, CircularPeriod(R), 720);
 
-            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
-            ex.Execute();
+            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
+            ex.Execute(RendezvousMethod.Intercept);
 
             const double maxAccel = 8.0;   // a ~30 m/s burn takes ~4 s -> gravity acts appreciably during it
             const double dt = 0.05;
             InterceptSolution plan = default(InterceptSolution);
             bool captured = false;
             int ticks = 0;
-            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 1000000)
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 1000000)
             {
                 RendezvousCommand cmd = ex.Update(sim);
-                if (!captured && ex.HasInterceptPlan) { plan = ex.InterceptPlan; captured = true; }
-                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (!captured && ex.HasInterceptPlan) { plan = state.InterceptSolution; captured = true; }
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
                 if (cmd.HasBurn)
                     sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
                 sim.Advance(dt);
             }
 
             AssertTrue("plan captured", captured);
-            AssertTrue("burn completed -> coast", ex.Phase == RendezvousPhase.Coast);
+            AssertTrue("burn completed -> coast", state.InterceptPhase == InterceptPhase.Coast);
 
             double remaining = Math.Max(plan.ArrivalUt - sim.UniversalTime, 1.0);
             double postCA = MinSeparation(
@@ -621,11 +623,11 @@ namespace Blackbird.RendezvousHarness
             SimWorld sim = MakeCatchupSim(250000.0, 15.0);
             double lead = 120.0;
 
-            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
             ex.IgnitionLeadSeconds = lead;
-            ex.Execute();
+            ex.Execute(RendezvousMethod.Intercept);
             ex.Update(sim);   // arms + freezes the plan using the lead
-            InterceptSolution plan = ex.InterceptPlan;
+            InterceptSolution plan = state.InterceptSolution;
 
             AssertTrue("plan success", plan.Success);
             AssertScalar("ignition UT = now + lead", plan.IgnitionUt, sim.UniversalTime + lead);
@@ -660,9 +662,8 @@ namespace Blackbird.RendezvousHarness
         {
             Console.WriteLine("Case 15: close-approach parks at standoff and matches (stepping sim)");
 
-            TerminalRendezvousExecutor ex = AdvanceToCloseStage();
-            AssertTrue("at close stage",
-                ex.Stage == RendezvousStage.CloseApproach && ex.Phase == RendezvousPhase.Coast);
+            TerminalRendezvousExecutor ex = AdvanceToCloseStage(out SharedState state);
+            AssertTrue("ready after match (coast)", state.InterceptPhase == InterceptPhase.Coast);
 
             double R = KerbinRadius + 200000.0;
             double vc = Math.Sqrt(KerbinMu / R);
@@ -676,14 +677,14 @@ namespace Blackbird.RendezvousHarness
             // Park at 100 m for this test (independent of the default), so the standoff-band asserts are meaningful.
             ex.ParkingDistance = 100.0;
 
-            AssertTrue("execute close", ex.Execute());
+            AssertTrue("execute close", ex.Execute(RendezvousMethod.CloseApproach));
             const double maxAccel = 20.0;
             double dt = 0.05;
             int ticks = 0;
-            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 1000000)
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 1000000)
             {
                 RendezvousCommand cmd = ex.Update(sim);
-                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
                 if (cmd.HasBurn)
                     sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
                 sim.Advance(dt);
@@ -692,7 +693,7 @@ namespace Blackbird.RendezvousHarness
             double rangeAfter = (sim.TargetPosition - sim.ActivePosition).magnitude;
             double relAfter = (sim.ActiveVelocity - sim.TargetVelocity).magnitude;
 
-            AssertTrue("close completed (rendezvous done)", ex.Phase == RendezvousPhase.Complete);
+            AssertTrue("close completed (rendezvous done)", state.InterceptPhase == InterceptPhase.Complete);
             AssertTrue("parked near standoff (<=150 m)", rangeAfter <= 150.0);
             AssertTrue("parked not collided (>=50 m)", rangeAfter >= 50.0);
             AssertTrue("matched at standoff (<0.6 m/s)", relAfter < 0.6);
@@ -706,22 +707,33 @@ namespace Blackbird.RendezvousHarness
         // Drives a fresh executor through Intercept + Match Velocity to completion against a coplanar
         // catch-up sim, leaving it queued (Coast) at the CloseApproach stage. Used to set up Case 15
         // legitimately (the only way to reach the close stage is to complete the earlier stages).
-        private static TerminalRendezvousExecutor AdvanceToCloseStage()
+        // Build an executor wired to a fresh SharedState (Init + Reset), the way BlackBird does in-game.
+        private static TerminalRendezvousExecutor NewExecutor(out SharedState state)
+        {
+            state = new SharedState();
+            state.InterceptMethod = InterceptMethod.SinglePhase;   // these cases exercise the single-rev intercept
+            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+            ex.Init(state);
+            ex.Reset();
+            return ex;
+        }
+
+        private static TerminalRendezvousExecutor AdvanceToCloseStage(out SharedState state)
         {
             SimWorld sim = MakeCatchupSim(250000.0, 15.0);
-            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
+            TerminalRendezvousExecutor ex = NewExecutor(out state);
             const double maxAccel = 50.0;
             double dt = 0.02;
 
-            ex.Execute();   // intercept
+            ex.Execute(RendezvousMethod.Intercept);
             InterceptSolution plan = default(InterceptSolution);
             bool captured = false;
             int ticks = 0;
-            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 500000)
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 500000)
             {
                 RendezvousCommand cmd = ex.Update(sim);
-                if (!captured && ex.HasInterceptPlan) { plan = ex.InterceptPlan; captured = true; }
-                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (!captured && ex.HasInterceptPlan) { plan = state.InterceptSolution; captured = true; }
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
                 if (cmd.HasBurn)
                     sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
                 sim.Advance(dt);
@@ -729,12 +741,12 @@ namespace Blackbird.RendezvousHarness
 
             while (sim.UniversalTime < plan.ArrivalUt - dt) sim.Advance(dt);   // coast to CA
 
-            ex.Execute();   // match velocity
+            ex.Execute(RendezvousMethod.MatchVelocity);
             ticks = 0;
-            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 500000)
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 500000)
             {
                 RendezvousCommand cmd = ex.Update(sim);
-                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
                 if (cmd.HasBurn)
                     sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
                 sim.Advance(dt);
@@ -754,14 +766,14 @@ namespace Blackbird.RendezvousHarness
             Console.WriteLine("Case 14: intercept burn terminates under min-throttle creep (deadband stall)");
 
             InjectWorld w = new InjectWorld(MakeCatchupSim(250000.0, 15.0));
-            TerminalRendezvousExecutor ex = new TerminalRendezvousExecutor();
-            ex.Execute();
+            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
+            ex.Execute(RendezvousMethod.Intercept);
 
             // First update arms the burn and freezes the plan; the baseline is the active velocity now.
             ex.Update(w);
             Vector3d baseline = w.ActiveVelocity;
-            Vector3d dvUnit = ex.InterceptPlan.DeltaV.normalized;
-            double planned = ex.InterceptPlan.DeltaVMagnitude;
+            Vector3d dvUnit = state.InterceptSolution.DeltaV.normalized;
+            double planned = state.InterceptSolution.DeltaVMagnitude;
             AssertTrue("plan armed", ex.HasInterceptPlan && planned > 2.0);
 
             // Deliver a fast chunk to 1 m/s short of planned (well past the stall-arm threshold), then
@@ -771,10 +783,10 @@ namespace Blackbird.RendezvousHarness
 
             double dt = 0.1;
             int ticks = 0;
-            while (ex.Phase == RendezvousPhase.Executing && ticks++ < 100000)
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 100000)
             {
                 ex.Update(w);
-                if (ex.Phase != RendezvousPhase.Executing) break;
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
                 if (ticks % 10 == 0)   // a tiny, shrinking new maximum roughly once per second
                 {
                     double delivered = Vector3d.Dot(w.ActiveVelocity - baseline, dvUnit);
@@ -785,7 +797,7 @@ namespace Blackbird.RendezvousHarness
             }
 
             double finalDelivered = Vector3d.Dot(w.ActiveVelocity - baseline, dvUnit);
-            AssertTrue("creep burn terminates", ex.Phase == RendezvousPhase.Coast);
+            AssertTrue("creep burn terminates", state.InterceptPhase == InterceptPhase.Coast);
             AssertTrue("terminated promptly (<2000 ticks)", ticks < 2000);
             AssertTrue("stalled below planned (not 'reached')", finalDelivered < planned - CutoffMargin);
 
@@ -1006,16 +1018,16 @@ namespace Blackbird.RendezvousHarness
             };
 
             // CA already in the parking band (5 m < 10 m) but 600 s away (beyond the old 300 s horizon): coast.
-            TerminalRendezvousExecutor coastExec = new TerminalRendezvousExecutor();
-            coastExec.Execute(RendezvousStage.CloseApproach);
+            TerminalRendezvousExecutor coastExec = NewExecutor(out _);
+            coastExec.Execute(RendezvousMethod.CloseApproach);
             RendezvousCommand coast = coastExec.Update(world, 5.0, 600.0);
             AssertTrue("holds heading (has command)", coast.HasBurn);
             AssertScalar("coast throttle is zero", coast.Throttle, 0.0);
-            AssertTrue("coast did not complete", coast.Phase != RendezvousPhase.Complete);
+            AssertTrue("coast did not complete", coast.Phase != InterceptPhase.Complete);
 
             // CA NOT in band -> must still close (nonzero throttle), proving the closing path still works.
-            TerminalRendezvousExecutor closeExec = new TerminalRendezvousExecutor();
-            closeExec.Execute(RendezvousStage.CloseApproach);
+            TerminalRendezvousExecutor closeExec = NewExecutor(out _);
+            closeExec.Execute(RendezvousMethod.CloseApproach);
             RendezvousCommand close = closeExec.Update(world, 2000.0, 600.0);
             AssertTrue("closes when CA out of band", close.Throttle > 0.0);
         }
@@ -1041,17 +1053,17 @@ namespace Blackbird.RendezvousHarness
                 ActiveVelocity = new Vector3d(30.0, 100.0, 0)  // closing at 30 m/s toward the target
             };
 
-            TerminalRendezvousExecutor holdExec = new TerminalRendezvousExecutor();
+            TerminalRendezvousExecutor holdExec = NewExecutor(out _);
             // Low-TWR craft: small decel + long flip lead inflate the brake point past 500 m, the exact
             // condition that made the old BRAKE-before-COAST ordering fire a full match burn here.
             holdExec.BrakingDecelMetersPerSecondSquared = 1.0;
             holdExec.BrakingSlewLeadSeconds = 20.0;
-            holdExec.Execute(RendezvousStage.CloseApproach);
+            holdExec.Execute(RendezvousMethod.CloseApproach);
             RendezvousCommand hold = holdExec.Update(far, 8.0, 60.0);
 
             AssertTrue("holds heading (has command)", hold.HasBurn);
             AssertScalar("hold throttle is zero (no early burn)", hold.Throttle, 0.0);
-            AssertTrue("did not complete", hold.Phase != RendezvousPhase.Complete);
+            AssertTrue("did not complete", hold.Phase != InterceptPhase.Complete);
             // Oriented to the braking attitude: opposite the closing relative velocity (-X here).
             AssertVecRel("oriented retrograde-relative", hold.ThrustDirection, new Vector3d(-1, 0, 0), 1e-6);
 
@@ -1066,8 +1078,8 @@ namespace Blackbird.RendezvousHarness
                 ActiveVelocity = new Vector3d(2.0, 100.0, 0)   // still 2 m/s of relative velocity to null
             };
 
-            TerminalRendezvousExecutor havenExec = new TerminalRendezvousExecutor();
-            havenExec.Execute(RendezvousStage.CloseApproach);
+            TerminalRendezvousExecutor havenExec = NewExecutor(out _);
+            havenExec.Execute(RendezvousMethod.CloseApproach);
             RendezvousCommand burn = havenExec.Update(haven, 8.0, 60.0);
             AssertTrue("burns once inside the safe haven", burn.Throttle > 0.0);
         }
@@ -1160,8 +1172,8 @@ namespace Blackbird.RendezvousHarness
                 TargetPosition = new Vector3d(4000.0, 0, 0), ActivePosition = Vector3d.zero,
                 TargetVelocity = targetVel, ActiveVelocity = activeVel
             };
-            TerminalRendezvousExecutor farExec = new TerminalRendezvousExecutor();
-            farExec.Execute(RendezvousStage.CloseApproach);
+            TerminalRendezvousExecutor farExec = NewExecutor(out _);
+            farExec.Execute(RendezvousMethod.CloseApproach);
             RendezvousCommand farCmd = farExec.Update(far, 2000.0, 600.0);
             AssertScalar("4 km: holds (no micro-burn)", farCmd.Throttle, 0.0);
 
@@ -1171,8 +1183,8 @@ namespace Blackbird.RendezvousHarness
                 TargetPosition = new Vector3d(200.0, 0, 0), ActivePosition = Vector3d.zero,
                 TargetVelocity = targetVel, ActiveVelocity = activeVel
             };
-            TerminalRendezvousExecutor nearExec = new TerminalRendezvousExecutor();
-            nearExec.Execute(RendezvousStage.CloseApproach);
+            TerminalRendezvousExecutor nearExec = NewExecutor(out _);
+            nearExec.Execute(RendezvousMethod.CloseApproach);
             RendezvousCommand nearCmd = nearExec.Update(near, 2000.0, 600.0);
             AssertTrue("200 m: still corrects", nearCmd.Throttle > 0.0);
         }
@@ -1191,8 +1203,8 @@ namespace Blackbird.RendezvousHarness
                 TargetVelocity = Vector3d.zero, ActiveVelocity = new Vector3d(0, 2.0, 0)   // relVel (0,2,0): 2 m/s
             };
 
-            TerminalRendezvousExecutor exec = new TerminalRendezvousExecutor();
-            exec.Execute(RendezvousStage.MatchVelocity);
+            TerminalRendezvousExecutor exec = NewExecutor(out _);
+            exec.Execute(RendezvousMethod.MatchVelocity);
 
             // Above the lock threshold (2 m/s): thrust opposes relVel -> (0,-1,0).
             RendezvousCommand fast = exec.Update(world);

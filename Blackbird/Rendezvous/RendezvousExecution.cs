@@ -10,10 +10,6 @@ namespace Blackbird.Rendezvous
         public bool HasBurn;             // false => idle/coast: no steering, zero throttle
         public Vector3d ThrustDirection; // world-frame unit vector (meaningful only when HasBurn)
         public double Throttle;          // 0..1 (meaningful only when HasBurn)
-        // Docking only: a desired RCS translation velocity (world frame, m/s). HasTranslation gates it so
-        // every other stage leaves it zero and the actuation layer ignores it (main-engine path unchanged).
-        public bool HasTranslation;
-        public Vector3d TranslationVelocityWorld;
         public string Status;            // human-readable, for UI/log
     }
 

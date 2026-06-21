@@ -8,10 +8,10 @@ namespace Blackbird.Modules
 {
     public sealed class GuidanceComputer
     {
-        private SharedState BbState;
+        private SharedState bbState;
         private static readonly int WindowId = "Blackbird.GuidanceComputer".GetHashCode();
         private Rect _windowRect = new Rect(560, 620, 380, 300);
-        private string _pitchInputText = "";
+        private string _pitchInputText = "90";
         private string _headingInputText = "90";
         private string _rollInputText = "90";
         private string _throttleInputText = "0";
@@ -19,26 +19,27 @@ namespace Blackbird.Modules
         private const double MinSecondsToUseWarp = 10.0;
         private readonly string[] _guidanceModeLabels = { "None", "Manual", "Autopilot" };
 
-        private LaunchHandler _launchHandler;
-        public bool IsVisible { get; set; }
+        private const float BtnW = 60f;
+        private const float BtnH = 34f;
 
-        public void Toggle() => IsVisible = !IsVisible;
+        private LaunchHandler _launchHandler;
         public void Init(LaunchHandler handler, SharedState s)
         {
              _launchHandler = handler;
-            BbState = s;
+            bbState = s;
         }
 
         public void Draw()
         {
-            if (!IsVisible) return;
+            if (bbState == null || !bbState.GuidanceVisible) return;
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Guidance Computer");
         }
 
         private void DrawContents(int _)
         {
+            if (GUI.Button(new Rect(_windowRect.width - 22, 2, 18, 18), " ")) bbState.GuidanceVisible = false;
             // null guard before any State access
-            if (_launchHandler == null)
+            if (bbState.LaunchPlan == null)
             {
                 GUILayout.Label("Guidance unavailable");
                 GUI.DragWindow();
@@ -47,17 +48,9 @@ namespace Blackbird.Modules
 
             if (_launchHandler.State != LaunchGuidanceState.GuidingAscent)
             {
-                if (_launchHandler.CurrentPlan == null)
-                {
-                    GUILayout.Label("No plan loaded");
-                    GUI.DragWindow();
-                    return;
-                }
-
-                LaunchWindowInfo lw = _launchHandler.CurrentPlan.LaunchWindow;
+                LaunchWindowInfo lw = bbState.LaunchPlan.LaunchWindow;
                 if (lw != null)
                 {
-                    GUILayout.Label("[Launch Window]");
                     GUILayout.Label($"Asc Node Lon: {lw.AscendingNodeLongitudeDeg:F2}°");
                     GUILayout.Label($"Desc Node Lon: {lw.DescendingNodeLongitudeDeg:F2}°");
                     GUILayout.Label($"Time to Asc: {lw.TimeToAscendingNodeSeconds:F0}s");
@@ -65,16 +58,29 @@ namespace Blackbird.Modules
                     GUILayout.Label($"Selected Offset: {lw.PlaneOffsetDeg:F2}°");
                 }
 
-                double countdown = GetDisplayedLaunchCountdownSeconds(_launchHandler.CurrentPlan);
+                double countdown = GetDisplayedLaunchCountdownSeconds(bbState.LaunchPlan);
                 GUILayout.Label(double.IsNaN(countdown) ? "T- -- seconds" : $"T- {countdown:F0} seconds");
 
-                GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted && countdown >= MinSecondsToUseWarp;
-                if (GUILayout.Button("Warp To Launch")) _launchHandler.WarpToLaunch();
+                bool armed = _launchHandler.State == LaunchGuidanceState.AwaitingLaunch
+                          || _launchHandler.State == LaunchGuidanceState.WarpingToLaunch;
 
-                GUI.enabled =
-                    _launchHandler.State == LaunchGuidanceState.PlanAccepted ||
-                    _launchHandler.State == LaunchGuidanceState.AwaitingLaunch;
-                if (GUILayout.Button("Start Guidance")) _launchHandler.StartGuidance();
+                if (!armed)
+                {
+                    // Arm the launch (no flying yet).
+                    GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted
+                                  && !bbState.DockingEnabled && !bbState.RendezvousEnabled;
+                    if (GUILayout.Button("Start Guidance")) _launchHandler.StartGuidance();
+                }
+                else
+                {
+                    // Armed: warp to the window, then pick a flight mode (which begins the ascent).
+                    GUI.enabled = countdown >= MinSecondsToUseWarp;
+                    if (GUILayout.Button("Warp To Launch")) _launchHandler.WarpToLaunch();
+                    GUI.enabled = true;
+
+                    DrawSelectGuidanceMethod();
+                    if (_launchHandler.GuidanceMode != GuidanceMode.None) _launchHandler.BeginAscent();
+                }
 
                 GUI.enabled =
                     _launchHandler.State == LaunchGuidanceState.PlanAccepted ||
@@ -90,71 +96,83 @@ namespace Blackbird.Modules
 
             AscentGuidanceInfo guidanceInfo = _launchHandler.GuidanceInfo;
 
+            double ascentCountdown = GetDisplayedLaunchCountdownSeconds(bbState.LaunchPlan);
+            GUILayout.Label(double.IsNaN(ascentCountdown) ? "T- -- seconds" : $"T- {ascentCountdown:F0} seconds");
+
             DrawSelectGuidanceMethod();
+
             GUILayout.Space(10);
 
             string gMode = _launchHandler.GuidanceMode == GuidanceMode.Autopilot ? "Autopilot" :
-                           _launchHandler.GuidanceMode == GuidanceMode.Manual ? "Manual" : "None";
+               _launchHandler.GuidanceMode == GuidanceMode.Manual ? "Manual" : "None";
             GUILayout.Label($"Mode: {gMode}");
-            GUILayout.Label($"Flight Status: {guidanceInfo.GuidancePhase}");
+
+            GUILayout.Space(8);
+            Orbit orbit = FlightGlobals.ActiveVessel.orbit;
+            GUILayout.Label($"Time to Apoapsis: {BlackbirdHelpers.FormatDuration(orbit.timeToAp)}");
+            GUILayout.Label($"Time to Periapsis: {BlackbirdHelpers.FormatDuration(orbit.timeToPe)}");
+            GUILayout.Label($"Orbital period: {BlackbirdHelpers.FormatDuration(orbit.period)}");
+            GUILayout.Label($"Orbital velocity: {orbit.orbitalSpeed:F1} m/s");
+            GUILayout.Label($"Semi-major axis: {orbit.semiMajorAxis / 1000.0:F1} km");
+            GUILayout.Label($"Eccentricity: {orbit.eccentricity:F4}");
+            GUILayout.Space(8);
 
             if (_launchHandler.GuidanceMode == GuidanceMode.Manual)
             {
-                GUILayout.Label("[Manual Control]");
-                GUILayout.Space(10);
-
                 // PITCH
-                GUILayout.Label($"[Pitch - {guidanceInfo.CommandPitchDeg:F2}°]", GUILayout.Width(70));
+                GUILayout.Label($"Pitch: {guidanceInfo.CommandPitchDeg:F2}°");
                 GUILayout.BeginHorizontal();
-                _pitchInputText = GUILayout.TextField(_pitchInputText, GUILayout.Width(100));
+                _pitchInputText = GUILayout.TextField(_pitchInputText, GUILayout.Width(50), GUILayout.Height(BtnH));
                 double.TryParse(_pitchInputText, out double pitch);
-                if (GUILayout.Button("Exct.")) _launchHandler.SetPitchCommand(pitch);
-                if (GUILayout.Button(" - ")) _launchHandler.DecreaseManualPitchCommand();
-                if (GUILayout.Button(" + ")) _launchHandler.IncreaseManualPitchCommand();
-                if (GUILayout.Button("Reset")) _launchHandler.ResetPitchCommand();
+                if (GUILayout.Button("Apply", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.SetPitchCommand(pitch);
+                if (GUILayout.Button("−", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.DecreaseManualPitchCommand();
+                if (GUILayout.Button("+", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.IncreaseManualPitchCommand();
+                if (GUILayout.Button("Reset", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.ResetPitchCommand();
                 GUILayout.EndHorizontal();
 
-                GUILayout.Space(5);
+                GUILayout.Space(6);
 
                 // HEADING
-                GUILayout.Label($"[Heading - {guidanceInfo.CommandHeadingDeg:F2}°]", GUILayout.Width(70));
+                GUILayout.Label($"Heading: {guidanceInfo.CommandHeadingDeg:F2}°");
                 GUILayout.BeginHorizontal();
-                _headingInputText = GUILayout.TextField(_headingInputText, GUILayout.Width(100));
+                _headingInputText = GUILayout.TextField(_headingInputText, GUILayout.Width(50), GUILayout.Height(BtnH));
                 double.TryParse(_headingInputText, out double hdg);
-                if (GUILayout.Button("Exct.")) _launchHandler.SetHeadingCommand(hdg);
-                if (GUILayout.Button(" - ")) _launchHandler.DecreaseManualHeadingCommand();
-                if (GUILayout.Button(" + ")) _launchHandler.IncreaseManualHeadingCommand();
-                if (GUILayout.Button("Reset")) _launchHandler.ResetHeadingCommand();
+                if (GUILayout.Button("Apply", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.SetHeadingCommand(hdg);
+                if (GUILayout.Button("−", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.DecreaseManualHeadingCommand();
+                if (GUILayout.Button("+", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.IncreaseManualHeadingCommand();
+                if (GUILayout.Button("Reset", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.ResetHeadingCommand();
                 GUILayout.EndHorizontal();
+
+                GUILayout.Space(6);
 
                 // ROLL
+                GUILayout.Label($"Roll: {guidanceInfo.CommandRoll:F2}°");
                 GUILayout.BeginHorizontal();
-                GUILayout.Label($"[Roll - {guidanceInfo.CommandRoll:F2}°]", GUILayout.Width(70));
-                _rollInputText = GUILayout.TextField(_rollInputText, GUILayout.Width(100));
+                _rollInputText = GUILayout.TextField(_rollInputText, GUILayout.Width(50), GUILayout.Height(BtnH));
                 double.TryParse(_rollInputText, out double roll);
-                if (GUILayout.Button("Exct.")) _launchHandler.SetRollCommand(roll);
-                if (GUILayout.Button(" - ")) _launchHandler.DecreaseManualRollCommand();
-                if (GUILayout.Button(" + ")) _launchHandler.IncreaseManualRollCommand();
-                if (GUILayout.Button("Reset")) _launchHandler.ResetRollCommand();
+                if (GUILayout.Button("Apply", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.SetRollCommand(roll);
+                if (GUILayout.Button("−", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.DecreaseManualRollCommand();
+                if (GUILayout.Button("+", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.IncreaseManualRollCommand();
+                if (GUILayout.Button("Reset", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.ResetRollCommand();
                 GUILayout.EndHorizontal();
 
-                GUILayout.Space(5);
+                GUILayout.Space(6);
 
                 // THROTTLE
+                GUILayout.Label($"Throttle: {BlackbirdHelpers.FormatThrottle(guidanceInfo.CommandThrottle)}");
                 GUILayout.BeginHorizontal();
-                GUILayout.Label($"[Throttle - {BlackbirdHelpers.FormatThrottle(guidanceInfo.CommandThrottle)}%]", GUILayout.Width(70));
-                _throttleInputText = GUILayout.TextField(_throttleInputText, GUILayout.Width(100));
+                _throttleInputText = GUILayout.TextField(_throttleInputText, GUILayout.Width(50), GUILayout.Height(BtnH));
                 double.TryParse(_throttleInputText, out double thtl);
-                if (GUILayout.Button("Exct.")) _launchHandler.SetThrottleCommand(thtl);
-                if (GUILayout.Button(" - ")) _launchHandler.DecreaseManualThrottleCommand();
-                if (GUILayout.Button(" + ")) _launchHandler.IncreaseManualThrottleCommand();
-                if (GUILayout.Button("Reset")) _launchHandler.ResetThrottleCommand();
+                if (GUILayout.Button("Apply", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.SetThrottleCommand(thtl);
+                if (GUILayout.Button("−", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.DecreaseManualThrottleCommand();
+                if (GUILayout.Button("+", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.IncreaseManualThrottleCommand();
+                if (GUILayout.Button("Reset", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.ResetThrottleCommand();
                 GUILayout.EndHorizontal();
             }
             else if (_launchHandler.GuidanceMode == GuidanceMode.Autopilot)
             {
                 GUILayout.Label("[Guidance]");
-                GUILayout.Label($"Status: {guidanceInfo.GuidanceOptimizerStatus}");
+                GUILayout.Label($"Flight Status: {guidanceInfo.GuidancePhase}");
 
                 GUILayout.Space(10);
 
@@ -206,7 +224,7 @@ namespace Blackbird.Modules
                 GUILayout.Label(FormatKm(guidanceInfo.PeriapsisErrorMeters, "F1"), GUILayout.Width(60));
                 GUILayout.EndHorizontal();
 
-                PhasingOrbit phasing = _launchHandler.CurrentPlan?.PhasingOrbit;
+                PhasingOrbit phasing = bbState.LaunchPlan?.PhasingOrbit;
                 if (phasing != null)
                 {
                     GUILayout.Label(phasing.IsFasterThanTarget
@@ -231,7 +249,7 @@ namespace Blackbird.Modules
 
                 _showAdvancedDetails = GUILayout.Toggle(_showAdvancedDetails, "Show Advanced Details");
                 if (_showAdvancedDetails)
-                    DrawAdvancedDetails(_launchHandler.CurrentPlan, _launchHandler.CurrentPlan.TargetVessel);
+                    DrawAdvancedDetails(bbState.LaunchPlan, bbState.LaunchPlan.TargetVessel);
             }
 
             GUI.DragWindow();

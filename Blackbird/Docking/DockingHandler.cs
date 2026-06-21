@@ -28,7 +28,7 @@ namespace Blackbird.Docking
             _autopilot = new DockingAutopilot(_rcs, _attitude);
         }
 
-        public DockingControlMode Mode { get; private set; } = DockingControlMode.Off;
+
         public bool KeepPointed = false;
 
         // --- manual input, set by the UI each draw while a button is held; consumed (with a freshness window
@@ -55,13 +55,13 @@ namespace Blackbird.Docking
         public double ClosingRateSigned { get; private set; } = double.NaN;   // + = getting closer, - = moving away
         public double RcsFuelPercent { get; private set; } = double.NaN;
         public DockingSteps DockingStep => _autopilot.CurrentStep;
-        public string GuidanceStatus => Mode == DockingControlMode.Guidance ? _autopilot.status : "not running";
+        public string GuidanceStatus => bbState.DockingMode == DockingControlMode.Guidance ? _autopilot.status : "not running";
 
         public bool ResettingOrientation => _resetOrientation;
 
         // UI gates (the panel mirrors the enable/disable logic; these just enact the transitions).
-        public void RunGuidance() { Mode = DockingControlMode.Guidance; _autopilot.Engage(); }
-        public void AssumeControl() { Mode = DockingControlMode.Manual; _autopilot.Disengage(); }
+        public void RunDockingGuidance() { bbState.DockingMode = DockingControlMode.Guidance; bbState.DockingEnabled = true; _autopilot.Engage(); }
+        public void AssumeControl() { bbState.DockingMode = DockingControlMode.Manual; bbState.DockingEnabled = true; _autopilot.Disengage(); }
 
         // One-shot orientation reset: point at the port (if targeted) and roll to "real up" so the craft's
         // local translation axes become predictable. Latched; auto-clears when aligned. Click again to cancel.
@@ -76,7 +76,11 @@ namespace Blackbird.Docking
             _manualInputUt = Planetarium.GetUniversalTime();
         }
 
-        public void Init(SharedState s) => bbState = s;
+        public void Init(SharedState s)
+        {
+            bbState = s;
+            bbState.DockingMode = DockingControlMode.Off;
+        }
 
         private bool ManualInputFresh() =>
             Planetarium.GetUniversalTime() - _manualInputUt < ManualInputFreshSeconds;
@@ -86,7 +90,7 @@ namespace Blackbird.Docking
         public void Update(Vessel active)
         {
             _vessel = active;
-            if (active == null)
+            if (active == null || bbState == null || bbState.DockingEnabled == false)
             {
                 HasTarget = false;
                 _vs = null;
@@ -96,9 +100,10 @@ namespace Blackbird.Docking
             _targetObject = active.targetObject;
             _targetVessel = _targetObject != null ? _targetObject.GetVessel() : null;
             HasTarget = _targetObject != null && _targetVessel != null;
+
             UpdateMetrics();
 
-            bool actuating = Mode == DockingControlMode.Guidance
+            bool actuating = bbState.DockingMode == DockingControlMode.Guidance
                              || (KeepPointed && HasTarget)
                              || _resetOrientation
                              || ManualInputFresh();
@@ -113,11 +118,11 @@ namespace Blackbird.Docking
                 active.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
             _vs = VesselState.FromVessel(active);
 
-            if (Mode == DockingControlMode.Guidance)
+            if (bbState.DockingMode == DockingControlMode.Guidance)
             {
                 _autopilot.OnFixedUpdate(active, _vs);
                 // The autopilot turns Off on capture or target loss; hand control back to the operator.
-                if (_autopilot.CurrentStep == DockingSteps.Off) Mode = DockingControlMode.Off;
+                if (_autopilot.CurrentStep == DockingSteps.Off) bbState.DockingMode = DockingControlMode.Off;
             }
         }
 
@@ -126,7 +131,7 @@ namespace Blackbird.Docking
         {
             if (state == null || vessel == null) return;
 
-            if (Mode == DockingControlMode.Guidance)
+            if (bbState.DockingMode == DockingControlMode.Guidance)
             {
                 _autopilot.Drive(state);
                 return;

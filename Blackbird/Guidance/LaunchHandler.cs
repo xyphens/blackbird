@@ -10,7 +10,7 @@ namespace Blackbird.Guidance
         private const double WarpStopLeadTimeSeconds = 10.0;
         private double _targetUt;
 
-        SharedState BbState;
+        SharedState bbState;
 
         private readonly AttitudeControl _attitudeControl = new AttitudeControl();
 
@@ -34,14 +34,13 @@ namespace Blackbird.Guidance
         // read inputs from Blackbird?
         public GuidanceMode GuidanceMode { get; set; } = GuidanceMode.None;
         public LaunchGuidanceState State { get; private set; }
-        public LaunchPlan CurrentPlan { get; private set; }
         public Vessel TargetVessel { get; private set; }
 
-        public void SetPlan(LaunchPlan plan, SharedState s)
+        public void Init(SharedState s)
         {
-            CurrentPlan = plan;
-            BbState = s;
-            State = plan != null ? LaunchGuidanceState.PlanReady : LaunchGuidanceState.Idle;
+            if (s == null) return;
+            bbState = s;
+            State = s.LaunchPlan != null ? LaunchGuidanceState.PlanReady : LaunchGuidanceState.Idle;
             _ascentGuidance.Reset();
         }
         private readonly AscentGuidance _ascentGuidance = new AscentGuidance();
@@ -56,16 +55,22 @@ namespace Blackbird.Guidance
         }
         public void AcceptPlan()
         {
-            if (CurrentPlan == null) return;
+            if (bbState.LaunchPlan == null) return;
 
             State = LaunchGuidanceState.PlanAccepted;
+            // close launch planner and open guidance
+            bbState.PlannerVisible = false;
+            bbState.GuidanceVisible = true;
+            bbState.ActiveModule = BlackbirdModule.LaunchGuidance;
+            bbState.GuidanceState = State;
         }
 
         public void WarpToLaunch()
         {
-            if (State != LaunchGuidanceState.PlanAccepted || CurrentPlan == null) return;
+            if ((State != LaunchGuidanceState.AwaitingLaunch && State != LaunchGuidanceState.PlanAccepted)
+                || bbState.LaunchPlan == null) return;
 
-            LaunchCandidate selectedCandidate = CurrentPlan.SelectedCandidate;
+            LaunchCandidate selectedCandidate = bbState.LaunchPlan.SelectedCandidate;
             if (selectedCandidate == null || !selectedCandidate.IsValid) return;
 
             double liveTimeToLaunch = selectedCandidate.LaunchUt - Planetarium.GetUniversalTime();
@@ -83,12 +88,22 @@ namespace Blackbird.Guidance
         }
         private static void SetSafeWarpRate(double secondsRemaining) => WarpHelper.SetSafeWarpRate(secondsRemaining);
 
+        // "Arm" the launch: reveals Warp To Launch + the flight-mode selector. No flying yet — choosing a
+        // flight mode (BeginAscent) is what starts the ascent.
         public void StartGuidance()
         {
-            if (State != LaunchGuidanceState.AwaitingLaunch &&
-                State != LaunchGuidanceState.PlanAccepted) return;
-            if (CurrentPlan == null || CurrentPlan.SelectedCandidate == null || !CurrentPlan.SelectedCandidate.IsValid) return;
+            if (State != LaunchGuidanceState.PlanAccepted) return;
+            if (bbState.LaunchPlan == null || bbState.LaunchPlan.SelectedCandidate == null || !bbState.LaunchPlan.SelectedCandidate.IsValid) return;
+            bbState.ActiveModule = BlackbirdModule.LaunchGuidance;
+            GuidanceMode = GuidanceMode.None;
+            State = LaunchGuidanceState.AwaitingLaunch;
+        }
 
+        // Begin the ascent once a flight mode is chosen while armed (stops any launch warp first).
+        public void BeginAscent()
+        {
+            if (State != LaunchGuidanceState.AwaitingLaunch && State != LaunchGuidanceState.WarpingToLaunch) return;
+            TimeWarp.SetRate(0, true);
             _ascentGuidance.Reset();
             State = LaunchGuidanceState.GuidingAscent;
         }
@@ -108,7 +123,7 @@ namespace Blackbird.Guidance
                 GuidanceInfo =
                     _ascentGuidance.GetGuidance(
                         vessel,
-                        CurrentPlan,
+                        bbState.LaunchPlan,
                         ManualPitchCommandDeg,
                         ManualHeadingCommandDeg,
                         ManualThrottleCommand,
@@ -116,8 +131,12 @@ namespace Blackbird.Guidance
                         GuidanceMode);
 
                 if (GuidanceInfo != null && GuidanceInfo.IsGuidanceComplete)
+                {
                     State = LaunchGuidanceState.Complete;
-
+                    bbState.GuidanceState = LaunchGuidanceState.Complete;
+                    bbState.GuidanceVisible = false;
+                    bbState.ActiveModule = BlackbirdModule.None;
+                }
                 return;
             }
 
@@ -143,13 +162,12 @@ namespace Blackbird.Guidance
         {
             if (GuidanceMode == gMode) return;
 
-
-            if (vessel != null && CurrentPlan != null)
+            if (vessel != null && bbState.LaunchPlan != null)
             {
                 GuidanceInfo =
                     _ascentGuidance.GetGuidance(
                         vessel,
-                        CurrentPlan,
+                        bbState.LaunchPlan,
                         ManualPitchCommandDeg,
                         ManualHeadingCommandDeg,
                         ManualThrottleCommand,
@@ -194,14 +212,7 @@ namespace Blackbird.Guidance
             TimeWarp.SetRate(0, true);
             _targetUt = 0.0;
 
-            if (CurrentPlan != null)
-            {
-                State = LaunchGuidanceState.PlanReady;
-            }
-            else
-            {
-                State = LaunchGuidanceState.Idle;
-            }
+            State = bbState.LaunchPlan != null ? LaunchGuidanceState.PlanReady : LaunchGuidanceState.Idle;
 
             _ascentGuidance.Reset();
         }
@@ -243,19 +254,18 @@ namespace Blackbird.Guidance
                 PhasingRecommendation = null
             };
 
-            SetPlan(new LaunchPlan
+            bbState.LaunchPlan = new LaunchPlan
             {
                 InsertionTarget = new InsertionTarget { ApoapsisAlt = apoapsisAlt, PeriapsisAlt = periapsisAlt, Heading = headingDeg },
                 Candidates = new[] { candidate },
                 SelectedCandidateIndex = 0
-            },
-            BbState);
+            };
         }
 
         public void Reset()
         {
             TimeWarp.SetRate(0, true);
-            CurrentPlan = null;
+            bbState.LaunchPlan = null;
             _targetUt = 0.0;
             State = LaunchGuidanceState.Idle;
             _ascentGuidance.Reset();
@@ -283,7 +293,7 @@ namespace Blackbird.Guidance
         public void IncreaseManualThrottleCommand() => ManualThrottleCommand += 0.10;
         public void DecreaseManualThrottleCommand() => ManualThrottleCommand -= 0.10;
         public void ResetThrottleCommand() => ManualThrottleCommand = GuidanceInfo != null ? GuidanceInfo.CommandThrottle : 0.0;
-        public void SetThrottleCommand(double throttle) => ManualThrottleCommand = throttle;
+        public void SetThrottleCommand(double throttle) => ManualThrottleCommand = Math.Min(1, Math.Max(0, throttle / 100));
         public void ApplyFlightControls(FlightCtrlState state, Vessel vessel)
         {
             if (state == null) return;
@@ -301,13 +311,15 @@ namespace Blackbird.Guidance
                 return;
             }
 
+            double throttle = bbState.GuidanceMode == GuidanceMode.Manual ? ManualThrottleCommand : GuidanceInfo.CommandThrottle;
+
             if (IsPrelaunchHold(vessel))
             {
                 _attitudeControl.Reset();
                 state.pitch = state.pitchTrim;
                 state.yaw = state.yawTrim;
                 state.roll = state.rollTrim;
-                ApplyAutopilotThrottle(state);
+                ApplyAutopilotThrottle(state, throttle);
                 return;
             }
 
@@ -336,14 +348,14 @@ namespace Blackbird.Guidance
                 _attitudeControl.Drive(vessel, state, GuidanceInfo.CommandHeadingDeg, GuidanceInfo.CommandPitchDeg, GuidanceInfo.CommandRoll);
             }
 
-            ApplyAutopilotThrottle(state);
+            ApplyAutopilotThrottle(state, throttle);
         }
 
-        private void ApplyAutopilotThrottle(FlightCtrlState state)
+        private void ApplyAutopilotThrottle(FlightCtrlState state, double throttle)
         {
             if (GuidanceMode != GuidanceMode.Autopilot) return;
 
-            state.mainThrottle = (float)(Math.Max(0.0, Math.Min(1.0, GuidanceInfo.CommandThrottle)));
+            state.mainThrottle = (float)(Math.Max(0.0, Math.Min(1.0, throttle)));
         }
 
         // Whether the craft is within the coast-hold deadband of the hold direction AND nearly stopped

@@ -54,7 +54,7 @@ namespace Blackbird.Planning
                 PhasingOrbit = po,
                 PhasingRecommendation = candidates.Length > 0 ? candidates[0].PhasingRecommendation : null,
                 Candidates = candidates,
-                SelectedCandidateIndex = 0
+                SelectedCandidateIndex = -1
             };
         }
 

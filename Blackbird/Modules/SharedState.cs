@@ -66,46 +66,10 @@ namespace Blackbird.Modules
         //Rendezvous,
         //LaunchGuidance, // todo: rename the class accordingly
         //Docking
-        private bool _plannerVisible;
-        public bool PlannerVisible
-        {
-            get => _plannerVisible;
-            set
-            {
-                if (value && !_plannerVisible) ActiveModule = BlackbirdModule.Planner;
-                _plannerVisible = value;
-            }
-        }
-        private bool _rendezVisible;
-        public bool RendezvousVisible
-        {
-            get => _rendezVisible;
-            set
-            {
-                if (value && !_rendezVisible) ActiveModule = BlackbirdModule.Rendezvous;
-                _rendezVisible = value;
-            }
-        }
-        private bool _guidanceVisible;
-        public bool GuidanceVisible
-        {
-            get => _guidanceVisible;
-            set
-            {
-                if (value && !_guidanceVisible) ActiveModule = BlackbirdModule.LaunchGuidance;
-                _guidanceVisible = value;
-            }
-        }
-        private bool _dockingVisible;
-        public bool DockingVisible
-        {
-            get => _dockingVisible;
-            set
-            {
-                if (value && !_dockingVisible) ActiveModule = BlackbirdModule.Docking;
-                _dockingVisible = value;
-            }
-        }
+        public bool PlannerVisible = false;
+        public bool RendezvousVisible = false;
+        public bool GuidanceVisible = false;
+        public bool DockingVisible = false;
         // planner
         public bool PlannerEnabled { get; set; } = false;
 
@@ -119,7 +83,7 @@ namespace Blackbird.Modules
 
         // rendezvous
         public RendezvousMethod RendezvousMethod { get; set; } = RendezvousMethod.None;
-        public bool InterceptEnabled { get; set; } = false;
+        public bool RendezvousEnabled { get; set; } = false;
         public InterceptPhase InterceptPhase { get; set; } = InterceptPhase.Idle;
         public string[] InterceptMethods = { "Single Phase", "Hohmann" };
         public InterceptSolution InterceptSolution { get; set; }
@@ -132,8 +96,6 @@ namespace Blackbird.Modules
             set { if (Enum.IsDefined(typeof(InterceptMethod), value)) InterceptMethod = (InterceptMethod)value; }
 
         }
-        public bool RendezvousEnabled { get; set; } = false;
-
         // docking
         public DockingMethod DockingMethod { get; set; } = DockingMethod.Automatic;
         public DockingControlMode DockingMode { get; set; } = DockingControlMode.Off;
@@ -148,13 +110,12 @@ namespace Blackbird.Modules
             GuidanceState = LaunchGuidanceState.Idle;
             GuidanceMode = GuidanceMode.None;
             LaunchPhase = PoweredGuidancePhase.None;
-            InterceptEnabled = false;
             GuidanceEnabled = false;
             RendezvousMethod = RendezvousMethod.None;
             InterceptPhase = InterceptPhase.Idle;
             InterceptMethod = InterceptMethod.Hohmann;
             RendezvousEnabled = false;
-            DockingMethod = DockingMethod.Manual;
+            DockingMethod = DockingMethod.Automatic;
             DockingMode = DockingControlMode.Off;
             DockingEnabled = false;
             InterceptSolution = new InterceptSolution();

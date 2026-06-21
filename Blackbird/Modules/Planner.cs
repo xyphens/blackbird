@@ -8,7 +8,7 @@ namespace Blackbird.Modules
 {
     public sealed class Planner
     {
-        private SharedState BbState;
+        private SharedState bbState;
         private static readonly int WindowId = "Blackbird.Planner".GetHashCode();
         private Rect _windowRect = new Rect(560, 200, 500, 500);
 
@@ -19,27 +19,24 @@ namespace Blackbird.Modules
 
         private LaunchHandler _launchHandler;
 
-        public bool IsVisible { get; set; }
-
         public void Init(LaunchHandler handler, SharedState s)
         {
             _launchHandler = handler;
-            BbState = s;
+            bbState = s;
         }
-
-        public void Toggle() => IsVisible = !IsVisible;
 
         public void Draw()
         {
-            if (!IsVisible) return;
-            if (FlightGlobals.ActiveVessel == null) return;
+            if (bbState == null || !bbState.PlannerVisible || FlightGlobals.ActiveVessel == null) return;
+            
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Flight Planner");
         }
 
         private void DrawContents(int _)
         {
+
             Vessel vessel = FlightGlobals.ActiveVessel;
-            if (vessel == null || !BbState.PlannerVisible) { GUI.DragWindow(); return; }
+            if (vessel == null || !bbState.PlannerVisible) { GUI.DragWindow(); return; }
 
             Vessel targetVessel = null;
             ITargetable target = FlightGlobals.fetch.VesselTarget;
@@ -50,15 +47,16 @@ namespace Blackbird.Modules
             {
                 GUILayout.Label($"Target: {targetVessel.vesselName}");
 
-                if (BbState.LaunchPlan == null)
-                {
-                    // generate launch candidates
-                    GeneratePlan(vessel, targetVessel);
-                }
-                else
-                {
-                    DisplayLaunchPlanCandidates();
-                }
+                // Generate candidates if we don't have a plan yet, then ALWAYS draw the table. Branching on
+                // LaunchPlan==null instead would draw a different control count on the layout vs repaint pass
+                // (GeneratePlan creates the plan mid-draw, and Reset Plan nulls it mid-draw) — the IMGUI
+                // "control N in a group with only N controls" exception.
+                if (bbState.LaunchPlan == null) GeneratePlan(vessel, targetVessel);
+                DisplayLaunchPlanCandidates();
+            }
+            else
+            {
+                GUILayout.Label("Select a target to generate a flight plan");
             }
 
             GUILayout.Space(10);
@@ -106,7 +104,7 @@ namespace Blackbird.Modules
         {
             GUILayout.Space(10);
 
-            if (BbState.LaunchPlan == null || BbState.LaunchPlan.Candidates.Length == 0)
+            if (bbState.LaunchPlan == null || bbState.LaunchPlan.Candidates.Length == 0)
             {
                 GUILayout.Label("No launch candidates.");
                 return;
@@ -123,9 +121,9 @@ namespace Blackbird.Modules
             GUILayout.Label("-", GUILayout.Width(45));
             GUILayout.EndHorizontal();
 
-            for (int i = 0; i < BbState.LaunchPlan.Candidates.Length; i++)
+            for (int i = 0; i < bbState.LaunchPlan.Candidates.Length; i++)
             {
-                LaunchCandidate candidate = BbState.LaunchPlan.Candidates[i];
+                LaunchCandidate candidate = bbState.LaunchPlan.Candidates[i];
 
                 GUILayout.BeginHorizontal();
 
@@ -140,13 +138,13 @@ namespace Blackbird.Modules
                 GUILayout.Label(FormatValue(candidate.EstimatedRemainingDeltaV, "F0"), GUILayout.Width(45));
 
                 // start choose button ...
-                bool isSelected = BbState.LaunchPlan.SelectedCandidateIndex == i;
+                bool isSelected = bbState.LaunchPlan.SelectedCandidateIndex == i;
                 bool canChoose = candidate.IsValid && _launchHandler != null &&
                     (_launchHandler.State == LaunchGuidanceState.Idle ||
                      _launchHandler.State == LaunchGuidanceState.PlanReady);
 
                 GUI.enabled = canChoose && !isSelected;
-                if (GUILayout.Button(isSelected ? "Active" : "Choose", GUILayout.Width(60))) SelectCandidate(BbState.LaunchPlan, i);
+                if (GUILayout.Button(isSelected ? "Active" : "Choose", GUILayout.Width(60))) SelectCandidate(bbState.LaunchPlan, i);
                 // ... end choose button
                 GUI.enabled = true;
 
@@ -162,7 +160,7 @@ namespace Blackbird.Modules
             if (index < 0 || index >= launchPlan.Candidates.Length || launchPlan?.Candidates == null) return;
 
             launchPlan.SelectedCandidateIndex = index;
-            BbState.SelectedLaunchCandidate = launchPlan.Candidates[index];
+            bbState.SelectedLaunchCandidate = launchPlan.Candidates[index];
 
             LaunchCandidate c = launchPlan.Candidates[index];
             _insertionApText = c.InsertionApoapsisAlt.ToString("F0");
@@ -175,15 +173,13 @@ namespace Blackbird.Modules
         {
             if (_launchHandler == null || vessel == null) return;
 
-            if (BbState.LaunchPlan != null)
-            {
-                // Full rendezvous plan already has LaunchWindow, orbits, phasing, etc. — use it directly.
-                _launchHandler.SetPlan(BbState.LaunchPlan, BbState);
-            }
-            else
+            // will pass a launch plan if exists
+            _launchHandler.Init(bbState);
+
+            if (bbState.LaunchPlan == null)
             {
                 InsertionTarget it = CreateInsertionTargetFromUi();
-                double launchUt = BbState.SelectedLaunchCandidate?.LaunchUt ?? double.NaN;
+                double launchUt = bbState.SelectedLaunchCandidate?.LaunchUt ?? double.NaN;
                 _launchHandler.ConstructLaunchPlan(vessel, targetVessel, it.ApoapsisAlt, it.PeriapsisAlt, it.Heading, launchUt);
             }
 
@@ -199,7 +195,7 @@ namespace Blackbird.Modules
                 PeriapsisAlt = TrajectoryProvider.GetPeriapsisAlt(targetVessel),
                 Heading = 0
             };
-            BbState.LaunchPlan = LaunchPlanner.Create(vessel, targetVessel, targetIt, ll);
+            bbState.LaunchPlan = LaunchPlanner.Create(vessel, targetVessel, targetIt, ll);
             _launchTimeText = "";
         }
 
