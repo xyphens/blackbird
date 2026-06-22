@@ -11,7 +11,7 @@ namespace Blackbird.Modules
         None, 
         Planner, 
         Rendezvous,
-        LaunchGuidance, // todo: rename the class accordingly
+        LaunchGuidance,
         Docking
     }
 
@@ -54,24 +54,46 @@ namespace Blackbird.Modules
     public enum DockingControlMode { Off, Manual, Guidance }
     public static class Universe
     {
-        public static PlanetScaleEnum PlanetScale => FlightGlobals.currentMainBody.Radius > 1_000_000 ? PlanetScaleEnum.RSS : PlanetScaleEnum.Stock;
+        // deprecated - use SharedState.IsRSS
+        //public static PlanetScaleEnum PlanetScale => FlightGlobals.currentMainBody.Radius > 1_000_000 ? PlanetScaleEnum.RSS : PlanetScaleEnum.Stock;
         // returns true if the provided altitude is at or above the current planet/moon's atmosphere
         public static bool IsInSpace(double altitude) => altitude >= FlightGlobals.currentMainBody.atmosphereDepth;
     }
+    
     public sealed class SharedState
     {
         // general
         public BlackbirdModule ActiveModule { get; set; }
-        //Planner, 
-        //Rendezvous,
-        //LaunchGuidance, // todo: rename the class accordingly
-        //Docking
+
         public bool PlannerVisible = false;
         public bool RendezvousVisible = false;
         public bool GuidanceVisible = false;
         public bool DockingVisible = false;
         // planner
         public bool PlannerEnabled { get; set; } = false;
+        public bool IsRO { get; set; } = false;
+        public bool IsRSS { get; set; } = false;
+        public bool IsPrincipia { get; set; } = false;
+        public void Init()
+        {
+            CheckAssembliesLoaded();
+        }
+
+        public bool CheckAssembliesLoaded()
+        {
+            foreach (AssemblyLoader.LoadedAssembly asm in AssemblyLoader.loadedAssemblies)
+            {
+                try
+                {
+                    if (asm.assembly.GetName().Name.ToLower() == "principia.ksp_plugin_adapter") IsPrincipia = true;
+                    if (asm.assembly.GetName().Name.ToLower() == "realismoverhaul") IsRO = true;
+                    if (asm.assembly.GetName().Name.ToLower() == "realsolarsystem") IsRSS = true; // i think this is the right lookup?
+                }
+                catch (InvalidOperationException) { }
+            }
+
+            return false;
+        }
 
         // guidance
         public bool LockRollOnAscent { get; set; } = false;

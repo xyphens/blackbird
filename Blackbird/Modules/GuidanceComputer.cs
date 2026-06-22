@@ -49,7 +49,7 @@ namespace Blackbird.Modules
             // null guard before any State access
             if (bbState.LaunchPlan == null)
             {
-                GUILayout.Label("Guidance unavailable");
+                GUILayout.Label("Guidance unavailable - select a flight plan");
                 GUI.DragWindow();
                 return;
             }
@@ -69,12 +69,24 @@ namespace Blackbird.Modules
                 double countdown = GetDisplayedLaunchCountdownSeconds(bbState.LaunchPlan);
                 GUILayout.Label(double.IsNaN(countdown) ? "T- -- seconds" : $"T- {countdown:F0} seconds");
 
+                GUILayout.BeginHorizontal();
+                _launchHandler.MinVSpeedToPitch = GUILayout.TextField(_launchHandler.MinVSpeedToPitch, GUILayout.Width(50));
+                GUILayout.Label("m/s", GUILayout.Width(10));
+                GUILayout.EndHorizontal();
+
+                GUILayout.Space(6);
+
+                GUILayout.BeginHorizontal();
+                _launchHandler.MinAltitudeForPitch = GUILayout.TextField(_launchHandler.MinAltitudeForPitch, GUILayout.Width(50));
+                GUILayout.Label("m", GUILayout.Width(10));
+                GUILayout.EndHorizontal();
+
                 bool armed = _launchHandler.State == LaunchGuidanceState.AwaitingLaunch
                           || _launchHandler.State == LaunchGuidanceState.WarpingToLaunch;
 
                 if (!armed)
                 {
-                    // Arm the launch (no flying yet).
+                    // arm the launch
                     GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted
                                   && !bbState.DockingEnabled && !bbState.RendezvousEnabled;
                     if (GUILayout.Button("Start Guidance")) _launchHandler.StartGuidance();
@@ -127,13 +139,60 @@ namespace Blackbird.Modules
             GUILayout.Space(8);
             bbState.LockRollOnAscent = GUILayout.Toggle(bbState.LockRollOnAscent, "Lock Roll at 0°");
             GUILayout.Space(8);
+            GUILayout.Label($"Flight Status: {guidanceInfo.GuidancePhase}");
 
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("", GUILayout.Width(80));
+            GUILayout.Label("Profile", GUILayout.Width(60));
+            GUILayout.Label("PSG cmd (actual)", GUILayout.Width(110));
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Pitch", GUILayout.Width(80));
+            GUILayout.Label(double.IsNaN(guidanceInfo.ProfilePitchDeg) ? "N/A" : $"{guidanceInfo.ProfilePitchDeg:F1}°", GUILayout.Width(60));
+            GUILayout.Label(double.IsNaN(guidanceInfo.CommandPitchDeg) ? "N/A" : $"{guidanceInfo.CommandPitchDeg:F1}° ({guidanceInfo.CurrentPitchDeg:F1}°)", GUILayout.Width(110));
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Heading", GUILayout.Width(80));
+            GUILayout.Label(double.IsNaN(guidanceInfo.ProfileHeadingDeg) ? "N/A" : $"{guidanceInfo.ProfileHeadingDeg:F1}°", GUILayout.Width(60));
+            GUILayout.Label(double.IsNaN(guidanceInfo.CommandHeadingDeg) ? "N/A" : $"{guidanceInfo.CommandHeadingDeg:F1}° ({guidanceInfo.CurrentHeadingDeg:F1}°)", GUILayout.Width(110));
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Throttle", GUILayout.Width(80));
+            GUILayout.Label(double.IsNaN(guidanceInfo.ProfileThrottle) ? "N/A" : $"{guidanceInfo.ProfileThrottle * 100:F0}%", GUILayout.Width(60));
+            GUILayout.Label(double.IsNaN(guidanceInfo.CommandThrottle) ? "N/A" : $"{guidanceInfo.CommandThrottle * 100:F0}%", GUILayout.Width(110));
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(10);
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("", GUILayout.Width(80));
+            GUILayout.Label("Target", GUILayout.Width(60));
+            GUILayout.Label("Predicted", GUILayout.Width(60));
+            GUILayout.Label("Dev.", GUILayout.Width(60));
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Apoapsis", GUILayout.Width(80));
+            GUILayout.Label(FormatKm(guidanceInfo.TargetApoapsisAlt, "F0"), GUILayout.Width(60));
+            GUILayout.Label(FormatKm(guidanceInfo.PredictedApoapsisAlt, "F0"), GUILayout.Width(60));
+            GUILayout.Label(FormatKm(guidanceInfo.ApoapsisErrorMeters, "F1"), GUILayout.Width(60));
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Periapsis", GUILayout.Width(80));
+            GUILayout.Label(FormatKm(guidanceInfo.TargetPeriapsisAlt, "F0"), GUILayout.Width(60));
+            GUILayout.Label(FormatKm(guidanceInfo.PredictedPeriapsisAlt, "F0"), GUILayout.Width(60));
+            GUILayout.Label(FormatKm(guidanceInfo.PeriapsisErrorMeters, "F1"), GUILayout.Width(60));
+            GUILayout.EndHorizontal();
             if (_launchHandler.GuidanceMode == GuidanceMode.Manual)
             {
                 // PITCH
                 GUILayout.Label($"Pitch: {guidanceInfo.CommandPitchDeg:F2}°");
                 GUILayout.BeginHorizontal();
-                _pitchInputText = GUILayout.TextField(_pitchInputText, GUILayout.Width(50), GUILayout.Height(BtnH));
+                _pitchInputText = GUILayout.TextField(_pitchInputText, GUILayout.Width(50));
                 double.TryParse(_pitchInputText, out double pitch);
                 if (GUILayout.Button("Apply", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.SetPitchCommand(pitch);
                 if (GUILayout.Button("−", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.DecreaseManualPitchCommand();
@@ -146,12 +205,13 @@ namespace Blackbird.Modules
                 // HEADING
                 GUILayout.Label($"Heading: {guidanceInfo.CommandHeadingDeg:F2}°");
                 GUILayout.BeginHorizontal();
-                _headingInputText = GUILayout.TextField(_headingInputText, GUILayout.Width(50), GUILayout.Height(BtnH));
+                _headingInputText = GUILayout.TextField(_headingInputText, GUILayout.Width(50));
                 double.TryParse(_headingInputText, out double hdg);
-                if (GUILayout.Button("Apply", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.SetHeadingCommand(hdg);
-                if (GUILayout.Button("−", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.DecreaseManualHeadingCommand();
-                if (GUILayout.Button("+", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.IncreaseManualHeadingCommand();
-                if (GUILayout.Button("Reset", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.ResetHeadingCommand();
+
+                if (GUILayout.Button("Apply", GUILayout.Width(55), GUILayout.Height(BtnH))) { _launchHandler.SetHeadingCommand(hdg); _headingInputText = _launchHandler.ManualHeadingCommandDeg.ToString("F0"); };
+                if (GUILayout.Button("−", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) { _launchHandler.DecreaseManualHeadingCommand(); _headingInputText = _launchHandler.ManualHeadingCommandDeg.ToString("F0"); };
+                if (GUILayout.Button("+", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) { _launchHandler.IncreaseManualHeadingCommand(); _headingInputText = _launchHandler.ManualHeadingCommandDeg.ToString("F0"); };
+                if (GUILayout.Button("Reset", GUILayout.Width(55), GUILayout.Height(BtnH))) { _launchHandler.ResetHeadingCommand(); _headingInputText = _launchHandler.ManualHeadingCommandDeg.ToString("F0"); };
                 GUILayout.EndHorizontal();
 
                 GUILayout.Space(6);
@@ -159,12 +219,12 @@ namespace Blackbird.Modules
                 // ROLL
                 GUILayout.Label($"Roll: {guidanceInfo.CommandRoll:F2}°");
                 GUILayout.BeginHorizontal();
-                _rollInputText = GUILayout.TextField(_rollInputText, GUILayout.Width(50), GUILayout.Height(BtnH));
+                _rollInputText = GUILayout.TextField(_rollInputText, GUILayout.Width(50));
                 double.TryParse(_rollInputText, out double roll);
-                if (GUILayout.Button("Apply", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.SetRollCommand(roll);
-                if (GUILayout.Button("−", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.DecreaseManualRollCommand();
-                if (GUILayout.Button("+", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.IncreaseManualRollCommand();
-                if (GUILayout.Button("Reset", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.ResetRollCommand();
+                if (GUILayout.Button("Apply", GUILayout.Width(55), GUILayout.Height(BtnH))) { _launchHandler.SetRollCommand(hdg); _rollInputText = _launchHandler.ManualRollCommand.ToString("F0"); };
+                if (GUILayout.Button("−", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) { _launchHandler.DecreaseManualRollCommand(); _rollInputText = _launchHandler.ManualRollCommand.ToString("F0"); };
+                if (GUILayout.Button("+", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) { _launchHandler.IncreaseManualRollCommand(); _rollInputText = _launchHandler.ManualRollCommand.ToString("F0"); };
+                if (GUILayout.Button("Reset", GUILayout.Width(55), GUILayout.Height(BtnH))) { _launchHandler.ResetRollCommand(); _rollInputText = _launchHandler.ManualRollCommand.ToString("F0"); };
                 GUILayout.EndHorizontal();
 
                 GUILayout.Space(6);
@@ -172,69 +232,18 @@ namespace Blackbird.Modules
                 // THROTTLE
                 GUILayout.Label($"Throttle: {BlackbirdHelpers.FormatThrottle(guidanceInfo.CommandThrottle)}");
                 GUILayout.BeginHorizontal();
-                _throttleInputText = GUILayout.TextField(_throttleInputText, GUILayout.Width(50), GUILayout.Height(BtnH));
+                _throttleInputText = GUILayout.TextField(_throttleInputText, GUILayout.Width(50));
                 double.TryParse(_throttleInputText, out double thtl);
-                if (GUILayout.Button("Apply", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.SetThrottleCommand(thtl);
-                if (GUILayout.Button("−", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.DecreaseManualThrottleCommand();
-                if (GUILayout.Button("+", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) _launchHandler.IncreaseManualThrottleCommand();
-                if (GUILayout.Button("Reset", GUILayout.Width(55), GUILayout.Height(BtnH))) _launchHandler.ResetThrottleCommand();
+                if (GUILayout.Button("Apply", GUILayout.Width(55), GUILayout.Height(BtnH))) { _launchHandler.SetThrottleCommand(hdg); _throttleInputText = _launchHandler.ManualThrottleCommand.ToString("F0"); };
+                if (GUILayout.Button("−", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) { _launchHandler.DecreaseManualThrottleCommand(); _throttleInputText = _launchHandler.ManualThrottleCommand.ToString("F0"); };
+                if (GUILayout.Button("+", GUILayout.Width(BtnW), GUILayout.Height(BtnH))) { _launchHandler.IncreaseManualThrottleCommand(); _throttleInputText = _launchHandler.ManualThrottleCommand.ToString("F0"); };
+                if (GUILayout.Button("Reset", GUILayout.Width(55), GUILayout.Height(BtnH))) { _launchHandler.ResetThrottleCommand(); _throttleInputText = _launchHandler.ManualThrottleCommand.ToString("F0"); };
                 GUILayout.EndHorizontal();
             }
             else if (_launchHandler.GuidanceMode == GuidanceMode.Autopilot)
             {
-                GUILayout.Label($"Flight Status: {guidanceInfo.GuidancePhase}");
-
-                GUILayout.Space(10);
-
-                GUILayout.Label("[Flight]");
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("", GUILayout.Width(80));
-                GUILayout.Label("Profile", GUILayout.Width(60));
-                GUILayout.Label("PSG cmd (actual)", GUILayout.Width(110));
-                GUILayout.EndHorizontal();
-
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("Pitch", GUILayout.Width(80));
-                GUILayout.Label(double.IsNaN(guidanceInfo.ProfilePitchDeg) ? "N/A" : $"{guidanceInfo.ProfilePitchDeg:F1}°", GUILayout.Width(60));
-                GUILayout.Label(double.IsNaN(guidanceInfo.CommandPitchDeg) ? "N/A" : $"{guidanceInfo.CommandPitchDeg:F1}° ({guidanceInfo.CurrentPitchDeg:F1}°)", GUILayout.Width(110));
-                GUILayout.EndHorizontal();
-
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("Heading", GUILayout.Width(80));
-                GUILayout.Label(double.IsNaN(guidanceInfo.ProfileHeadingDeg) ? "N/A" : $"{guidanceInfo.ProfileHeadingDeg:F1}°", GUILayout.Width(60));
-                GUILayout.Label(double.IsNaN(guidanceInfo.CommandHeadingDeg) ? "N/A" : $"{guidanceInfo.CommandHeadingDeg:F1}° ({guidanceInfo.CurrentHeadingDeg:F1}°)", GUILayout.Width(110));
-                GUILayout.EndHorizontal();
-
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("Throttle", GUILayout.Width(80));
-                GUILayout.Label(double.IsNaN(guidanceInfo.ProfileThrottle) ? "N/A" : $"{guidanceInfo.ProfileThrottle * 100:F0}%", GUILayout.Width(60));
-                GUILayout.Label(double.IsNaN(guidanceInfo.CommandThrottle) ? "N/A" : $"{guidanceInfo.CommandThrottle * 100:F0}%", GUILayout.Width(110));
-                GUILayout.EndHorizontal();
-
-                GUILayout.Space(10);
-
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("", GUILayout.Width(80));
-                GUILayout.Label("Target", GUILayout.Width(60));
-                GUILayout.Label("Predicted", GUILayout.Width(60));
-                GUILayout.Label("Dev.", GUILayout.Width(60));
-                GUILayout.EndHorizontal();
-
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("Apoapsis", GUILayout.Width(80));
-                GUILayout.Label(FormatKm(guidanceInfo.TargetApoapsisAlt, "F0"), GUILayout.Width(60));
-                GUILayout.Label(FormatKm(guidanceInfo.PredictedApoapsisAlt, "F0"), GUILayout.Width(60));
-                GUILayout.Label(FormatKm(guidanceInfo.ApoapsisErrorMeters, "F1"), GUILayout.Width(60));
-                GUILayout.EndHorizontal();
-
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("Periapsis", GUILayout.Width(80));
-                GUILayout.Label(FormatKm(guidanceInfo.TargetPeriapsisAlt, "F0"), GUILayout.Width(60));
-                GUILayout.Label(FormatKm(guidanceInfo.PredictedPeriapsisAlt, "F0"), GUILayout.Width(60));
-                GUILayout.Label(FormatKm(guidanceInfo.PeriapsisErrorMeters, "F1"), GUILayout.Width(60));
-                GUILayout.EndHorizontal();
-
                 PhasingOrbit phasing = bbState.LaunchPlan?.PhasingOrbit;
+
                 if (phasing != null)
                 {
                     GUILayout.Label(phasing.IsFasterThanTarget
@@ -262,7 +271,6 @@ namespace Blackbird.Modules
                 {
                     DrawAdvancedDetails(bbState.LaunchPlan, bbState.LaunchPlan.TargetVessel);
                 }
-                    
             }
 
             GUI.DragWindow();

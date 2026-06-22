@@ -1,24 +1,16 @@
 using Blackbird.Guidance;
 using Blackbird.Mathematics;
 using Blackbird.Models;
-using Blackbird.Modules;
 using Blackbird.Trajectory;
 using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
-using UnityEngine;
 
 namespace Blackbird.Planning
 {
     public static class LaunchPlanner
     {
-        // fixme: is this accurate?
-        public static double GetPhasingOffset(Vessel active)
-        { 
-            return Universe.PlanetScale == PlanetScaleEnum.RSS ? 50000 : 30000;
-        }
-
         public static LaunchPlan Create(Vessel active, Vessel target, InsertionTarget insertionTarget, LaunchLocation launchSite)
         {
             // must be an active vessel, have a target, target not be myself

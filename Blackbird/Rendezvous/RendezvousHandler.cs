@@ -264,7 +264,7 @@ namespace Blackbird.Rendezvous
                 if (burning || secondsToWarpTarget <= _warpLeadSeconds)
                     StopWarp();
                 else
-                    WarpHelper.SetSafeWarpRate(secondsToWarpTarget);
+                    WarpHelper.SetSafeWarpRate(secondsToWarpTarget, bbState.IsRSS);
             }
             
             if (!_engaged) return;

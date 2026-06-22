@@ -80,8 +80,6 @@ namespace Blackbird.Modules
             bool manualEnabled = bbState.DockingMode != DockingControlMode.Guidance;
             bool noseEnabled = manualEnabled && !_handler.KeepPointed;
 
-            // fixme: the up/down orientations are not correct
-
             var translate = Vector3.zero;   // x = right, y = dorsal-up, z = nose-forward
             var rotate = Vector2.zero;      // x = pitch, y = yaw
             bool kill = false;

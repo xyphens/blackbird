@@ -354,7 +354,7 @@ namespace Blackbird.Mathematics
         public static Vector3d DeltaVToCircularize(Orbit o, double ut)
         {
             (Vector3d pos, Vector3d vector) = RightHandVectorsAtUt(o, ut);
-            return dvToCircularize(o.referenceBody.gravParameter, pos, vector).xzy; // fixme: if still broken, remove the .xzy
+            return dvToCircularize(o.referenceBody.gravParameter, pos, vector).xzy;
         }
 
         private static Vector3d dvToCircularize(double mu, Vector3d r, Vector3d v)

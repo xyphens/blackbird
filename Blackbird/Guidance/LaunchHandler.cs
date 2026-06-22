@@ -1,7 +1,8 @@
-﻿using System;
-using Blackbird.Modules;
-using Blackbird.Mathematics;
+﻿using Blackbird.Mathematics;
 using Blackbird.Models;
+using Blackbird.Modules;
+using System;
+using static VesselRanges;
 
 namespace Blackbird.Guidance
 {
@@ -31,19 +32,45 @@ namespace Blackbird.Guidance
         public double ManualHeadingCommandDeg { get; private set; } = 90.0;
         public double ManualThrottleCommand { get; private set; } = 0.0;
         public double ManualRollCommand { get; private set; } = 0.0;
+        // min v-speed to pitch
+        private double _minVSpd = 100.0;
+        public string MinVSpeedToPitch
+        {
+            get { return _minVSpd.ToString(); }
+            set { if (double.TryParse(value, out double v)) _minVSpd = v; }
+        }
+
+        private readonly double _launchTowerClearance = 175.0; // starship's launch tower is ~150 meters
+
+        private double _minAltToPitch = 0.0;
+        public string MinAltitudeForPitch
+        {
+            get { return _minAltToPitch.ToString(); }
+            set { if (double.TryParse(value, out double v)) _minAltToPitch = v; }
+        }
+
         // read inputs from Blackbird?
         public GuidanceMode GuidanceMode { get; set; } = GuidanceMode.None;
         public LaunchGuidanceState State { get; private set; }
         public Vessel TargetVessel { get; private set; }
+        private readonly AscentGuidance _ascentGuidance = new AscentGuidance();
 
         public void Init(SharedState s)
         {
-            if (s == null) return;
+            if (s == null || FlightGlobals.ActiveVessel == null) return;
             bbState = s;
             State = s.LaunchPlan != null ? LaunchGuidanceState.PlanReady : LaunchGuidanceState.Idle;
+
+            double lpAlt = FlightGlobals.ActiveVessel.situation == Vessel.Situations.PRELAUNCH
+                || FlightGlobals.ActiveVessel.situation == Vessel.Situations.LANDED ?
+                FlightGlobals.ActiveVessel.altitude : 0.0;
+
+            _minAltToPitch = _launchTowerClearance + lpAlt;
+
+            RefreshGuidanceComputer();
             _ascentGuidance.Reset();
         }
-        private readonly AscentGuidance _ascentGuidance = new AscentGuidance();
+        
         public AscentGuidanceInfo GuidanceInfo { get; private set; }
         public double SecondsUntilLaunch
         {
@@ -64,7 +91,6 @@ namespace Blackbird.Guidance
             bbState.ActiveModule = BlackbirdModule.LaunchGuidance;
             bbState.GuidanceState = State;
         }
-
         public void WarpToLaunch()
         {
             if ((State != LaunchGuidanceState.AwaitingLaunch && State != LaunchGuidanceState.PlanAccepted)
@@ -86,7 +112,12 @@ namespace Blackbird.Guidance
 
             State = LaunchGuidanceState.WarpingToLaunch;
         }
-        private static void SetSafeWarpRate(double secondsRemaining) => WarpHelper.SetSafeWarpRate(secondsRemaining);
+
+        private void RefreshGuidanceComputer()
+        {
+            _ascentGuidance.Refresh(bbState.IsRSS, _minAltToPitch, _minVSpd);
+        }
+        private static void SetSafeWarpRate(double secondsRemaining, bool isRss) => WarpHelper.SetSafeWarpRate(secondsRemaining, isRss);
 
         // "Arm" the launch: reveals Warp To Launch + the flight-mode selector. No flying yet — choosing a
         // flight mode (BeginAscent) is what starts the ascent.
@@ -96,6 +127,7 @@ namespace Blackbird.Guidance
             if (bbState.LaunchPlan == null || bbState.LaunchPlan.SelectedCandidate == null || !bbState.LaunchPlan.SelectedCandidate.IsValid) return;
             _targetUt = bbState.LaunchPlan?.SelectedCandidate?.LaunchUt ?? 0;
             bbState.ActiveModule = BlackbirdModule.LaunchGuidance;
+            RefreshGuidanceComputer();
             GuidanceMode = GuidanceMode.None;
             State = LaunchGuidanceState.AwaitingLaunch;
         }
@@ -120,8 +152,6 @@ namespace Blackbird.Guidance
                     && bbState.ActiveModule == BlackbirdModule.LaunchGuidance) bbState.ActiveModule = BlackbirdModule.None;
                 return;
             }
-
-
 
             // handle guidance
             if (State == LaunchGuidanceState.GuidingAscent)
@@ -162,7 +192,7 @@ namespace Blackbird.Guidance
                 return;
             }
 
-            SetSafeWarpRate(secondsRemaining);
+            SetSafeWarpRate(secondsRemaining, bbState.IsRSS);
         }
         public void SetGuidanceMode(GuidanceMode gMode, Vessel vessel = null)
         {
@@ -218,7 +248,7 @@ namespace Blackbird.Guidance
 
         private static double ClampAutopilotPitchCommand(double pitchDeg)
         {
-            return Math.Max(-90.0, Math.Min(90.0, pitchDeg)); // todo: i don't even think this should be clamped
+            return Math.Max(-90.0, Math.Min(90.0, pitchDeg));
         }
 
         // abort launch before liftoff
@@ -228,7 +258,6 @@ namespace Blackbird.Guidance
             _targetUt = 0.0;
 
             State = bbState.LaunchPlan != null ? LaunchGuidanceState.PlanReady : LaunchGuidanceState.Idle;
-
             _ascentGuidance.Reset();
         }
 
@@ -295,19 +324,19 @@ namespace Blackbird.Guidance
         public void IncreaseManualPitchCommand() => ManualPitchCommandDeg += 1.0;
         public void DecreaseManualPitchCommand() => ManualPitchCommandDeg -= 1.0;
         public void ResetPitchCommand() => ManualPitchCommandDeg = GuidanceInfo != null ? ClampAutopilotPitchCommand(GuidanceInfo.CurrentPitchDeg) : 90.0;
-        public void SetPitchCommand(double pitch) => ManualPitchCommandDeg = pitch;
+        public void SetPitchCommand(double pitch) => ManualPitchCommandDeg = Math.Min(Math.Max(pitch, -90), 90);
 
         // heading command
         public void IncreaseManualHeadingCommand() => ManualHeadingCommandDeg += 1.0;
         public void DecreaseManualHeadingCommand() => ManualHeadingCommandDeg -= 1.0;
         public void ResetHeadingCommand() => ManualHeadingCommandDeg = GuidanceInfo != null ? MathHelpers.NormalizeDegrees(GuidanceInfo.CurrentHeadingDeg) : 90.0;
-        public void SetHeadingCommand(double heading) => ManualHeadingCommandDeg = heading;
+        public void SetHeadingCommand(double heading) => ManualHeadingCommandDeg = Math.Min(Math.Max(heading, -180), 180);
 
         // roll command
         public void IncreaseManualRollCommand() => ManualRollCommand += 1.0;
         public void DecreaseManualRollCommand() => ManualRollCommand -= 1.0;
         public void ResetRollCommand() => ManualRollCommand = 0;
-        public void SetRollCommand(double roll) => ManualRollCommand = roll;
+        public void SetRollCommand(double roll) => ManualRollCommand = Math.Min(Math.Max(roll, -180), 180);
 
         // throttle command
         public void IncreaseManualThrottleCommand() => ManualThrottleCommand += 0.10;

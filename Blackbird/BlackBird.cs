@@ -34,6 +34,9 @@ namespace Blackbird
         public void Start()
         {
             Debug.Log("[BlackBird] Loaded");
+            // loading bb state globals
+            _bbState.Init();
+
             _planner.Init(_launchHandler, _bbState);
             _guidanceComputer.Init(_launchHandler, _bbState);
             _rendezvousComputer.Init(_rendezvousHandler, _bbState);

@@ -5,7 +5,9 @@ namespace Blackbird.Guidance
     // backs off as the event approaches so we never blow past it.
     public static class WarpHelper
     {
-        public static void SetSafeWarpRate(double secondsRemaining)
+        // RSS boosts the warp rates way up, so we need to slash those > 15 seconds
+        // do not exceed level 5 if in RSS (todo: might even restrict to 4 in RSS)
+        public static void SetSafeWarpRate(double secondsRemaining, bool isRss)
         {
             int rateIndex;
 
@@ -20,7 +22,7 @@ namespace Blackbird.Guidance
             else if (secondsRemaining <= 1800.0)
                 rateIndex = 5;
             else
-                rateIndex = 6;
+                rateIndex = isRss ? 5 : 6;
 
             TimeWarp.SetRate(rateIndex, true);
         }

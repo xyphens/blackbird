@@ -11,6 +11,17 @@ namespace Blackbird.Guidance
         private readonly PoweredAscentGuidance _poweredGuidance = new PoweredAscentGuidance();
         private readonly ClassicAscentGuidance _classicGuidance = new ClassicAscentGuidance();
 
+        private bool IsRSS = false;
+        private double _holdPitchUntilAlt = 0.0;
+        private double _minVrfSpeedToPitch = 100.0;
+
+        // important to call this before the class is used
+        public void Refresh(bool isRss, double holdUntilAltitude, double minVrfSp = 100.0)
+        {
+            _holdPitchUntilAlt = holdUntilAltitude;
+            IsRSS = isRss;
+            _minVrfSpeedToPitch = minVrfSp;
+        }
         public void Reset()
         {
             _poweredGuidance.Reset();
@@ -37,14 +48,12 @@ namespace Blackbird.Guidance
             double profileHeading = GetProfileHeadingDeg(vessel, plan, vesselState, ascentProfile);
             double profileThrottle = GetProfileThrottle(vesselState, ascentProfile);
             
-            bool useClassic = vesselState != null && Universe.PlanetScale == PlanetScaleEnum.Stock;
-            
             // NaN when no target orbit yet (pre-launch / no target) — classic guidance skips the
             // inclination term for a non-finite inclination rather than dereferencing a null TargetOrbit.
             double targetInclinationDeg = plan.TargetOrbit != null ? plan.TargetOrbit.InclinationDeg : double.NaN;
             // fixme: update this logic to stop burning rcs across the coast phase and instead only do it at a set time before prograde burn
 
-            PoweredGuidanceCommand poweredCommand = useClassic
+            PoweredGuidanceCommand poweredCommand = !IsRSS
                 ? _classicGuidance.GetCommand(vesselState, ascentProfile, profilePitch, profileHeading, targetInclinationDeg)
                 : _poweredGuidance.GetCommand(vesselState, plan, ascentProfile, profilePitch, profileHeading, profileThrottle); // fixme: does our guidance method prevent launching into a target inclination?
             string guidancePhase = poweredCommand != null ? poweredCommand.Status : "Unavailable";
@@ -59,14 +68,25 @@ namespace Blackbird.Guidance
             double commandThrottle;
             double commandRoll;
 
+            bool holdVSpeed = false;
+
             if (guidanceMode == GuidanceMode.Autopilot)
             {
+                holdVSpeed = vessel.srfSpeed < _minVrfSpeedToPitch || vessel.altitude < _holdPitchUntilAlt;
+
                 commandHeading = poweredCommand != null
                     ? poweredCommand.HeadingDeg
                     : MathHelpers.NormalizeDegrees(profileHeading);
-                commandPitch = poweredCommand != null
-                    ? ClampPitchForAutopilot(poweredCommand.PitchDeg)
-                    : ClampPitchForAutopilot(profilePitch);
+                if (holdVSpeed)
+                {
+                    commandPitch = 90.0;
+                } else
+                {
+                    commandPitch = poweredCommand != null
+                                ? ClampPitchForAutopilot(poweredCommand.PitchDeg)
+                                : ClampPitchForAutopilot(profilePitch);
+                }
+
                 commandThrottle = poweredCommand != null ? poweredCommand.Throttle : profileThrottle;
                 commandRoll = 0.0; // todo: i dont think autopilot would need roll?
             }
@@ -102,7 +122,7 @@ namespace Blackbird.Guidance
                 CommandHeadingDeg = commandHeading,
                 CommandThrottle = commandThrottle,
                 CommandRoll = commandRoll,
-                HasInertialDirection = poweredCommand != null && poweredCommand.HasInertialDirection,
+                HasInertialDirection = !holdVSpeed && poweredCommand != null && poweredCommand.HasInertialDirection,
                 InertialDirection = poweredCommand != null ? poweredCommand.InertialDirection : Vector3d.zero,
 
                 CurrentPitchDeg = currentPitch,
