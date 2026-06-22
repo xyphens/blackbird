@@ -13,10 +13,6 @@ namespace Blackbird.Rendezvous
         public double InterceptBudgetMilliseconds = 20.0; // wall-clock cap per plan
         public double InterceptTofMinFraction = 0.05;     // arrival sweep, fraction of the orbital period
         public double InterceptTofMaxFraction = 0.95;
-        // attempting to improve Hohmann transfer burn results
-        private Vector3d _steerDirection; // changes as we approach node
-        private bool _burnFrameInitialized; // ready to burn transfer
-        private Vector3d _dvOrbitalComponents; // planned dV
 
         // Plan from the active state coasted forward by this much, so the frozen ΔV matches the state the
         // engine actually fires from after the orient delay. Set by the actuation layer; 0 offline.
@@ -159,7 +155,6 @@ namespace Blackbird.Rendezvous
         public void HoldBurnBaseline(Vector3d currentVelocity, double ut)
         {
             if (bbState.InterceptPhase != InterceptPhase.Executing || bbState.RendezvousMethod != RendezvousMethod.Intercept || !_burnArmed) return;
-            _burnFrameInitialized = false;
             _burnStartVelocity = currentVelocity;
             _maxDeliveredDv = 0.0;
             _lastProgressDelivered = 0.0;
@@ -357,8 +352,6 @@ namespace Blackbird.Rendezvous
                 _targetDepartureVelocity = solution.TransferDepartureVelocity;
                 _plannedDvMagnitude = solution.DeltaVMagnitude;
                 _plannedDvUnit = solution.DeltaV.normalized;
-                _steerDirection = _plannedDvUnit;          // until the orbital-frame reconstruct runs at ignition
-                _burnFrameInitialized = false;
                 _plannedIgnitionUt = solution.IgnitionUt;
                 double halfBurn = BurnAccelMetersPerSecondSquared > 0.0
                     ? 0.5 * _plannedDvMagnitude / BurnAccelMetersPerSecondSquared : 0.0;
@@ -380,23 +373,6 @@ namespace Blackbird.Rendezvous
                 return Burn(_plannedDvUnit, 0.0, "intercept: orienting, ignition in "
                     + (_burnIgnitionUt - world.UniversalTime).ToString("F0") + "s");
             }
-
-            // correct the burn direction from our current orbit every tick so that we follow the gravity turn during the burn
-            if (!_burnFrameInitialized)
-            {
-                OrbitalBasis(world.ActivePosition, world.ActiveVelocity, out Vector3d p0, out Vector3d n0, out Vector3d d0);
-                Vector3d plannedVec = _plannedDvUnit * _plannedDvMagnitude;
-                _dvOrbitalComponents = new Vector3d(
-                                        Vector3d.Dot(plannedVec, p0),
-                                        Vector3d.Dot(plannedVec, n0),
-                                        Vector3d.Dot(plannedVec, d0));
-                _burnFrameInitialized = true;
-            }
-
-            OrbitalBasis(world.ActivePosition, world.ActiveVelocity, out Vector3d pNow, out Vector3d nNow, out Vector3d dNow);
-            Vector3d steerVec = _dvOrbitalComponents.x * pNow + _dvOrbitalComponents.y * nNow + _dvOrbitalComponents.z * dNow;
-            // correct steering if there's a meaningful difference between new and planned
-            _steerDirection = steerVec.sqrMagnitude > 1e-12 ? steerVec.normalized : _plannedDvUnit;
 
             // Delivered ΔV along the fixed planned-ΔV axis since ignition.
             double delivered = Vector3d.Dot(world.ActiveVelocity - _burnStartVelocity, _plannedDvUnit);
@@ -426,19 +402,8 @@ namespace Blackbird.Rendezvous
 
             double remaining = _plannedDvMagnitude - delivered;
             double throttle = MathHelpers.Clamp(remaining / BurnTaperBandMetersPerSecond, BurnMinThrottle, 1.0);
-            // Steer along the LIVE orbital-frame direction (follows the gravity turn); cut on the frozen world
-            // axis above, so the net burn still lands on the planned ΔV vector with the perpendicular nulled.
-            return Burn(_steerDirection, throttle,
+            return Burn(_plannedDvUnit, throttle,
                 string.Format("intercept burn: {0:F1}/{1:F1} m/s delivered", delivered, _plannedDvMagnitude));
-        }
-
-        // adjust the planned ΔV to track across the orbit.  implemented because yield CA was significantly higher than planned
-        private static void OrbitalBasis(Vector3d r, Vector3d v, out Vector3d prograde, out Vector3d normal, out Vector3d radial)
-        {
-            prograde = v.normalized;
-            normal = Vector3d.Cross(r, v).normalized;
-            if (normal.sqrMagnitude <= 0.0) normal = Vector3d.Cross(r, prograde).normalized;
-            radial = Vector3d.Cross(normal, prograde).normalized;
         }
 
         // Records the post-burn report (planned vs delivered, the velocity residual, the plan's predicted CA).
@@ -682,9 +647,6 @@ namespace Blackbird.Rendezvous
 
         private void ClearBurnState()
         {
-            _steerDirection = Vector3d.zero;
-            _burnFrameInitialized = false;
-            _dvOrbitalComponents = Vector3d.zero;
             _burnArmed = false;
             HaveHohmannTransfer = false;
             _burnIgnitionUt = 0.0;
