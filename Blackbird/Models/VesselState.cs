@@ -454,11 +454,23 @@ namespace Blackbird.Models
             }
         }
 
+        // Stock ΔV system (vessel.VesselDeltaV). TotalDeltaVVac is the stable, situation-independent ship
+        // figure (use TotalDeltaVActual for the current-atmosphere value). Returns NaN until the stock calc is
+        // ready, nudging it dirty so it computes within a frame or two; once ready it stays ready until mass /
+        // staging changes, so this doesn't thrash. Replaces vessel.GetDeltaV() which read 0.
         private static double GetRemainingDeltaV(Vessel vessel)
         {
             try
             {
-                return vessel.GetDeltaV();
+                VesselDeltaV dv = vessel?.VesselDeltaV;
+                if (dv == null) return double.NaN;
+                if (!dv.IsReady)
+                {
+                    dv.SetCalcsDirty(false, false);
+                    return double.NaN;
+                }
+                double total = dv.TotalDeltaVVac;
+                return total > 0.0 ? total : double.NaN;
             }
             catch
             {

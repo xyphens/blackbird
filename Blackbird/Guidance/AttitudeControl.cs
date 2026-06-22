@@ -6,22 +6,6 @@ namespace Blackbird.Guidance
 {
     public sealed class AttitudeControl
     {
-        /*
-         * Portions of this controller are derived from the control architecture
-         * used by the MechJeb2 project:
-         *
-         * https://github.com/MuMech/MechJeb2
-         *
-         * Specifically:
-         * - DirectionTracker-style attitude tracking
-         * - BetterController-style cascaded attitude PID control
-         * - Surface attitude reference handling
-         *
-         * Original project licensed under GPL-3.0.
-         *
-         * BlackBird contains a custom implementation adapted for its own
-         * architecture and user interface.
-         */
         private const double PosKpDefault = 2.03;
         private const double PosTiDefault = 1.97;
         private const double PosTdDefault = 0.0;
@@ -111,32 +95,31 @@ namespace Blackbird.Guidance
             bool lockRoll = false
             )
         {
-            if (vessel == null || state == null) return;
-            if (vessel.mainBody == null || inertialDirection.sqrMagnitude <= 0.0) return;
+            WorldDirectionToHeadingPitch(vessel, inertialDirection, out double headingDeg, out double pitchDeg);
+            Drive(vessel, state, headingDeg, pitchDeg, rollDeg, lockRoll);
+        }
+
+        public static void WorldDirectionToHeadingPitch(Vessel vessel, Vector3d worldDir, out double headingDeg, out double pitchDeg)
+        {
+            headingDeg = 0.0; pitchDeg = 0.0;
+            if (vessel == null || vessel.mainBody == null || worldDir.sqrMagnitude <= 0.0) return;
 
             Vector3d position = vessel.GetWorldPos3D();
             Vector3d up = (position - vessel.mainBody.position).normalized;
             Vector3d north = Vector3d.Exclude(up, vessel.mainBody.transform.up).normalized;
             if (north.sqrMagnitude <= 0.0) north = vessel.north;
             Vector3d east = Vector3d.Cross(up, north).normalized;
-            Vector3d direction = inertialDirection.normalized;
+            Vector3d direction = worldDir.normalized;
             Vector3d horizontal = Vector3d.Exclude(up, direction);
 
-            double pitchDeg = Math.Asin(MathHelpers.Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)) * 180.0 / Math.PI;
-            double headingDeg = 0.0;
-
+            pitchDeg = Math.Asin(MathHelpers.Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)) * 180.0 / Math.PI;
             if (horizontal.sqrMagnitude > 0.0)
             {
-                Vector3d horizontalDirection = horizontal.normalized;
-                double northComponent = Vector3d.Dot(horizontalDirection, north);
-                double eastComponent = Vector3d.Dot(horizontalDirection, east);
-                headingDeg = Math.Atan2(eastComponent, northComponent) * 180.0 / Math.PI;
+                Vector3d h = horizontal.normalized;
+                headingDeg = Math.Atan2(Vector3d.Dot(h, east), Vector3d.Dot(h, north)) * 180.0 / Math.PI;
                 if (headingDeg < 0.0) headingDeg += 360.0;
             }
-
-            Drive(vessel, state, headingDeg, pitchDeg, rollDeg, lockRoll);
         }
-
         // Holds the craft's CURRENT attitude, killing all rotation (incl. roll). This is the analog of
         // MechJeb's attitudeTo(QuaternionD.LookRotation(transform.up, -transform.forward), INERTIAL): the
         // requested attitude is the current one, so the position error is ~0 and the inner rate loop drives

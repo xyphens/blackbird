@@ -72,6 +72,7 @@ namespace Blackbird.Rendezvous
         //public RendezvousPhase Phase => _executor.Phase;
         //public RendezvousStage Stage => _executor.Stage;
         public bool HasInterceptPlan => _executor.HasInterceptPlan; // todo: replace with sharedstate
+        public bool HaveHohmannPlan => _executor.HaveHohmannTransfer;
         public RendezvousCommand Command => _command;
         public bool HasCommand => _hasCommand;
         public RelativeState Relative { get; private set; }
@@ -130,7 +131,6 @@ namespace Blackbird.Rendezvous
         }
 
         // Invalidate the cached plan preview so it recomputes once (planner switched / manual refresh).
-        public void RequestPlanRefresh() => _executor.RequestPlanRefresh();
         public const double CloseApproachGainDefault = TerminalRendezvousExecutor.RendezDistanceApproachGainDefault;
         public const double CloseApproachMaxSpeedDefault = TerminalRendezvousExecutor.RendezMaxApproachSpeedDefaultMetersPerSecond;
         public void Abort() { _executor.Abort(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
@@ -271,12 +271,9 @@ namespace Blackbird.Rendezvous
 
             VesselRendezvousWorld world = new VesselRendezvousWorld(active, target);
 
-            // Keep a fresh plan preview for the pending stage so the panel shows ΔV/CA before Execute.
             if (bbState.InterceptPhase != InterceptPhase.Executing && now - _lastPreviewUt >= PreviewIntervalSeconds)
             {
-                _executor.RefreshPlanPreview(world);
-                _lastPreviewUt = now;
-
+                // no longer generating a plan this way
                 // Feed the ignition-time-drift lead = estimated slew to the burn vector (+settle/margin), so
                 // the frozen plan matches the state the engine fires from; refines over successive previews.
                 if (bbState.RendezvousMethod == RendezvousMethod.Intercept && _executor.HasInterceptPlan)
@@ -356,6 +353,24 @@ namespace Blackbird.Rendezvous
                 string.Format("plan ok={0} dV={1:F2} tof={2:F0} predCA={3:F1}  CA_before={4:F1}",
                     p.Success, p.DeltaVMagnitude, p.TimeOfFlight, p.PredictedClosestApproach, _caBeforeBurnMeters),
                 "activeV=" + aV, "planDV=" + p.DeltaV);
+        }
+
+        public void GenerateNewInterceptPlan(Vessel active, Vessel target, InterceptMethod method)
+        {
+            VesselRendezvousWorld world = new VesselRendezvousWorld(active, target);
+            _executor.RefreshPlanPreview(world, method);
+            _lastPreviewUt = Planetarium.GetUniversalTime();
+        }
+
+        // Make one of the previewed Hohmann windows the active plan (all candidates are already valid, so the
+        // executor's HasInterceptPlan stays true). Execute then fires the chosen window.
+        public void SelectInterceptCandidate(int index)
+        {
+            if (bbState?.InterceptCandidates == null
+                || index < 0 || index >= bbState.InterceptCandidates.Count) return;
+
+            bbState.SelectedInterceptCandidateIndex = index;
+            bbState.InterceptSolution = bbState.InterceptCandidates[index];
         }
 
         // Logs how well the intercept burn matched its plan: planned vs delivered ΔV (shortfall + direction

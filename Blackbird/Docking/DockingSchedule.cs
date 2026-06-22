@@ -177,7 +177,7 @@ namespace Blackbird.Docking
                 case DockingSteps.MovingToStart:
                     if (g.ZSep < c.SafeDistance) z *= -1;
                     else z = 0;
-                    status = string.Format("Moving to the start point at {0:F2} m/s", z);
+                    status = string.Format("Aligning docking ports ({0:F2} m/s)", z);
                     break;
 
                 case DockingSteps.Docking:

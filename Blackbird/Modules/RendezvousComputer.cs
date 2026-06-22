@@ -1,7 +1,8 @@
-using System;
 using Blackbird.Docking;
+using Blackbird.Guidance;
 using Blackbird.Mathematics;
 using Blackbird.Rendezvous;
+using System;
 using UnityEngine;
 
 namespace Blackbird.Modules
@@ -60,9 +61,11 @@ namespace Blackbird.Modules
             if (GUI.Button(new Rect(_windowRect.width - 22, 2, 18, 18), " ")) bbState.RendezvousVisible = false;
 
             
-            if (_handler == null || _handler.Target == null || Universe.IsInSpace(FlightGlobals.ActiveVessel?.altitude ?? 0))
+            if (_handler == null || _handler.Target == null || !Universe.IsInSpace(FlightGlobals.ActiveVessel?.altitude ?? 0))
             {
-                GUILayout.Label("Rendezvous computer unavailable (must be in space and have a target)");
+                string strTarget = _handler?.Target?.name ?? "no target";
+
+                GUILayout.Label($"Rendezvous computer unavailable (target: {strTarget}, altitude: {FlightGlobals.ActiveVessel.altitude} m / {FlightGlobals.currentMainBody.atmosphereDepth} m)");
                 bbState.RendezvousEnabled = false;
                 GUI.DragWindow();
                 return;
@@ -106,13 +109,20 @@ namespace Blackbird.Modules
             }
 
             bbState._interceptMethod = Helpers.Dropdown.SelectBox(bbState._interceptMethod, bbState.InterceptMethods, this);
-            if (bbState.InterceptMethod != _lastAlgorithm) // don't spam re-calcs
+            // clear prior plan and calc the targeted plan type
+            if (bbState.InterceptMethod != _lastAlgorithm)
             {
+                _handler.ResetSequence();
                 _lastAlgorithm = bbState.InterceptMethod;
-                _handler.RequestPlanRefresh();
+                _handler.GenerateNewInterceptPlan(FlightGlobals.ActiveVessel, _handler.Target, bbState.InterceptMethod);
             }
 
-            if (bbState.InterceptMethod == InterceptMethod.Hohmann && GUILayout.Button("Recompute plan")) _handler.RequestPlanRefresh();
+            if (GUILayout.Button($"Compute {(bbState.InterceptMethod == InterceptMethod.Hohmann ? "Hohmann transfer" : "plan")}"))
+            {
+                _handler.GenerateNewInterceptPlan(FlightGlobals.ActiveVessel, _handler.Target, bbState.InterceptMethod);
+            }
+
+            DrawInterceptCandidates();
 
             GUILayout.Space(4);
 
@@ -145,8 +155,10 @@ namespace Blackbird.Modules
             {
                 if (GUILayout.Button("Stop Warp")) _handler.StopWarp();
             }
-            else if (bbState.InterceptMethod == InterceptMethod.Hohmann && bbState.RendezvousMethod == RendezvousMethod.Intercept
-                     && (_handler.HasInterceptPlan || _handler.CoastingToIgnition))
+            else if (bbState.InterceptMethod == InterceptMethod.Hohmann
+                     && bbState.RendezvousMethod == RendezvousMethod.Intercept
+                     && (_handler.CoastingToIgnition
+                         || (bbState.InterceptPhase == InterceptPhase.Idle && _handler.HasInterceptPlan)))
             {
                 // Hohmann ignites at a future departure UT, so warp to that window: the frozen ignition while
                 // coasting (post-Execute), otherwise the previewed plan's.
@@ -216,6 +228,43 @@ namespace Blackbird.Modules
             GUI.DragWindow();
         }
 
+        // Hohmann candidate windows: depart-time / ΔV / time-of-flight, one Choose button each. Picking copies
+        // the window into bbState.InterceptSolution so Execute fires it. Empty for the single-phase method.
+        private void DrawInterceptCandidates()
+        {
+            System.Collections.Generic.List<InterceptSolution> candidates = bbState.InterceptCandidates;
+            if (candidates == null || candidates.Count == 0) return;
+
+            GUILayout.Space(4);
+            GUILayout.Label("Transfer windows (pick one):");
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Depart in", GUILayout.Width(90));
+            GUILayout.Label("ΔV", GUILayout.Width(75));
+            GUILayout.Label("Arrive in", GUILayout.Width(90));
+            GUILayout.Label("", GUILayout.Width(60));
+            GUILayout.EndHorizontal();
+
+            double now = Planetarium.GetUniversalTime();
+            bool canChoose = bbState.InterceptPhase != InterceptPhase.Executing
+                             && bbState.InterceptPhase != InterceptPhase.Aborted;
+
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                InterceptSolution c = candidates[i];
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(FormatTime(c.IgnitionUt - now), GUILayout.Width(90));
+                GUILayout.Label($"{c.DeltaVMagnitude:F1} m/s", GUILayout.Width(75));
+                GUILayout.Label(FormatTime(c.TimeOfFlight), GUILayout.Width(90));
+
+                bool isSelected = bbState.SelectedInterceptCandidateIndex == i;
+                GUI.enabled = canChoose && !isSelected;
+                if (GUILayout.Button(isSelected ? "Active" : "Choose", GUILayout.Width(60)))
+                    _handler.SelectInterceptCandidate(i);
+                GUI.enabled = true;
+                GUILayout.EndHorizontal();
+            }
+        }
+
         // The one line that tells the user what is happening and what to do next.
         private string GetInstruction()
         {
@@ -225,10 +274,16 @@ namespace Blackbird.Modules
             {
                 case InterceptPhase.Idle: return "awaiting instructions";
                 case InterceptPhase.Executing:
-                    if (_handler.Stabilizing)
-                        return $"Stabilizing alignment: {_handler.AlignmentErrorDeg:F1}° error";
-                    if (_handler.Orienting)
-                        return $"Orienting to burn attitude ({_handler.AlignmentErrorDeg:F0}° remaining)...";
+                    if (_handler.HasCommand &&
+                        (_handler.Stabilizing || _handler.Orienting))
+                    {
+                        AttitudeControl.WorldDirectionToHeadingPitch(
+                            FlightGlobals.ActiveVessel, _handler.Command.ThrustDirection,
+                            out double hdg, out double pit);
+                        string verb = _handler.Stabilizing ? "Stabilizing" : "Orienting";
+                        return $"{verb}: point to {hdg:F0}° / {pit:F0}° "
+                             + $"({_handler.AlignmentErrorDeg:F1}° remaining)...";
+                    }
                     return _handler.HasCommand ? _handler.Command.Status : "Executing...";
 
                 case InterceptPhase.Coast:

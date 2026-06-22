@@ -168,6 +168,15 @@ namespace Blackbird.Guidance
         {
             if (GuidanceMode == gMode) return;
 
+            if (gMode == GuidanceMode.None)
+            {
+                // reset guidance
+                bbState.ActiveModule = BlackbirdModule.None;
+                State = LaunchGuidanceState.Idle;
+                _ascentGuidance.Reset();
+                return;
+            }
+
             if (vessel != null && bbState.LaunchPlan != null)
             {
                 GuidanceInfo =
@@ -275,8 +284,8 @@ namespace Blackbird.Guidance
 
         public void Reset()
         {
+            if (bbState != null) bbState.LaunchPlan = null;
             TimeWarp.SetRate(0, true);
-            bbState.LaunchPlan = null;
             _targetUt = 0.0;
             State = LaunchGuidanceState.Idle;
             _ascentGuidance.Reset();

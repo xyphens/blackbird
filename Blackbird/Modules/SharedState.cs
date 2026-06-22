@@ -3,6 +3,7 @@ using Blackbird.Models;
 using Blackbird.Modules;
 using Blackbird.Rendezvous;
 using System;
+using System.Collections.Generic;
 
 namespace Blackbird.Modules
 {
@@ -87,6 +88,9 @@ namespace Blackbird.Modules
         public InterceptPhase InterceptPhase { get; set; } = InterceptPhase.Idle;
         public string[] InterceptMethods = { "Single Phase", "Hohmann" };
         public InterceptSolution InterceptSolution { get; set; }
+        // Eligible Hohmann transfer windows for the user to choose from; selection copies one into InterceptSolution.
+        public List<InterceptSolution> InterceptCandidates { get; set; } = new List<InterceptSolution>();
+        public int SelectedInterceptCandidateIndex { get; set; } = -1;
 
         public InterceptMethod InterceptMethod = InterceptMethod.Hohmann;
         // used by index-based dropdown
@@ -120,6 +124,8 @@ namespace Blackbird.Modules
             DockingMode = DockingControlMode.Off;
             DockingEnabled = false;
             InterceptSolution = new InterceptSolution();
+            InterceptCandidates = new List<InterceptSolution>();
+            SelectedInterceptCandidateIndex = -1;
         }
     }
 }

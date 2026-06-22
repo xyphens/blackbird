@@ -130,8 +130,8 @@ namespace Blackbird.Modules
                 GUILayout.Label(
                     candidate.IsValid ? BlackbirdHelpers.FormatDuration(candidate.SecondsUntilLaunch) : "N/A",
                     GUILayout.Width(80));
-                GUILayout.Label(FormatKm(candidate.InsertionApoapsisAlt), GUILayout.Width(45));
-                GUILayout.Label(FormatKm(candidate.InsertionPeriapsisAlt), GUILayout.Width(45));
+                GUILayout.Label($"{FormatKm(candidate.InsertionApoapsisAlt)}km", GUILayout.Width(45));
+                GUILayout.Label($"{FormatKm(candidate.InsertionPeriapsisAlt)}km", GUILayout.Width(45));
                 GUILayout.Label(FormatValue(candidate.LaunchHeadingDeg, "F1"), GUILayout.Width(50));
                 GUILayout.Label(FormatValue(candidate.EstimatedOrbitsToRendezvous, "F1"), GUILayout.Width(40));
                 GUILayout.Label(FormatValue(candidate.EstimatedDeltaVUsed, "F0"), GUILayout.Width(45));

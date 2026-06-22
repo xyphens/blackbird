@@ -1,6 +1,7 @@
 ﻿using Blackbird.Models;
 using Blackbird.Trajectory;
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using static SpaceObjectCollider;
 using static Vect;
@@ -507,19 +508,119 @@ namespace Blackbird.Mathematics
         public static (Vector3d dv1, double ut1, Vector3d dv2, double ut2) DeltaVForHohmannTransfer(
             double ut, Vector3d _r1, Vector3d _v1, Vector3d _r2, Vector3d _v2, double mu, bool coplanar = false)
         {
+            List<(Vector3d dv1, double ut1, Vector3d dv2, double ut2, double total)> windows =
+                CollectHohmannWindows(ut, _r1, _v1, _r2, _v2, mu, coplanar);
+
+            if (windows.Count > 0)
+            {
+                // Neither the first feasible window (depart-now = high ΔV at a bad phase) nor the strict global-ΔV
+                // minimum (chases marginal savings many hours out): the EARLIEST window within WINDOW_TOL of the
+                // global best. The comparison is scale-invariant, so real-unit totals are fine.
+                const double WINDOW_TOL = 0.20;
+                double globalBest = double.PositiveInfinity;
+                for (int i = 0; i < windows.Count; i++)
+                    if (windows[i].total < globalBest) globalBest = windows[i].total;
+
+                double threshold = globalBest * (1.0 + WINDOW_TOL);
+                int pick = 0;
+                double pickUt1 = double.PositiveInfinity;
+                for (int i = 0; i < windows.Count; i++)
+                {
+                    if (windows[i].total <= threshold && windows[i].ut1 < pickUt1)
+                    {
+                        pick = i;
+                        pickUt1 = windows[i].ut1;
+                    }
+                }
+
+                var w = windows[pick];
+                HohmannLog.Write("HOHMANN-OPT", "CHOSEN",
+                    "dt1=" + (w.ut1 - ut).ToString("F0") + "s",
+                    "dv1=" + w.dv1.magnitude.ToString("F2"),
+                    "dv2=" + w.dv2.magnitude.ToString("F2"),
+                    "total=" + w.total.ToString("F2"),
+                    "globalBest=" + globalBest.ToString("F2"));
+                return (w.dv1, w.ut1, w.dv2, w.ut2);
+            }
+
+            // No future-departure solution within the search horizon -- signal "no plan" (ut1 = -inf).
+            HohmannLog.Write("HOHMANN-OPT", "NO FEASIBLE FUTURE-DEPARTURE SOLUTION");
+            return (Vector3d.zero, double.NegativeInfinity, Vector3d.zero, double.NegativeInfinity);
+        }
+
+        // Up to maxCount eligible Hohmann transfer windows for the user to pick from. Near-duplicate windows
+        // from the multi-start (same basin, different start) are merged keeping the cheaper; the maxCount
+        // lowest-ΔV distinct windows are returned sorted by departure time (soonest first).
+        public static List<(Vector3d dv1, double ut1, Vector3d dv2, double ut2)> DeltaVForHohmannTransferCandidates(
+            double ut, Vector3d _r1, Vector3d _v1, Vector3d _r2, Vector3d _v2, double mu, int maxCount, bool coplanar = false)
+        {
+            var result = new List<(Vector3d, double, Vector3d, double)>();
+            if (maxCount <= 0) return result;
+
+            List<(Vector3d dv1, double ut1, Vector3d dv2, double ut2, double total)> windows =
+                CollectHohmannWindows(ut, _r1, _v1, _r2, _v2, mu, coplanar);
+            if (windows.Count == 0) return result;
+
+            // Merge windows whose departures fall within ~2% of the search period (same optimizer basin).
+            double synodic = SynodicPeriod(OrbitalPeriod(_r1, _v1, mu), OrbitalPeriod(_r2, _v2, mu));
+            double searchPeriod = MathHelpers.IsFinite(synodic)
+                ? synodic
+                : Math.Max(OrbitalPeriod(_r1, _v1, mu), OrbitalPeriod(_r2, _v2, mu));
+            double mergeTol = MathHelpers.IsFinite(searchPeriod) ? Math.Max(60.0, searchPeriod * 0.02) : 60.0;
+
+            var deduped = new List<(Vector3d dv1, double ut1, Vector3d dv2, double ut2, double total)>();
+            for (int i = 0; i < windows.Count; i++)
+            {
+                var w = windows[i];
+                int existing = -1;
+                for (int j = 0; j < deduped.Count; j++)
+                    if (Math.Abs(deduped[j].ut1 - w.ut1) < mergeTol) { existing = j; break; }
+
+                if (existing < 0) deduped.Add(w);
+                else if (w.total < deduped[existing].total) deduped[existing] = w;
+            }
+
+            // Keep the maxCount cheapest distinct windows, present soonest-first.
+            deduped.Sort((a, b) => a.total.CompareTo(b.total));
+            int take = Math.Min(maxCount, deduped.Count);
+            List<(Vector3d dv1, double ut1, Vector3d dv2, double ut2, double total)> chosen = deduped.GetRange(0, take);
+            chosen.Sort((a, b) => a.ut1.CompareTo(b.ut1));
+
+            for (int i = 0; i < chosen.Count; i++)
+                result.Add((chosen[i].dv1, chosen[i].ut1, chosen[i].dv2, chosen[i].ut2));
+
+            return result;
+        }
+
+        public static List<(Vector3d dv1, double ut1, Vector3d dv2, double ut2)> DeltaVForHohmannTransferCandidates(
+            Vessel vessel, Vessel target, int maxCount, bool coplanar = false)
+        {
+            double ut = Planetarium.GetUniversalTime();
+            (Vector3d r1, Vector3d v1) = RightHandVectorsAtUt(vessel.orbit, ut);
+            (Vector3d r2, Vector3d v2) = RightHandVectorsAtUt(target.orbit, ut);
+            double mu = vessel.orbit.referenceBody.gravParameter;
+            return DeltaVForHohmannTransferCandidates(ut, r1, v1, r2, v2, mu, maxCount, coplanar);
+        }
+
+        // Multi-start sweep shared by the single-pick and candidate-list Hohmann methods. Marches the departure
+        // guess forward by 0.1 synodic and optimizes from each start; returns every FEASIBLE future-departure
+        // window (dt1 > 0) as world-frame ΔV at ABSOLUTE UTs, in generation (≈ departure-time) order. Selection
+        // is the caller's job. coplanar must be false offline (QuaternionD is a Unity-native call that CTDs).
+        private static List<(Vector3d dv1, double ut1, Vector3d dv2, double ut2, double total)> CollectHohmannWindows(
+            double ut, Vector3d _r1, Vector3d _v1, Vector3d _r2, Vector3d _v2, double mu, bool coplanar)
+        {
+            var windows = new List<(Vector3d, double, Vector3d, double, double)>();
 
             // Canonical-units scale (mu -> 1) for optimizer conditioning; characteristic length = geometric
             // mean of the two radii.
             MLV scale = MLV.Init(mu, Math.Sqrt(_r1.magnitude * _r2.magnitude));
 
-            // Real synodic period (seconds): the recurrence window for the relative geometry. Drives the
-            // departure march; divided by TimeScale it is the canonical-unit step cap for the optimizer.
+            // Real synodic period (seconds): the recurrence window for the relative geometry; drives the march.
             double synodicPeriodReal = SynodicPeriod(OrbitalPeriod(_r1, _v1, mu), OrbitalPeriod(_r2, _v2, mu));
 
             // Optional coplanar projection: rotate the target into the chaser's plane (2D transfer). OFF by
-            // default (matches MJ's rendezvous path, which lets Lambert handle the 3D geometry). NOTE: it uses
-            // QuaternionD, a Unity NATIVE call that crashes offline (the harness has no engine), so the offline
-            // path must keep coplanar = false. Constant across iterations, so applied once here.
+            // default (MJ's rendezvous path lets Lambert handle 3D). QuaternionD is a Unity-native call that
+            // crashes offline, so the harness path must keep coplanar = false.
             Vector3d tr2 = _r2, tv2 = _v2;
             if (coplanar)
             {
@@ -540,14 +641,12 @@ namespace Blackbird.Mathematics
             // Analytic Hohmann transfer-time guess (canonical units).
             (_, _, double ttGuess, _) = GetHohmannXferParams(1.0, r1, r2);
 
-            // dt and tt unconstrained; offset locked to 0 (matches MJ's rendezvous path). +/-Inf is
-            // unit-independent so the bounds need no scaling.
+            // dt and tt unconstrained; offset locked to 0 (MJ's rendezvous path). +/-Inf needs no scaling.
             double[] lBnd = { double.NegativeInfinity, double.NegativeInfinity, 0.0 };
             double[] uBnd = { double.PositiveInfinity, double.PositiveInfinity, 0.0 };
 
-            // For (near-)equal periods (co-altitude catch-up) the synodic period is infinite, which would
-            // poison the step cap and the departure march. Fall back to the longer orbital period as the
-            // search window. stpMax = 0 means "no limit" to alglib, so a non-finite window degrades safely.
+            // For (near-)equal periods (co-altitude) the synodic period is infinite and would poison the step
+            // cap and march; fall back to the longer orbital period. stpMax = 0 means "no limit" to alglib.
             double searchPeriod = MathHelpers.IsFinite(synodicPeriodReal)
                 ? synodicPeriodReal
                 : Math.Max(OrbitalPeriod(_r1, _v1, mu), OrbitalPeriod(_r2, _v2, mu));
@@ -558,21 +657,7 @@ namespace Blackbird.Mathematics
             const double EPS = 1e-9;
             const int MAX_ITERATIONS = 1000;
 
-            // Multi-start: march the departure guess forward by 0.1 synodic and optimize from each. We take
-            // neither the first feasible window (a depart-now intercept = high ΔV at a bad phase) nor the strict
-            // global-ΔV minimum (which chases marginal savings many hours out); instead, of all future-departure
-            // candidates, pick the EARLIEST whose total ΔV is within WINDOW_TOL of the global best. dtGuess stays
-            // in REAL seconds.
-            const double WINDOW_TOL = 0.20;   // accept an earlier window if it costs <=20% more than the global best
             double dtGuess = 0.0;
-
-            double[] candTotal = new double[MAX_GLOBAL_ITERATIONS];
-            Vector3d[] candDv1 = new Vector3d[MAX_GLOBAL_ITERATIONS];
-            Vector3d[] candDv2 = new Vector3d[MAX_GLOBAL_ITERATIONS];
-            double[] candDt1List = new double[MAX_GLOBAL_ITERATIONS];
-            double[] candDt2List = new double[MAX_GLOBAL_ITERATIONS];
-            int candCount = 0;
-
             for (int i = 0; i < MAX_GLOBAL_ITERATIONS; i++)
             {
                 double[] x = { dtGuess / scale.TimeScale, ttGuess, 0.0 };
@@ -589,7 +674,6 @@ namespace Blackbird.Mathematics
                     throw new Exception($"Hohmann transfer solver terminated abnormally: {rep.terminationtype}");
 
                 (Vector3d dv1, Vector3d dv2) = LambertSolver.LambertHohmann(x[0], x[1], x[2], optArgs);
-                double total = dv1.magnitude + dv2.magnitude;          // scaled; fine for comparison
                 double candDt1 = x[0] * scale.TimeScale;
 
                 HohmannLog.Write("HOHMANN-OPT", "window " + i,
@@ -601,53 +685,17 @@ namespace Blackbird.Mathematics
 
                 if (candDt1 > 0.0)
                 {
-                    candTotal[candCount] = total;
-                    candDv1[candCount] = dv1 * scale.V;
-                    candDv2[candCount] = dv2 * scale.V;
-                    candDt1List[candCount] = candDt1;
-                    candDt2List[candCount] = (x[0] + x[1]) * scale.TimeScale;
-                    candCount++;
+                    Vector3d dv1World = dv1 * scale.V;
+                    Vector3d dv2World = dv2 * scale.V;
+                    double dt2 = (x[0] + x[1]) * scale.TimeScale;
+                    windows.Add((dv1World, ut + candDt1, dv2World, ut + dt2,
+                        dv1World.magnitude + dv2World.magnitude));
                 }
 
                 dtGuess += searchPeriod * 0.10;
             }
 
-            if (candCount > 0)
-            {
-                double globalBest = double.PositiveInfinity;
-                for (int i = 0; i < candCount; i++)
-                    if (candTotal[i] < globalBest) globalBest = candTotal[i];
-
-                // Earliest window within tolerance of the global best (candidates were generated in dt1 order).
-                double threshold = globalBest * (1.0 + WINDOW_TOL);
-                int pick = 0;
-                double pickDt1 = double.PositiveInfinity;
-                for (int i = 0; i < candCount; i++)
-                {
-                    if (candTotal[i] <= threshold && candDt1List[i] < pickDt1)
-                    {
-                        pick = i;
-                        pickDt1 = candDt1List[i];
-                    }
-                }
-
-                Vector3d bestDv1 = candDv1[pick];
-                Vector3d bestDv2 = candDv2[pick];
-                double bestDt1 = candDt1List[pick];
-                double bestDt2 = candDt2List[pick];
-
-                HohmannLog.Write("HOHMANN-OPT", "CHOSEN",
-                    "dt1=" + bestDt1.ToString("F0") + "s",
-                    "dv1=" + bestDv1.magnitude.ToString("F2"),
-                    "dv2=" + bestDv2.magnitude.ToString("F2"),
-                    "total=" + (bestDv1.magnitude + bestDv2.magnitude).ToString("F2"),
-                    "globalBest=" + (globalBest * scale.V).ToString("F2"));
-                return (bestDv1, ut + bestDt1, bestDv2, ut + bestDt2);
-            }
-
-            // No future-departure solution within the search horizon -- signal "no plan" (ut1 = -inf).
-            HohmannLog.Write("HOHMANN-OPT", "NO FEASIBLE FUTURE-DEPARTURE SOLUTION");
-            return (Vector3d.zero, double.NegativeInfinity, Vector3d.zero, double.NegativeInfinity);
+            return windows;
         }
 
         private static (double dv1, double dv2, double tt, double alpha) GetHohmannXferParams(double mu, Vector3d r1, Vector3d r2)

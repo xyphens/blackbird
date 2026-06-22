@@ -1,10 +1,12 @@
-using System;
-using System.Linq;
-using Blackbird.Modules;
 using Blackbird.Guidance;
 using Blackbird.Mathematics;
 using Blackbird.Models;
+using Blackbird.Modules;
 using Blackbird.Trajectory;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
 using UnityEngine;
 
 namespace Blackbird.Planning
@@ -112,29 +114,33 @@ namespace Blackbird.Planning
                 return new[] { CreateInvalidCandidate("Planner inputs are incomplete.") };
             }
 
-            LaunchCandidate ascending = CreateCandidateForWindow(
-                vesselState,
-                target,
-                targetOrbit,
-                insertionTarget,
-                launchWindow.TimeToAscendingNodeSeconds,
-                launchWindow.AscendingAzimuthDeg,
-                launchWindow.PlaneErrorDeg,
-                currentPhaseAngleDeg,
-                "Ascending launch window is unavailable.");
+            List<LaunchCandidate> candidates = new List<LaunchCandidate>();
 
-            LaunchCandidate descending = CreateCandidateForWindow(
-                vesselState,
-                target,
-                targetOrbit,
-                insertionTarget,
-                launchWindow.TimeToDescendingNodeSeconds,
-                launchWindow.DescendingAzimuthDeg,
-                launchWindow.PlaneErrorDeg,
-                currentPhaseAngleDeg,
-                "Descending launch window is unavailable.");
+            foreach (PhasingRecommendationMode mode in Enum.GetValues(typeof(PhasingRecommendationMode)))
+            {
+                candidates.Add(CreateCandidateForWindow(
+                    vesselState, target, targetOrbit, insertionTarget,
+                    launchWindow.TimeToAscendingNodeSeconds,
+                    launchWindow.AscendingAzimuthDeg,
+                    launchWindow.PlaneErrorDeg,
+                    currentPhaseAngleDeg,
+                    "Ascending launch window is unavailable.",
+                    mode));
+            }
 
-            return new[] { ascending, descending }
+            foreach (PhasingRecommendationMode mode in Enum.GetValues(typeof(PhasingRecommendationMode)))
+            {
+                candidates.Add(CreateCandidateForWindow(
+                    vesselState, target, targetOrbit, insertionTarget,
+                    launchWindow.TimeToDescendingNodeSeconds,
+                    launchWindow.DescendingAzimuthDeg,
+                    launchWindow.PlaneErrorDeg,
+                    currentPhaseAngleDeg,
+                    "Descending launch window is unavailable.",
+                    mode));
+            }
+
+            return candidates
                 .OrderBy(candidate => candidate.IsValid ? 0 : 1)
                 .ThenBy(candidate => candidate.EstimatedDeltaVUsed)
                 .ThenBy(candidate => Math.Abs(candidate.PhaseErrorDeg))
@@ -154,7 +160,9 @@ namespace Blackbird.Planning
             double launchHeadingDeg,
             double planeErrorDeg,
             double currentPhaseAngleDeg,
-            string unavailableReason)
+            string unavailableReason,
+            PhasingRecommendationMode mode
+            )
         {
             if (!IsUsableWindow(secondsUntilLaunch, launchHeadingDeg))
             {
@@ -168,7 +176,7 @@ namespace Blackbird.Planning
                 vesselState.Body,
                 targetOrbit,
                 phaseAngleAtLaunch,
-                PhasingRecommendationMode.Balanced);
+                mode);
 
             double insertionApoapsisAlt = phasingRecommendation.HasRecommendation
                 ? phasingRecommendation.ApoapsisAlt

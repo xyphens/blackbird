@@ -47,6 +47,7 @@ namespace Blackbird
             if (ApplicationLauncher.Ready) AddToolbarButton();
 
             // pass state to all sub-modules
+            _launchHandler.Init(_bbState);
             _rendezvousHandler.Init(_bbState);
             _dockingHandler.Init(_bbState);
         }

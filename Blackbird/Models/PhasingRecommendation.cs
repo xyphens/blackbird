@@ -22,6 +22,9 @@ namespace Blackbird.Models
         public double EstimatedOrbitsToRendezvous;
         public double EstimatedTimeToRendezvousSeconds;
 
+        // Hohmann ΔV from this phasing circle to the target circle (the discriminating cost between candidates).
+        public double DeltaVToTargetMetersPerSecond;
+
         public bool HasRecommendation;
         public string ReasonUnavailable;
     }

@@ -1,13 +1,11 @@
 using System;
+using System.Collections.Generic;
 using Blackbird.Mathematics;
 using Blackbird.Modules;
 
 namespace Blackbird.Rendezvous
 {
-    // Rendezvous execution state machine. Each method (Intercept / MatchVelocity / CloseApproach) runs
-    // independently via Execute(method): a closed loop that self-terminates on its cutoff, then drops to
-    // Coast (Complete after CloseApproach). Burns are a steering direction + throttle (the actuation layer
-    // orients then throttles); no patched-conic nodes, so it is Principia-safe. Docking is a separate module.
+    // Rendezvous execution state machine. Each method (Intercept / MatchVelocity / CloseApproach) runs independently via Execute(method)
     public sealed class TerminalRendezvousExecutor
     {
         // --- intercept tuning (public so callers/tests can adjust) ---
@@ -15,6 +13,10 @@ namespace Blackbird.Rendezvous
         public double InterceptBudgetMilliseconds = 20.0; // wall-clock cap per plan
         public double InterceptTofMinFraction = 0.05;     // arrival sweep, fraction of the orbital period
         public double InterceptTofMaxFraction = 0.95;
+        // attempting to improve Hohmann transfer burn results
+        private Vector3d _steerDirection; // changes as we approach node
+        private bool _burnFrameInitialized; // ready to burn transfer
+        private Vector3d _dvOrbitalComponents; // planned dV
 
         // Plan from the active state coasted forward by this much, so the frozen ΔV matches the state the
         // engine actually fires from after the orient delay. Set by the actuation layer; 0 offline.
@@ -63,6 +65,7 @@ namespace Blackbird.Rendezvous
 
         // Latest plan: a live preview while idle/coast, or the frozen plan while executing.
         public bool HasInterceptPlan { get; private set; }
+        public bool HaveHohmannTransfer { get; private set; }
 
         // Post-burn report from the last intercept burn, for the actuation layer's diagnostic.
         public bool HasLastInterceptBurnReport { get; private set; }
@@ -84,7 +87,6 @@ namespace Blackbird.Rendezvous
         //public bool UseHohmannPlanner = false;
         private double _plannedIgnitionUt;
         private double _burnIgnitionUt;            // centered-burn start = planned ignition - half the burn duration
-        private bool _hohmannPreviewComputed;      // compute the (costly) Hohmann preview once, then cache
         public double PlannedIgnitionUt => _plannedIgnitionUt;
         public bool BurnArmed => _burnArmed;
 
@@ -118,6 +120,7 @@ namespace Blackbird.Rendezvous
             _burnArmed = false;
             _matchArmed = false;
             _closeBraking = false;
+            HaveHohmannTransfer = false;
             bbState.InterceptSolution = default(InterceptSolution);
             HasLastInterceptBurnReport = false;
             _lastInterceptBurnReport = default(InterceptBurnReport);
@@ -156,6 +159,7 @@ namespace Blackbird.Rendezvous
         public void HoldBurnBaseline(Vector3d currentVelocity, double ut)
         {
             if (bbState.InterceptPhase != InterceptPhase.Executing || bbState.RendezvousMethod != RendezvousMethod.Intercept || !_burnArmed) return;
+            _burnFrameInitialized = false;
             _burnStartVelocity = currentVelocity;
             _maxDeliveredDv = 0.0;
             _lastProgressDelivered = 0.0;
@@ -170,28 +174,32 @@ namespace Blackbird.Rendezvous
             ClearBurnState();
         }
 
-        // Invalidate the cached Hohmann preview so the next RefreshPlanPreview solves once more.
-        // todo: generate a few and let user pick
-        public void RequestPlanRefresh() { _hohmannPreviewComputed = false; }
+        // How many eligible Hohmann windows to surface for the user to choose from.
+        private const int HohmannCandidateCount = 5;
 
         // Refresh the cached plan for the current (not-yet-executed) stage so the UI can show ΔV / predicted
         // CA before the user commits. No phase change. The Hohmann path computes once and caches.
-        public void RefreshPlanPreview(IRendezvousWorld world)
+        public void RefreshPlanPreview(IRendezvousWorld world, InterceptMethod method)
         {
-            // Intercept is the only previewable plan, so compute it whenever idle/coast — regardless of the
-            // currently-selected method (which is None until the user actually Executes a stage).
+            HaveHohmannTransfer = false;
             if (world == null) return;
-            if (bbState.InterceptPhase != InterceptPhase.Idle && bbState.InterceptPhase != InterceptPhase.Coast) return;
+            //if (bbState.InterceptPhase != InterceptPhase.Idle && bbState.InterceptPhase != InterceptPhase.Coast) return;
 
-            if (bbState.InterceptMethod == InterceptMethod.Hohmann)
+            if (method == InterceptMethod.Hohmann)
             {
-                if (_hohmannPreviewComputed) return;
-                _hohmannPreviewComputed = true;
-                bbState.InterceptSolution = BuildHohmannPlan(world);
+                // Surface several windows for the user to pick; default to the soonest until they select one.
+                bbState.InterceptCandidates = BuildHohmannPlans(world, HohmannCandidateCount);
+                bbState.SelectedInterceptCandidateIndex = bbState.InterceptCandidates.Count > 0 ? 0 : -1;
+                bbState.InterceptSolution = bbState.InterceptCandidates.Count > 0
+                    ? bbState.InterceptCandidates[0]
+                    : BuildHohmannPlan(world);
                 HasInterceptPlan = bbState.InterceptSolution.Success;
+                HaveHohmannTransfer = true;
                 return;
             }
 
+            bbState.InterceptCandidates = new List<InterceptSolution>();
+            bbState.SelectedInterceptCandidateIndex = -1;
             bbState.InterceptSolution = PlanIntercept(world);
             HasInterceptPlan = bbState.InterceptSolution.Success;
         }
@@ -229,6 +237,46 @@ namespace Blackbird.Rendezvous
             {
                 return default(InterceptSolution);
             }
+        }
+
+        // Up to maxCount eligible Hohmann windows mapped to InterceptSolutions for the UI to choose from. Same
+        // window->solution mapping as BuildHohmannPlan; only sane future-departure windows are kept.
+        private List<InterceptSolution> BuildHohmannPlans(IRendezvousWorld world, int maxCount)
+        {
+            var plans = new List<InterceptSolution>();
+            try
+            {
+                List<(Vector3d dv1, double ut1, Vector3d dv2, double ut2)> windows =
+                    OrbitMath.DeltaVForHohmannTransferCandidates(
+                        world.UniversalTime, world.ActivePosition, world.ActiveVelocity,
+                        world.TargetPosition, world.TargetVelocity, world.Mu, maxCount);
+
+                for (int i = 0; i < windows.Count; i++)
+                {
+                    (Vector3d dv1, double ut1, Vector3d dv2, double ut2) = windows[i];
+                    double dvMag = dv1.magnitude;
+                    bool sane = ut1 > world.UniversalTime
+                                && !double.IsNaN(dvMag) && !double.IsInfinity(dvMag) && dvMag < 1e8;
+                    if (!sane) continue;
+
+                    plans.Add(new InterceptSolution
+                    {
+                        Success = true,
+                        Status = InterceptStatus.Ok,
+                        DeltaV = dv1,
+                        DeltaVMagnitude = dvMag,
+                        IgnitionUt = ut1,
+                        ArrivalUt = ut2,
+                        TimeOfFlight = ut2 - ut1,
+                        PredictedClosestApproach = 0.0,                  // Hohmann arrives at the target by construction
+                        TransferDepartureVelocity = world.ActiveVelocity + dv1,
+                        TransferArrivalVelocity = Vector3d.zero,
+                        SamplesEvaluated = 0
+                    });
+                }
+            }
+            catch { }
+            return plans;
         }
 
         // Per-tick update. Runs the active stage while Executing (advancing on completion); otherwise idle.
@@ -309,6 +357,8 @@ namespace Blackbird.Rendezvous
                 _targetDepartureVelocity = solution.TransferDepartureVelocity;
                 _plannedDvMagnitude = solution.DeltaVMagnitude;
                 _plannedDvUnit = solution.DeltaV.normalized;
+                _steerDirection = _plannedDvUnit;          // until the orbital-frame reconstruct runs at ignition
+                _burnFrameInitialized = false;
                 _plannedIgnitionUt = solution.IgnitionUt;
                 double halfBurn = BurnAccelMetersPerSecondSquared > 0.0
                     ? 0.5 * _plannedDvMagnitude / BurnAccelMetersPerSecondSquared : 0.0;
@@ -330,6 +380,23 @@ namespace Blackbird.Rendezvous
                 return Burn(_plannedDvUnit, 0.0, "intercept: orienting, ignition in "
                     + (_burnIgnitionUt - world.UniversalTime).ToString("F0") + "s");
             }
+
+            // correct the burn direction from our current orbit every tick so that we follow the gravity turn during the burn
+            if (!_burnFrameInitialized)
+            {
+                OrbitalBasis(world.ActivePosition, world.ActiveVelocity, out Vector3d p0, out Vector3d n0, out Vector3d d0);
+                Vector3d plannedVec = _plannedDvUnit * _plannedDvMagnitude;
+                _dvOrbitalComponents = new Vector3d(
+                                        Vector3d.Dot(plannedVec, p0),
+                                        Vector3d.Dot(plannedVec, n0),
+                                        Vector3d.Dot(plannedVec, d0));
+                _burnFrameInitialized = true;
+            }
+
+            OrbitalBasis(world.ActivePosition, world.ActiveVelocity, out Vector3d pNow, out Vector3d nNow, out Vector3d dNow);
+            Vector3d steerVec = _dvOrbitalComponents.x * pNow + _dvOrbitalComponents.y * nNow + _dvOrbitalComponents.z * dNow;
+            // correct steering if there's a meaningful difference between new and planned
+            _steerDirection = steerVec.sqrMagnitude > 1e-12 ? steerVec.normalized : _plannedDvUnit;
 
             // Delivered ΔV along the fixed planned-ΔV axis since ignition.
             double delivered = Vector3d.Dot(world.ActiveVelocity - _burnStartVelocity, _plannedDvUnit);
@@ -359,8 +426,19 @@ namespace Blackbird.Rendezvous
 
             double remaining = _plannedDvMagnitude - delivered;
             double throttle = MathHelpers.Clamp(remaining / BurnTaperBandMetersPerSecond, BurnMinThrottle, 1.0);
-            return Burn(_plannedDvUnit, throttle,
+            // Steer along the LIVE orbital-frame direction (follows the gravity turn); cut on the frozen world
+            // axis above, so the net burn still lands on the planned ΔV vector with the perpendicular nulled.
+            return Burn(_steerDirection, throttle,
                 string.Format("intercept burn: {0:F1}/{1:F1} m/s delivered", delivered, _plannedDvMagnitude));
+        }
+
+        // adjust the planned ΔV to track across the orbit.  implemented because yield CA was significantly higher than planned
+        private static void OrbitalBasis(Vector3d r, Vector3d v, out Vector3d prograde, out Vector3d normal, out Vector3d radial)
+        {
+            prograde = v.normalized;
+            normal = Vector3d.Cross(r, v).normalized;
+            if (normal.sqrMagnitude <= 0.0) normal = Vector3d.Cross(r, prograde).normalized;
+            radial = Vector3d.Cross(normal, prograde).normalized;
         }
 
         // Records the post-burn report (planned vs delivered, the velocity residual, the plan's predicted CA).
@@ -459,51 +537,39 @@ namespace Blackbird.Rendezvous
                 return Idle(string.Format("parked at {0:F0} m ({1:F2} m/s)", distanceToTarget, relSpeed));
             }
 
-            // only doing velocity match, do not continue CA logic after this
-            if (matchVelocityOnly)
-            {
-                Vector3d holdDir = relSpeed > 1e-6 ? (-relVel).normalized : bearing;
-                // get in position
-                if (UseDistanceForMatchVelocities && distanceToTarget > parkedBand)
-                {
-                    // target is too far away to burn, just get into position
-                    return Burn(holdDir, 0.0, string.Format(
-                        "holding position for burn({0:F0} m away, ParkingDistance {1:F0})",
-                        distanceToTarget, ClosestApproach));
-                } else if (distanceToTarget <= parkedBand)
-                {
-                    // user isn't waiting for a distance, or we're in our parking range = match velocities
-                    return StepMatchVelocity(world, out stageComplete);
-                }
-
-                return Idle("idling...");
-            }
-
             // Is the current trajectory already going to carry us inside the band? Trust the projection only
             // when nearby (a few km), where the two craft share their perturbations.
             bool caInBand = MathHelpers.IsFinite(ClosestApproach) && ClosestApproach <= parkedBand && distanceToTarget <= CaTrustRangeMeters;
 
-            if (UseDistanceForMatchVelocities)
+            // Distance-gated braking (a forced match velocity, or close-approach with the distance option): brake
+            // so the relative velocity nulls AT ParkingDistance, triggered a stopping distance (v²/2a) early. The
+            // match-velocity ride-in already holds the brake attitude the whole way in (pre-oriented), so it
+            // triggers on the pure stopping distance; the CLOSE controller is still pointed at the target and must
+            // flip to retro when braking starts, so it reserves an extra slew-lead coast. CA-in-band needs no early
+            // brake (the trajectory carries us in) so it rides to the band. _closeBraking latches so it can't bounce.
+            if (matchVelocityOnly || UseDistanceForMatchVelocities)
             {
+                Vector3d holdDir = relSpeed > 1e-6 ? (-relVel).normalized : bearing;
+                double closingSpeed = Math.Max(0.0, Vector3d.Dot(relVel, bearing));
+                double stoppingDistance = closingSpeed * closingSpeed / (2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared));
+                double brakeTrigger = ParkingDistance + stoppingDistance
+                    + (matchVelocityOnly ? 0.0 : closingSpeed * BrakingSlewLeadSeconds);
+
+                double triggerDistance = (caInBand && !matchVelocityOnly) ? parkedBand : brakeTrigger;
+                if (distanceToTarget <= triggerDistance) _closeBraking = true;
+                if (_closeBraking) return StepMatchVelocity(world, out stageComplete);
+
+                // Not at the brake point yet. Match velocity / CA-in-band: pre-orient to the braking attitude at
+                // zero throttle and ride in. Otherwise (actively closing) fall through to the CLOSE controller.
+                if (matchVelocityOnly)
+                    return Burn(holdDir, 0.0, string.Format(
+                        "holding position for burn: {0:F0} m, brake at {1:F0} m ({2:F0} m/s closing, park {3:F0} m)",
+                        distanceToTarget, brakeTrigger, closingSpeed, ParkingDistance));
+
                 if (caInBand)
-                {
-                    if (_closeBraking || distanceToTarget <= parkedBand)
-                    {
-                        _closeBraking = true;
-                        return StepMatchVelocity(world, out stageComplete);
-                    }
-                    Vector3d holdDir = relSpeed > 1e-6 ? (-relVel).normalized : bearing;
                     return Burn(holdDir, 0.0, string.Format(
                         "close approach: terminal trajectory ({0:F0} m, CA {1:F0} m in band) - holding for the safe-haven burn",
                         distanceToTarget, ClosestApproach));
-                }
-
-                double closingSpeed = Math.Max(0.0, Vector3d.Dot(relVel, bearing));
-                double brakingDistance = closingSpeed * BrakingSlewLeadSeconds
-                    + closingSpeed * closingSpeed / (2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared));
-                double brakeTrigger = ParkingDistance + brakingDistance;
-                if (distanceToTarget <= brakeTrigger) _closeBraking = true;
-                if (_closeBraking) return StepMatchVelocity(world, out stageComplete);
             }
             else if (caInBand)
             {
@@ -616,8 +682,11 @@ namespace Blackbird.Rendezvous
 
         private void ClearBurnState()
         {
+            _steerDirection = Vector3d.zero;
+            _burnFrameInitialized = false;
+            _dvOrbitalComponents = Vector3d.zero;
             _burnArmed = false;
-            _hohmannPreviewComputed = false;
+            HaveHohmannTransfer = false;
             _burnIgnitionUt = 0.0;
             _burnStartVelocity = Vector3d.zero;
             _targetDepartureVelocity = Vector3d.zero;
