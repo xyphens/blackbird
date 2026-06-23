@@ -79,6 +79,7 @@
     <Compile Include="Guidance\AscentProfile.cs" />
     <Compile Include="Guidance\ClassicAscentGuidance.cs" />
     <Compile Include="Guidance\AttitudeControl.cs" />
+    <Compile Include="Guidance\ClassicAscentGuidance2.cs" />
     <Compile Include="Guidance\DirectionTracking.cs" />
     <Compile Include="Guidance\LaunchHandler.cs" />
     <Compile Include="Guidance\RcsPID.cs" />

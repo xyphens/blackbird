@@ -2,7 +2,6 @@
 using Blackbird.Models;
 using Blackbird.Modules;
 using System;
-using static VesselRanges;
 
 namespace Blackbird.Guidance
 {
@@ -46,7 +45,7 @@ namespace Blackbird.Guidance
         public string MinAltitudeForPitch
         {
             get { return _minAltToPitch.ToString(); }
-            set { if (double.TryParse(value, out double v)) _minAltToPitch = v; }
+            set { if (double.TryParse(value, out double v)) _minAltToPitch = Math.Round(v, 0); }
         }
 
         // read inputs from Blackbird?
@@ -154,27 +153,27 @@ namespace Blackbird.Guidance
             }
 
             // handle guidance
-            if (State == LaunchGuidanceState.GuidingAscent)
-            {
-                GuidanceInfo =
-                    _ascentGuidance.GetGuidance(
-                        vessel,
-                        bbState.LaunchPlan,
-                        ManualPitchCommandDeg,
-                        ManualHeadingCommandDeg,
-                        ManualThrottleCommand,
-                        ManualRollCommand,
-                        GuidanceMode);
+            //if (State == LaunchGuidanceState.GuidingAscent)
+            //{
+            //    GuidanceInfo =
+            //        _ascentGuidance.GetGuidance(
+            //            vessel,
+            //            bbState.LaunchPlan,
+            //            ManualPitchCommandDeg,
+            //            ManualHeadingCommandDeg,
+            //            ManualThrottleCommand,
+            //            ManualRollCommand,
+            //            GuidanceMode);
 
-                if (GuidanceInfo != null && GuidanceInfo.IsGuidanceComplete)
-                {
-                    State = LaunchGuidanceState.Complete;
-                    bbState.GuidanceState = LaunchGuidanceState.Complete;
-                    bbState.GuidanceVisible = false;
-                    bbState.ActiveModule = BlackbirdModule.None;
-                }
-                return;
-            }
+            //    if (GuidanceInfo != null && GuidanceInfo.IsGuidanceComplete)
+            //    {
+            //        State = LaunchGuidanceState.Complete;
+            //        bbState.GuidanceState = LaunchGuidanceState.Complete;
+            //        bbState.GuidanceVisible = false;
+            //        bbState.ActiveModule = BlackbirdModule.None;
+            //    }
+            //    return;
+            //}
 
             if (State != LaunchGuidanceState.WarpingToLaunch) return;
 
@@ -194,6 +193,7 @@ namespace Blackbird.Guidance
 
             SetSafeWarpRate(secondsRemaining, bbState.IsRSS);
         }
+
         public void SetGuidanceMode(GuidanceMode gMode, Vessel vessel = null)
         {
             if (GuidanceMode == gMode) return;
@@ -324,28 +324,49 @@ namespace Blackbird.Guidance
         public void IncreaseManualPitchCommand() => ManualPitchCommandDeg += 1.0;
         public void DecreaseManualPitchCommand() => ManualPitchCommandDeg -= 1.0;
         public void ResetPitchCommand() => ManualPitchCommandDeg = GuidanceInfo != null ? ClampAutopilotPitchCommand(GuidanceInfo.CurrentPitchDeg) : 90.0;
-        public void SetPitchCommand(double pitch) => ManualPitchCommandDeg = Math.Min(Math.Max(pitch, -90), 90);
+        public void SetPitchCommand(double pitch) => ManualPitchCommandDeg = MathHelpers.Clamp(pitch, -90.0, 90.0);
 
         // heading command
         public void IncreaseManualHeadingCommand() => ManualHeadingCommandDeg += 1.0;
         public void DecreaseManualHeadingCommand() => ManualHeadingCommandDeg -= 1.0;
         public void ResetHeadingCommand() => ManualHeadingCommandDeg = GuidanceInfo != null ? MathHelpers.NormalizeDegrees(GuidanceInfo.CurrentHeadingDeg) : 90.0;
-        public void SetHeadingCommand(double heading) => ManualHeadingCommandDeg = Math.Min(Math.Max(heading, -180), 180);
+        public void SetHeadingCommand(double heading) => ManualHeadingCommandDeg = MathHelpers.Clamp(heading, -180.0, 180.0);
 
         // roll command
         public void IncreaseManualRollCommand() => ManualRollCommand += 1.0;
         public void DecreaseManualRollCommand() => ManualRollCommand -= 1.0;
         public void ResetRollCommand() => ManualRollCommand = 0;
-        public void SetRollCommand(double roll) => ManualRollCommand = Math.Min(Math.Max(roll, -180), 180);
+        public void SetRollCommand(double roll) => ManualRollCommand = MathHelpers.Clamp(roll, -180.0, 180.0);
 
         // throttle command
         public void IncreaseManualThrottleCommand() => ManualThrottleCommand += 0.10;
         public void DecreaseManualThrottleCommand() => ManualThrottleCommand -= 0.10;
         public void ResetThrottleCommand() => ManualThrottleCommand = GuidanceInfo != null ? GuidanceInfo.CommandThrottle : 0.0;
-        public void SetThrottleCommand(double throttle) => ManualThrottleCommand = Math.Min(1, Math.Max(0, throttle / 100));
+        public void SetThrottleCommand(double throttle) => ManualThrottleCommand = MathHelpers.Clamp(throttle / 100, 0, 1);
         public void ApplyFlightControls(FlightCtrlState state, Vessel vessel)
         {
             if (state == null) return;
+
+            if (State == LaunchGuidanceState.GuidingAscent)
+            {
+                GuidanceInfo =
+                    _ascentGuidance.GetGuidance(
+                        vessel,
+                        bbState.LaunchPlan,
+                        ManualPitchCommandDeg,
+                        ManualHeadingCommandDeg,
+                        ManualThrottleCommand,
+                        ManualRollCommand,
+                        GuidanceMode);
+
+                if (GuidanceInfo != null && GuidanceInfo.IsGuidanceComplete)
+                {
+                    State = LaunchGuidanceState.Complete;
+                    bbState.GuidanceState = LaunchGuidanceState.Complete;
+                    bbState.GuidanceVisible = false;
+                    bbState.ActiveModule = BlackbirdModule.None;
+                }
+            }
 
             if (State == LaunchGuidanceState.Complete)
             {

@@ -71,14 +71,14 @@ namespace Blackbird.Modules
 
                 GUILayout.BeginHorizontal();
                 _launchHandler.MinVSpeedToPitch = GUILayout.TextField(_launchHandler.MinVSpeedToPitch, GUILayout.Width(50));
-                GUILayout.Label("m/s", GUILayout.Width(10));
+                GUILayout.Label("m/s", GUILayout.Width(50));
                 GUILayout.EndHorizontal();
 
                 GUILayout.Space(6);
 
                 GUILayout.BeginHorizontal();
                 _launchHandler.MinAltitudeForPitch = GUILayout.TextField(_launchHandler.MinAltitudeForPitch, GUILayout.Width(50));
-                GUILayout.Label("m", GUILayout.Width(10));
+                GUILayout.Label("m", GUILayout.Width(50));
                 GUILayout.EndHorizontal();
 
                 bool armed = _launchHandler.State == LaunchGuidanceState.AwaitingLaunch

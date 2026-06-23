@@ -54,30 +54,34 @@ namespace Blackbird.Guidance
             AdvancePhase(vesselState, targetAp, targetInc);
 
             //double peRemaining = targetPe - vesselState.CurrentPeriapsisAlt;
+            double throttle = 0.0;
 
             switch (_phase)
             {
                 case Phase.Coast:
                     // Re-ignite if atmosphere drag has pulled Ap below target.
-                    // Pre-orient to horizontal prograde so the circularize burn starts already aligned
-                    // (no slew at the critical apoapsis-crossing moment).
-                    double coastThrottle = 0.0;
-                    if (MathHelpers.IsFinite(vesselState.CurrentApoapsisAlt) && vesselState.CurrentApoapsisAlt < targetAp)
-                        coastThrottle = ThrottleToRaiseApoapsis(vesselState, targetAp);
+                    if (MathHelpers.IsFinite(vesselState.CurrentApoapsisAlt) 
+                        && vesselState.CurrentApoapsisAlt < targetAp) throttle = ThrottleToRaiseApoapsis(vesselState, targetAp);
+
                     return Build(
                         PoweredGuidancePhase.Coast,
                         "Classic: coasting to apoapsis",
-                        0.0, 0.0, coastThrottle,
+                        0.0, 0.0, throttle,
                         true, HorizontalPrograde(vesselState), false);
 
                 case Phase.Circularize:
-                    // Execute the planned node: hold attitude along its world-frame dV vector at full
-                    // throttle. AdvancePhase cuts us off once the dV delivered along this vector reaches
-                    // the planned magnitude.
+                    double planned = _dvToCircularize.magnitude;
+                    double delivered = planned > 1e-9 ? Vector3d.Dot(vesselState.OrbitalVelocity - _burnStartVelocity, _dvToCircularize / planned) : planned;
+                    double remaining = planned - delivered;
+                    // throttle down to deliver exact remainder of this step if burn finished mid-frame
+                    double accel = vesselState.TotalMass > 0.0 ? vesselState.AvailableThrust / vesselState.TotalMass : 0.0;
+                    double dvThisFrame = accel * TimeWarp.fixedDeltaTime;
+
+                    throttle = (dvThisFrame > 1e-6 && remaining < dvThisFrame) ? MathHelpers.Clamp(remaining / dvThisFrame, 0.0, 1.0) : 1.0;
                     return Build(
                         PoweredGuidancePhase.Circularize,
                         "Classic: circularizing",
-                        0.0, 0.0, 1.0,
+                        0.0, 0.0, throttle,
                         true, _dvToCircularize, false);
 
                 case Phase.Complete:
@@ -89,7 +93,7 @@ namespace Blackbird.Guidance
 
                 default: // FollowProfile
                 {
-                    double throttle = ThrottleToRaiseApoapsis(vesselState, targetAp);
+                    throttle = ThrottleToRaiseApoapsis(vesselState, targetAp);
                     bool isVertical = profilePitchDeg >= 80.0;
                     return Build(
                         isVertical ? PoweredGuidancePhase.VerticalAscent : PoweredGuidancePhase.PitchProgram,

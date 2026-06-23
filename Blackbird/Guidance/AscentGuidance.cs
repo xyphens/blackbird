@@ -9,7 +9,7 @@ namespace Blackbird.Guidance
     public sealed class AscentGuidance
     {
         private readonly PoweredAscentGuidance _poweredGuidance = new PoweredAscentGuidance();
-        private readonly ClassicAscentGuidance _classicGuidance = new ClassicAscentGuidance();
+        private readonly ClassicAscentGuidance2 _classicGuidance = new ClassicAscentGuidance2();
 
         private bool IsRSS = false;
         private double _holdPitchUntilAlt = 0.0;
@@ -47,15 +47,20 @@ namespace Blackbird.Guidance
             double profilePitch = GetProfilePitchDeg(vesselState, ascentProfile);
             double profileHeading = GetProfileHeadingDeg(vessel, plan, vesselState, ascentProfile);
             double profileThrottle = GetProfileThrottle(vesselState, ascentProfile);
-            
+
+            // fixme: stop burning rcs across the coast phase
+            PoweredGuidanceCommand poweredCommand = !IsRSS
+                                    ? _classicGuidance.GetCommand(vesselState, ascentProfile, profilePitch, profileHeading, plan.TargetOrbitNormal)
+                                    : _poweredGuidance.GetCommand(vesselState, plan, ascentProfile, profilePitch, profileHeading, profileThrottle);
+
             // NaN when no target orbit yet (pre-launch / no target) — classic guidance skips the
             // inclination term for a non-finite inclination rather than dereferencing a null TargetOrbit.
             double targetInclinationDeg = plan.TargetOrbit != null ? plan.TargetOrbit.InclinationDeg : double.NaN;
             // fixme: update this logic to stop burning rcs across the coast phase and instead only do it at a set time before prograde burn
 
-            PoweredGuidanceCommand poweredCommand = !IsRSS
-                ? _classicGuidance.GetCommand(vesselState, ascentProfile, profilePitch, profileHeading, targetInclinationDeg)
-                : _poweredGuidance.GetCommand(vesselState, plan, ascentProfile, profilePitch, profileHeading, profileThrottle); // fixme: does our guidance method prevent launching into a target inclination?
+            //PoweredGuidanceCommand poweredCommand = !IsRSS
+            //    ? _classicGuidance.GetCommand(vesselState, ascentProfile, profilePitch, profileHeading, targetInclinationDeg)
+            //    : _poweredGuidance.GetCommand(vesselState, plan, ascentProfile, profilePitch, profileHeading, profileThrottle);
             string guidancePhase = poweredCommand != null ? poweredCommand.Status : "Unavailable";
 
             double currentHeading = GetCurrentHeadingDeg(vessel);
