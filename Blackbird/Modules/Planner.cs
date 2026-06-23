@@ -47,10 +47,11 @@ namespace Blackbird.Modules
             {
                 GUILayout.Label($"Target: {targetVessel.vesselName}");
 
-                // Generate candidates if we don't have a plan yet, then ALWAYS draw the table. Branching on
-                // LaunchPlan==null instead would draw a different control count on the layout vs repaint pass
-                // (GeneratePlan creates the plan mid-draw, and Reset Plan nulls it mid-draw) — the IMGUI
-                // "control N in a group with only N controls" exception.
+                GUILayout.Label($"Apoapsis: {FormatKm(bbState.LaunchPlan.TargetVessel.orbit.ApA)}km", GUILayout.Width(100));
+                GUILayout.Label($"Periapsis: {FormatKm(bbState.LaunchPlan.TargetVessel.orbit.PeA)}km", GUILayout.Width(100));
+                GUILayout.Label($"Orbital Inc.: {bbState.LaunchPlan.TargetVessel.orbit.inclination}°", GUILayout.Width(100));
+                GUILayout.Label(string.IsNullOrEmpty(_launchTimeText) ? "--" : _launchTimeText);
+
                 if (bbState.LaunchPlan == null) GeneratePlan(vessel, targetVessel);
                 DisplayLaunchPlanCandidates();
             }

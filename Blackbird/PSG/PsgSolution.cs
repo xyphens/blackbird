@@ -116,14 +116,14 @@ namespace Blackbird.Psg
             };
         }
 
-        public bool TerminalGuidanceSatisfied(Vector3d relativePosition, Vector3d relativeVelocity)
+        public bool TerminalGuidanceSatisfied(Vector3d relativePosition, Vector3d relativeVelocity, double gravParameter)
         {
             if (!IsValid || TerminalAngularMomentum <= 0.0) return false;
 
-            return TerminalGuidanceSatisfied(relativePosition, relativeVelocity, FinalUniversalTime);
+            return TerminalGuidanceSatisfied(relativePosition, relativeVelocity, gravParameter, FinalUniversalTime);
         }
 
-        public bool TerminalGuidanceSatisfied(Vector3d relativePosition, Vector3d relativeVelocity, double universalTime)
+        public bool TerminalGuidanceSatisfied(Vector3d relativePosition, Vector3d relativeVelocity, double gravParameter, double universalTime)
         {
             if (!IsValid || TerminalAngularMomentum <= 0.0) return false;
 
@@ -134,7 +134,13 @@ namespace Blackbird.Psg
             if (targetAngularMomentum <= 0.0) targetAngularMomentum = TerminalAngularMomentum;
 
             double currentAngularMomentum = Vector3d.Cross(relativePosition, relativeVelocity).magnitude;
-            return currentAngularMomentum > targetAngularMomentum;
+
+            double radius = relativePosition.magnitude;
+            if (radius <= 0.0) return false;
+            double currentEnergy = 0.5 * relativeVelocity.sqrMagnitude - gravParameter / radius;
+            bool energyReady = !MathHelpers.IsFinite(TerminalSpecificEnergy) || currentEnergy >= TerminalSpecificEnergy;
+
+            return currentAngularMomentum > targetAngularMomentum && energyReady;
         }
 
         public PsgSolutionPoint TerminalState()

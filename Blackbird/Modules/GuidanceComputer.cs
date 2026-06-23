@@ -401,7 +401,8 @@ namespace Blackbird.Modules
                 _launchHandler.State == LaunchGuidanceState.AwaitingLaunch ||
                 _launchHandler.State == LaunchGuidanceState.GuidingAscent)
             {
-                return Math.Max(0.0, _launchHandler.SecondsUntilLaunch);
+                // note: not flooring this at zero so i can see if we overshot plan
+                return _launchHandler.SecondsUntilLaunch;
             }
 
             // PlanAccepted: _targetUt not set yet — compute live from the selected candidate's LaunchUt.

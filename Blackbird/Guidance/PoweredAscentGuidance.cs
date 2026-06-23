@@ -155,6 +155,8 @@ namespace Blackbird.Guidance
                     double psgHeading;
                     GetPitchHeadingFromInertial(vesselState, guidance.InertialDirection, out psgPitch, out psgHeading);
 
+                    double commandedThrottle = _solution.TimeToGo(vesselState.UniversalTime) <= 0.0 ? 1.0 : guidance.Throttle;
+
                     _phase = PoweredGuidancePhase.PoweredGuidance;
                     string guidanceStatus = isExpired ? "PSG guidance overrun" :
                         IsSolutionStale(vesselState.UniversalTime) ? "PSG guidance stale" : "PSG guidance";
@@ -163,7 +165,7 @@ namespace Blackbird.Guidance
                         guidanceStatus,
                         ClampPitchForControl(psgPitch),
                         psgHeading,
-                        guidance.Throttle,
+                        commandedThrottle, // was guidance.Throttle
                         apError,
                         peError,
                         timeToGo,
@@ -298,10 +300,10 @@ namespace Blackbird.Guidance
             if (_solution == null || !_solution.IsValid) return false;
             if (IsSolutionExpired(vesselState.UniversalTime)) return false;
 
-            if (vesselState.UniversalTime >= _solution.FinalUniversalTime) return true;
+            // if (vesselState.UniversalTime >= _solution.FinalUniversalTime) return true;
 
             Vector3d relativePosition = vesselState.Position - vesselState.Body.position;
-            return _solution.TerminalGuidanceSatisfied(relativePosition, vesselState.OrbitalVelocity);
+            return _solution.TerminalGuidanceSatisfied(relativePosition, vesselState.OrbitalVelocity, vesselState.BodyGravParameter);
         }
 
         private Vector3d GetCurrentThrustDirection(VesselState vesselState, double profileHeadingDeg, double profilePitchDeg)
