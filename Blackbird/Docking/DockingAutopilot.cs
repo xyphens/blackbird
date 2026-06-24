@@ -50,7 +50,7 @@ namespace Blackbird.Docking
         private VesselState vs;
         private readonly RcsController rcs;
         private readonly AttitudeControl attitude;
-        private readonly BlackbirdLog log = new BlackbirdLog(LogContext.Docking);
+        private readonly BlackbirdLog bbLogger = new BlackbirdLog(LogContext.Docking);
 
         // The RCS translation engine and attitude controller are SHARED with the owning DockingHandler, so
         // its manual fine-tuning controls and this guidance drive the same actuators.
@@ -154,7 +154,7 @@ namespace Blackbird.Docking
             }
             catch (Exception ex)
             {
-                log.Write("docking-init", "bounding-box / acquire-range read failed: " + ex.Message);
+                bbLogger.Write("docking-init", "bounding-box / acquire-range read failed: " + ex.Message);
             }
 
             Step = DockingSchedule.PickEntryStep(Geom(), Config());

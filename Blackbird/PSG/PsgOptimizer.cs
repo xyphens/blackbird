@@ -174,6 +174,11 @@ namespace Blackbird.Psg
             private readonly bool _fixedBurnTime;
             private readonly ObjectiveType _objective;
 
+            // j2
+            private readonly double _j2;
+            private readonly double _reScaledSq;
+            private readonly Vector3d _pole;
+
             public int VariableCount { get; private set; }
             public int ConstraintCount { get; private set; }
 
@@ -186,6 +191,10 @@ namespace Blackbird.Psg
                 _problem = problem;
                 _warmStart = warmStart;
                 _scale = PsgScale.FromProblem(problem);
+                _j2 = problem.J2;
+                double reScaled = problem.ReferenceRadiusMeters / _scale.Length;
+                _reScaledSq = reScaled * reScaled;
+                _pole = problem.BodyAngularVelocityRadiansPerSecond.sqrMagnitude > 0.0 ? problem.BodyAngularVelocityRadiansPerSecond.normalized : Vector3d.zero;
                 _layouts = CreateLayouts(problem.Phases);
                 VariableCount = _layouts.Length == 0 ? 0 : _layouts[_layouts.Length - 1].EndVariableIndex;
                 _fixedBurnTime = IsFixedBurnTime(problem.Phases);
@@ -193,6 +202,15 @@ namespace Blackbird.Psg
                 _terminal = forceFlightPathAngleTerminal ? terminal.GetFlightPathAngleTerminal() : terminal;
                 _objective = objective;
                 ConstraintCount = CountConstraints(problem.Phases, _terminal);
+            }
+
+            private Vector3d J2AccelScaled(Vector3d r, double rMag)
+            {
+                if (_j2 == 0.0 || _pole.sqrMagnitude <= 0.0) return Vector3d.zero;
+                double z = Vector3d.Dot(r, _pole);
+                double r2 = rMag * rMag;
+                double coeff = -1.5 * _j2 * _reScaledSq / (r2 * r2 * rMag); // 1/r^5
+                return coeff * ((1.0 - 5.0 * (z * z) / r2) * r + (2.0 * z) * _pole);
             }
 
             public double[] CreateInitialGuess()
@@ -209,7 +227,7 @@ namespace Blackbird.Psg
                 }
 
                 Vector3d r0 = _problem.InitialRelativePositionMeters / _scale.Length;
-                Vector3d v0 = _problem.InitialRelativeVelocityMetersPerSecond / _scale.Velocity;
+                Vector3d v0 = _problem.CurrentRelativeVelocityMetersPerSecond / _scale.Velocity;
                 Vector3d u0 = _problem.InitialThrustDirection.sqrMagnitude > 0.0
                     ? _problem.InitialThrustDirection.normalized
                     : v0.normalized;
@@ -243,7 +261,7 @@ namespace Blackbird.Psg
 
                 double totalTime = Math.Max(1e-6, TotalInitialDuration());
                 double elapsed = 0.0;
-                double massStart = _problem.InitialMassKg / _scale.Mass;
+                double massStart = _problem.CurrentMassKg / _scale.Mass;
 
                 for (int p = 0; p < _layouts.Length; p++)
                 {
@@ -412,7 +430,7 @@ namespace Blackbird.Psg
             {
                 var points = new List<PsgSolutionPoint>();
                 var segments = new List<PsgSolutionSegment>();
-                double universalTime = _problem.InitialUniversalTime;
+                double universalTime = _problem.CurrentUniversalTime;
                 bool[] preciseShutdown;
                 bool[] terminalStage;
                 AnalyzeStages(x, out preciseShutdown, out terminalStage);
@@ -466,9 +484,9 @@ namespace Blackbird.Psg
                 {
                     IsValid = true,
                     Status = "PSG solution",
-                    CreatedUniversalTime = _problem.InitialUniversalTime,
-                    StartUniversalTime = _problem.InitialUniversalTime,
-                    FinalUniversalTime = points.Count > 0 ? points[points.Count - 1].UniversalTime : _problem.InitialUniversalTime,
+                    CreatedUniversalTime = _problem.CurrentUniversalTime,
+                    StartUniversalTime = _problem.CurrentUniversalTime,
+                    FinalUniversalTime = points.Count > 0 ? points[points.Count - 1].UniversalTime : _problem.CurrentUniversalTime,
                     TerminalAngularMomentum = _terminal.TargetAngularMomentum * _scale.Length * _scale.Velocity,
                     TerminalSpecificEnergy = _terminal.TargetSpecificEnergy * _scale.Velocity * _scale.Velocity,
                     Iterations = report.iterationscount,
@@ -483,7 +501,7 @@ namespace Blackbird.Psg
             {
                 if (_warmStart == null || _warmStart.Points == null || _warmStart.Points.Length == 0) return false;
 
-                double universalTime = _problem.InitialUniversalTime;
+                double universalTime = _problem.CurrentUniversalTime;
                 for (int p = 0; p < _layouts.Length; p++)
                 {
                     PhaseLayout layout = _layouts[p];
@@ -491,7 +509,7 @@ namespace Blackbird.Psg
                     double duration = ClampDuration(p, GetInitialPhaseDuration(phase));
                     if (_warmStart.Segments != null && p < _warmStart.Segments.Length)
                     {
-                        if (_problem.InitialUniversalTime >= _warmStart.Segments[p].EndUniversalTime)
+                        if (_problem.CurrentUniversalTime >= _warmStart.Segments[p].EndUniversalTime)
                             return false;
                         duration = Math.Max(0.05, _warmStart.Segments[p].EndUniversalTime - _warmStart.Segments[p].StartUniversalTime);
                     }
@@ -524,8 +542,8 @@ namespace Blackbird.Psg
                 if (_layouts.Length == 0) return false;
 
                 Vector3d r = _problem.InitialRelativePositionMeters / _scale.Length;
-                Vector3d v = _problem.InitialRelativeVelocityMetersPerSecond / _scale.Velocity;
-                double mass = _problem.InitialMassKg / _scale.Mass;
+                Vector3d v = _problem.CurrentRelativeVelocityMetersPerSecond / _scale.Velocity;
+                double mass = _problem.CurrentMassKg / _scale.Mass;
                 Vector3d u = GuessInitialGuidanceDirection(r, v);
 
                 if (r.sqrMagnitude <= 0.0 || u.sqrMagnitude <= 0.0 || mass <= 0.0) return false;
@@ -697,6 +715,7 @@ namespace Blackbird.Psg
             {
                 double rMag = Math.Max(1e-9, r.magnitude);
                 Vector3d gravity = -r / (rMag * rMag * rMag);
+                gravity += J2AccelScaled(r, rMag);
                 if (phase.IsCoast) return gravity;
 
                 return gravity + PhaseThrust(phase, rMag) / Math.Max(1e-6, mass) * u;
@@ -871,6 +890,7 @@ namespace Blackbird.Psg
                 Vector3d r = GetVector(x, layout.RIndex(knot));
                 double rMag = Math.Max(1e-9, r.magnitude);
                 Vector3d gravity = -r / (rMag * rMag * rMag);
+                gravity += J2AccelScaled(r, rMag);
 
                 if (phase.IsCoast) return gravity;
 
@@ -971,7 +991,7 @@ namespace Blackbird.Psg
 
                 PhaseLayout first = _layouts[0];
                 SetVector(bounds, first.RIndex(0), _problem.InitialRelativePositionMeters / _scale.Length);
-                SetVector(bounds, first.VIndex(0), _problem.InitialRelativeVelocityMetersPerSecond / _scale.Velocity);
+                SetVector(bounds, first.VIndex(0), _problem.CurrentRelativeVelocityMetersPerSecond / _scale.Velocity);
 
                 if (_problem.InitialThrustDirection.sqrMagnitude > 0.0
                     && _problem.Phases.Length > 0

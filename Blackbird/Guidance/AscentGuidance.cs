@@ -87,9 +87,10 @@ namespace Blackbird.Guidance
                     commandPitch = 90.0;
                 } else
                 {
+                    // note: replaced ClampPitchForAutopilot/ClampPitchForControl with MathHelpers.Clamp
                     commandPitch = poweredCommand != null
-                                ? ClampPitchForAutopilot(poweredCommand.PitchDeg)
-                                : ClampPitchForAutopilot(profilePitch);
+                                ? MathHelpers.Clamp(poweredCommand.PitchDeg, -30.0, 90.0)
+                                : MathHelpers.Clamp(profilePitch, -30.0, 90.0);
                 }
 
                 commandThrottle = poweredCommand != null ? poweredCommand.Throttle : profileThrottle;
@@ -209,12 +210,6 @@ namespace Blackbird.Guidance
             return double.IsNaN(plan.LaunchAzimuthDeg)
                 ? GetFallbackLaunchHeading(vessel, plan)
                 : plan.LaunchAzimuthDeg;
-        }
-
-        // Keeps autopilot pitch commands within the range the attitude controller can sensibly track.
-        private static double ClampPitchForAutopilot(double pitchDeg)
-        {
-            return Math.Max(-30.0, Math.Min(90.0, pitchDeg));
         }
 
         // Computes vessel pitch relative to the local horizon.

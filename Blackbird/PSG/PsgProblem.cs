@@ -10,14 +10,17 @@ namespace Blackbird.Psg
         public string ReasonUnavailable { get; private set; }
 
         public Vector3d InitialRelativePositionMeters { get; private set; }
-        public Vector3d InitialRelativeVelocityMetersPerSecond { get; private set; }
         public Vector3d InitialThrustDirection { get; private set; }
-        public double InitialMassKg { get; private set; }
-        public double InitialUniversalTime { get; private set; }
-        public double InitialAltitudeMeters { get; private set; }
-        public double InitialVerticalSpeedMetersPerSecond { get; private set; }
-        public double InitialApoapsisAltMeters { get; private set; }
-        public double InitialPeriapsisAltMeters { get; private set; }
+        public Vector3d CurrentRelativeVelocityMetersPerSecond { get; private set; }
+        public double CurrentMassKg { get; private set; }
+        public double CurrentUniversalTime { get; private set; }
+        public double CurrentAltitudeMeters { get; private set; }
+        public double CurrentVerticalSpeedMetersPerSecond { get; private set; }
+        public double CurrentApoapsisAltMeters { get; private set; }
+        public double CurrentPeriapsisAltMeters { get; private set; }
+        // J2
+        public double J2 { get; private set; }
+        public double ReferenceRadiusMeters { get; private set; }
 
         public double BodyGravParameter { get; private set; }
         public double BodyRadiusMeters { get; private set; }
@@ -68,16 +71,16 @@ namespace Blackbird.Psg
                 IsValid = true,
                 ReasonUnavailable = string.Empty,
                 InitialRelativePositionMeters = initialState.RelativePositionMeters,
-                InitialRelativeVelocityMetersPerSecond = initialState.RelativeVelocityMetersPerSecond,
+                CurrentRelativeVelocityMetersPerSecond = initialState.RelativeVelocityMetersPerSecond,
                 InitialThrustDirection = thrustDirection,
-                InitialMassKg = initialState.MassKg,
-                InitialUniversalTime = initialState.UniversalTime,
-                InitialAltitudeMeters = initialState.RelativePositionMeters.magnitude - bodyModel.RadiusMeters,
-                InitialVerticalSpeedMetersPerSecond = GetRadialVelocity(
+                CurrentMassKg = initialState.MassKg,
+                CurrentUniversalTime = initialState.UniversalTime,
+                CurrentAltitudeMeters = initialState.RelativePositionMeters.magnitude - bodyModel.RadiusMeters,
+                CurrentVerticalSpeedMetersPerSecond = GetRadialVelocity(
                     initialState.RelativePositionMeters,
                     initialState.RelativeVelocityMetersPerSecond),
-                InitialApoapsisAltMeters = double.NaN,
-                InitialPeriapsisAltMeters = double.NaN,
+                CurrentApoapsisAltMeters = double.NaN,
+                CurrentPeriapsisAltMeters = double.NaN,
                 BodyGravParameter = bodyModel.GravParameter,
                 BodyRadiusMeters = bodyModel.RadiusMeters,
                 BodyAngularVelocityRadiansPerSecond = bodyModel.AngularVelocityRadiansPerSecond,
@@ -130,19 +133,23 @@ namespace Blackbird.Psg
                 return CreateInvalid("Initial state vectors are unavailable.");
             }
 
+            BodyOblateness.Oblateness ob = BodyOblateness.For(vesselState.Body);
+
             return new PsgProblem
             {
                 IsValid = true,
                 ReasonUnavailable = string.Empty,
                 InitialRelativePositionMeters = relativePosition,
-                InitialRelativeVelocityMetersPerSecond = vesselState.OrbitalVelocity,
+                CurrentRelativeVelocityMetersPerSecond = vesselState.OrbitalVelocity,
                 InitialThrustDirection = thrustDirection,
-                InitialMassKg = vesselState.TotalMass * 1000.0,
-                InitialUniversalTime = vesselState.UniversalTime,
-                InitialAltitudeMeters = vesselState.AltitudeMeters,
-                InitialVerticalSpeedMetersPerSecond = vesselState.VerticalSpeed,
-                InitialApoapsisAltMeters = vesselState.CurrentApoapsisAlt,
-                InitialPeriapsisAltMeters = vesselState.CurrentPeriapsisAlt,
+                CurrentMassKg = vesselState.TotalMass * 1000.0,
+                CurrentUniversalTime = vesselState.UniversalTime,
+                CurrentAltitudeMeters = vesselState.AltitudeMeters,
+                CurrentVerticalSpeedMetersPerSecond = vesselState.VerticalSpeed,
+                CurrentApoapsisAltMeters = vesselState.CurrentApoapsisAlt,
+                CurrentPeriapsisAltMeters = vesselState.CurrentPeriapsisAlt,
+                J2=ob.J2,
+                ReferenceRadiusMeters = ob.ReferenceRadiusMeters,
                 BodyGravParameter = vesselState.BodyGravParameter,
                 BodyRadiusMeters = vesselState.BodyRadius,
                 BodyAngularVelocityRadiansPerSecond = GetBodyAngularVelocity(vesselState),

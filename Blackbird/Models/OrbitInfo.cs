@@ -13,6 +13,8 @@ namespace Blackbird.Models
 
         public double ApoapsisAlt { get; set; }
         public double PeriapsisAlt { get; set; }
+        public double TrueApoapsis { get; set; }
+        public double TruePeriapsis { get; set; }
 
         public double SemiMajorAxis { get; set; }
         public double PeriodSeconds { get; set; }

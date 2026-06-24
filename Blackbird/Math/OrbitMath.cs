@@ -2,6 +2,7 @@
 using Blackbird.Trajectory;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using static SpaceObjectCollider;
 using static Vect;
@@ -100,9 +101,7 @@ namespace Blackbird.Mathematics
             return Math.Sqrt(body.gravParameter / radius);
         }
 
-        // Orbital speed at apoapsis for the closed orbit defined by these apsis altitudes
-        // (vis-viva). Reduces to circular velocity when apoapsisAlt == periapsisAlt. Returns
-        // NaN for non-closed (parabolic/hyperbolic) inputs, i.e. a <= 0.
+        // todo: not used
         public static double GetApoapsisVelocity(CelestialBody body, double apoapsisAlt, double periapsisAlt)
         {
             if (body == null) return double.NaN;
@@ -116,7 +115,7 @@ namespace Blackbird.Mathematics
             return v2 > 0.0 ? Math.Sqrt(v2) : double.NaN;
         }
 
-        // Computes semi-major axis from apoapsis/periapsis altitudes around a body.
+        
         public static double GetSemiMajorAxis(CelestialBody body, double apoapsisAlt, double periapsisAlt)
         {
             if (body == null) return double.NaN;
@@ -130,6 +129,7 @@ namespace Blackbird.Mathematics
         }
 
         // Computes Keplerian orbital period from apoapsis/periapsis altitudes.
+        // todo: not used
         public static double GetOrbitalPeriod(CelestialBody body, double apoapsisAlt, double periapsisAlt)
         {
             if (body == null || body.gravParameter <= 0.0) return double.NaN;
@@ -602,10 +602,7 @@ namespace Blackbird.Mathematics
             return DeltaVForHohmannTransferCandidates(ut, r1, v1, r2, v2, mu, maxCount, coplanar);
         }
 
-        // Multi-start sweep shared by the single-pick and candidate-list Hohmann methods. Marches the departure
-        // guess forward by 0.1 synodic and optimizes from each start; returns every FEASIBLE future-departure
-        // window (dt1 > 0) as world-frame ΔV at ABSOLUTE UTs, in generation (≈ departure-time) order. Selection
-        // is the caller's job. coplanar must be false offline (QuaternionD is a Unity-native call that CTDs).
+
         private static List<(Vector3d dv1, double ut1, Vector3d dv2, double ut2, double total)> CollectHohmannWindows(
             double ut, Vector3d _r1, Vector3d _v1, Vector3d _r2, Vector3d _v2, double mu, bool coplanar)
         {
@@ -778,6 +775,60 @@ namespace Blackbird.Mathematics
             }
 
             return result;
+        }
+
+        public static (double ap, double pe) GetTrueOrbit(Vessel vessel)
+        {
+            if (vessel == null || vessel.mainBody == null) return (double.NaN, double.NaN);
+            CelestialBody body = vessel.mainBody;
+            //CelestialBody disturbingBody = FlightGlobals.Bodies.FirstOrDefault(b => b.name == "Moon");
+            
+            double mu = vessel.mainBody.gravParameter;
+            double bodyRadius = body.Radius;
+
+            // position relative to planet's center
+            Vector3d r = vessel.GetWorldPos3D() - body.position;
+            double r_mag = r.magnitude;
+
+            // velocity vector relative to planet's center
+            //Vector3d v = vessel.obt_velocity;
+            Vector3d v = vessel.velocityD + (vessel.GetTotalMass() > 0 ? vessel.perturbation : Vector3d.zero);
+            double v_mag = v.magnitude;
+
+            // orbital energy
+            double specificEnergy = (v_mag * v_mag / 2.0) - (mu / r_mag);
+
+            // sma
+            double semiMajorAxis = -mu / (2.0 * specificEnergy);
+
+            // angular momentum
+            Vector3d h = Vector3d.Cross(r, v);
+
+            // eccentricity vector
+            Vector3d vCrossH = Vector3d.Cross(v, h);
+            Vector3d e_vector = (vCrossH / mu) - (r / r_mag);
+            double eccentricity = e_vector.magnitude;
+
+            double apRadius = 0.0;
+            double peRadius = 0.0;
+
+            if (eccentricity < 1.0)
+            {
+                // elliptical or circular orbit
+                peRadius = semiMajorAxis * (1.0 - eccentricity);
+                apRadius = semiMajorAxis * (1.0 + eccentricity);
+            } else
+            {
+                // hyperbolic or parabolic escape trajectory
+                peRadius = semiMajorAxis * (1.0 - eccentricity);
+                apRadius = double.PositiveInfinity;
+            }
+
+            // convert from absolute CoM to altitudes
+            double currentApA = apRadius - bodyRadius;
+            double currentPeA = peRadius - bodyRadius;
+
+            return (currentApA, currentPeA);
         }
     }
 }

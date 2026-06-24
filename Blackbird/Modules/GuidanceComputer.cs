@@ -37,6 +37,7 @@ namespace Blackbird.Modules
             {
                 _windowRect.height = 0f;
                 _wasVisible = true;
+                _showAdvancedDetails = false;
             }
 
             if (bbState == null || !bbState.GuidanceVisible) return;
@@ -132,7 +133,7 @@ namespace Blackbird.Modules
             GUILayout.Label($"Time to Apoapsis: {BlackbirdHelpers.FormatDuration(orbit.timeToAp)}");
             GUILayout.Label($"Time to Periapsis: {BlackbirdHelpers.FormatDuration(orbit.timeToPe)}");
             GUILayout.Label($"Orbital period: {BlackbirdHelpers.FormatDuration(orbit.period)}");
-            GUILayout.Label($"Orbital velocity: {orbit.orbitalSpeed:F1} m/s");
+            GUILayout.Label($"Orbital velocity: {orbit.orbitalSpeed:F1} m/s"); // fixme: bugged/doesn't during ascent
             GUILayout.Label($"Semi-major axis: {orbit.semiMajorAxis / 1000.0:F1} km");
             GUILayout.Label($"Eccentricity: {orbit.eccentricity:F4}");
 
@@ -265,12 +266,12 @@ namespace Blackbird.Modules
                 GUILayout.Label($"Rmg. dV: {FormatNum(guidanceInfo.VesselRemainingDeltaV, "F0", "m/s")}");
                 GUILayout.Label($"Phase Error: {FormatNum(guidanceInfo.PhaseErrorDeg, "F2", "°")}");
                 GUILayout.Label($"Plane Error: {FormatNum(guidanceInfo.PlaneErrorDeg, "F2", "°")}");
+            }
 
-                _showAdvancedDetails = GUILayout.Toggle(_showAdvancedDetails, "Show Advanced Details");
-                if (_showAdvancedDetails)
-                {
-                    DrawAdvancedDetails(bbState.LaunchPlan, bbState.LaunchPlan.TargetVessel);
-                }
+            _showAdvancedDetails = GUILayout.Toggle(_showAdvancedDetails, "Show Advanced Details");
+            if (_showAdvancedDetails)
+            {
+                DrawAdvancedDetails(bbState.LaunchPlan, bbState.LaunchPlan.TargetVessel);
             }
 
             GUI.DragWindow();
@@ -278,13 +279,13 @@ namespace Blackbird.Modules
 
         private void DrawAdvancedDetails(LaunchPlan launchPlan, Vessel targetVessel)
         {
-            if (launchPlan.ActiveOrbit == null)
+            GUILayout.Space(10);
+            if (launchPlan == null)
             {
-                GUILayout.Label("Orbit details unavailable for manual plans.");
+                GUILayout.Label("Launch plan not available");
                 return;
             }
-
-            GUILayout.Space(10);
+            
             GUILayout.Label("-- Active Orbit --");
             GUILayout.Label($"Inclination: {launchPlan.ActiveOrbit.InclinationDeg:F2}°");
             GUILayout.Label($"LAN: {launchPlan.ActiveOrbit.LanDeg:F2}°");
@@ -334,6 +335,7 @@ namespace Blackbird.Modules
                     ? "Phasing: insertion orbit is faster than target"
                     : "Phasing: insertion orbit is slower than target");
             }
+
 
             GUILayout.Space(10);
             GUILayout.Label("-- Phasing Recommendation Details --");

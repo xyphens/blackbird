@@ -5,7 +5,6 @@ namespace Blackbird.Models
     public sealed class TrajectoryState
     {
         public bool IsValid { get; set; }
-        public string Source { get; set; }
         public string ReasonUnavailable { get; set; }
 
         public Vessel Vessel { get; set; }

@@ -1,6 +1,7 @@
 ﻿using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Modules;
+using Blackbird.Trajectory;
 using System;
 
 namespace Blackbird.Guidance
@@ -307,7 +308,8 @@ namespace Blackbird.Guidance
                 InsertionTarget = it,
                 Candidates = new[] { candidate },
                 PhasingOrbit = po,
-                SelectedCandidateIndex = 0
+                SelectedCandidateIndex = 0,
+                TargetOrbitNormal = TrajectoryProvider.GetOrbitNormal(target)
             };
         }
 

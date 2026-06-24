@@ -90,6 +90,7 @@
     <Compile Include="Helpers\Helpers.cs" />
     <Compile Include="Logging\Log.cs" />
     <Compile Include="Math\Helpers.cs" />
+    <Compile Include="Math\J2.cs" />
     <Compile Include="Math\ThrustEnvelope.cs" />
     <Compile Include="Models\AscentGuidanceInfo.cs" />
     <Compile Include="Models\InsertionTarget.cs" />
@@ -116,6 +117,7 @@
     <Compile Include="Math\OrbitMath.cs" />
     <Compile Include="Math\TwoBody.cs" />
     <Compile Include="Math\LambertSolver.cs" />
+    <Compile Include="PSG\J2Oblateness.cs" />
     <Compile Include="RCS\Balancer.cs" />
     <Compile Include="RCS\Controller.cs" />
     <Compile Include="Rendezvous\LvlhFrame.cs" />

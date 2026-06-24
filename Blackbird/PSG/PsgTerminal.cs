@@ -20,7 +20,7 @@ namespace Blackbird.Psg
                 Length = length,
                 Velocity = velocity,
                 Time = length / velocity,
-                Mass = Math.Max(1.0, problem.InitialMassKg)
+                Mass = Math.Max(1.0, problem.CurrentMassKg)
             };
         }
     }
@@ -133,7 +133,7 @@ namespace Blackbird.Psg
             attachment = ClampAttachmentRadius(attachment, pe, ap);
             Vector3d normal = target.TargetOrbitNormal.sqrMagnitude > 0.0
                 ? target.TargetOrbitNormal.normalized
-                : Vector3d.Cross(problem.InitialRelativePositionMeters, problem.InitialRelativeVelocityMetersPerSecond).normalized;
+                : Vector3d.Cross(problem.InitialRelativePositionMeters, problem.CurrentRelativeVelocityMetersPerSecond).normalized;
 
             double mu = problem.BodyGravParameter;
             double hMagnitude = Math.Sqrt(mu * sma * Math.Max(0.0, 1.0 - ecc * ecc));

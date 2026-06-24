@@ -5,7 +5,6 @@ using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Psg;
 using Blackbird.Logging;
-using UnityEngine;
 
 namespace Blackbird.Guidance
 {
@@ -21,6 +20,10 @@ namespace Blackbird.Guidance
         private const double TerminalGuidanceLockSeconds = 2.0;
         private const double TerminalOverrunGraceSeconds = 30.0;
 
+        private const double TerminalPeMarginMeters = 30000.0; // begin propagating once osc Pe within 30 km
+        private const double TerminalPropagateMaxSeconds = 6000.0;  // > one LEO period
+        private const double TerminalPropagateStepSeconds = 20.0;    // RK4 step
+
         private readonly PsgOptimizer _optimizer = new PsgOptimizer();
         private readonly BlackbirdLog bbLogger = new BlackbirdLog(LogContext.Psg);
         private PoweredGuidancePhase _phase = PoweredGuidancePhase.Unavailable;
@@ -34,6 +37,8 @@ namespace Blackbird.Guidance
         private string _optimizerStatus = "PSG idle";
         private int _optimizerIterations;
         private double _constraintViolation = double.NaN;
+        private Vector3d _prevRelativePosition = Vector3d.zero;
+        private double _prevPositionUt = double.NaN;
 
         public void Reset()
         {
@@ -48,6 +53,43 @@ namespace Blackbird.Guidance
             _optimizerStatus = "PSG idle";
             _optimizerIterations = 0;
             _constraintViolation = double.NaN;
+            _prevRelativePosition = Vector3d.zero;
+            _prevPositionUt = double.NaN;
+        }
+
+        // Logs measured |h| and specific energy at shutdown against the solved terminal targets — the
+        // per-flight accuracy scorecard. Scalars only; never pass VesselState (its live Vessel reference
+        // makes the reflection serializer throw, and Log.Write swallows it, dropping the whole line).
+        private void LogCompletion(string tag, VesselState vesselState)
+        {
+            Vector3d relPos = vesselState.Position - vesselState.Body.position;
+            double r = Math.Max(1e-9, relPos.magnitude);
+            double h = Vector3d.Cross(relPos, vesselState.OrbitalVelocity).magnitude;
+            double e = 0.5 * vesselState.OrbitalVelocity.sqrMagnitude - vesselState.BodyGravParameter / r;
+            double targetH = _solution != null ? _solution.TerminalAngularMomentum : double.NaN;
+            double targetE = _solution != null ? _solution.TerminalSpecificEnergy : double.NaN;
+            bbLogger.Write($"[{tag}] h={h:F0} (target {targetH:F0}, dH={h - targetH:F0}) e={e:F1} (target {targetE:F1}, dE={e - targetE:F1}) ap={vesselState.CurrentApoapsisAlt:F0} pe={vesselState.CurrentPeriapsisAlt:F0}");
+        }
+
+        // TEMP diagnostic: is vessel.obt_velocity the real physical velocity, or a synthesized conic vector?
+        // Finite-difference the body-relative position (our "IMU") and compare to obt_velocity. Gated to the
+        // last second so it isn't per-frame spam. Remove once answered.
+        private void LogVelocityCheck(VesselState vesselState, double timeToGo)
+        {
+            Vector3d relPos = vesselState.Position - vesselState.Body.position;
+            if (MathHelpers.IsFinite(_prevPositionUt)
+                && vesselState.UniversalTime > _prevPositionUt
+                && MathHelpers.IsFinite(timeToGo) && timeToGo <= 1.0)
+            {
+                double dt = vesselState.UniversalTime - _prevPositionUt;
+                Vector3d fdVel = (relPos - _prevRelativePosition) / dt;
+                double obtSpeed = vesselState.OrbitalVelocity.magnitude;
+                double fdSpeed = fdVel.magnitude;
+                double angleDeg = Vector3d.Angle(vesselState.OrbitalVelocity, fdVel);
+                bbLogger.Write($"[vel-check] obt={obtSpeed:F3} fd={fdSpeed:F3} dSpeed={obtSpeed - fdSpeed:F3} angleDeg={angleDeg:F3} dt={dt:F4}");
+            }
+            _prevRelativePosition = relPos;
+            _prevPositionUt = vesselState.UniversalTime;
         }
 
         public PoweredGuidanceCommand GetCommand(
@@ -84,6 +126,8 @@ namespace Blackbird.Guidance
                 ? _solution.TimeToGo(vesselState.UniversalTime)
                 : EstimateTimeToGoSeconds(vesselState, velocityToGo);
 
+            LogVelocityCheck(vesselState, timeToGo);
+
             if (_complete)
             {
                 _phase = PoweredGuidancePhase.Complete;
@@ -104,10 +148,11 @@ namespace Blackbird.Guidance
             {
                 bool isExpired = IsSolutionExpired(vesselState.UniversalTime);
 
-                if (IsPsgTerminalComplete(vesselState))
+                if (IsPsgTerminalComplete(vesselState, ascentProfile))
                 {
                     _complete = true;
                     _phase = PoweredGuidancePhase.Complete;
+                    LogCompletion("psg-complete", vesselState);
                     return CreateCommand(
                         PoweredGuidancePhase.Complete,
                         "PSG terminal guidance complete",
@@ -125,6 +170,7 @@ namespace Blackbird.Guidance
                 {
                     _complete = true;
                     _phase = PoweredGuidancePhase.Complete;
+                    LogCompletion("psg-overrun", vesselState);
                     return CreateCommand(
                         PoweredGuidancePhase.Complete,
                         "PSG terminal overrun",
@@ -156,14 +202,14 @@ namespace Blackbird.Guidance
                     GetPitchHeadingFromInertial(vesselState, guidance.InertialDirection, out psgPitch, out psgHeading);
 
                     double commandedThrottle = _solution.TimeToGo(vesselState.UniversalTime) <= 0.0 ? 1.0 : guidance.Throttle;
-
                     _phase = PoweredGuidancePhase.PoweredGuidance;
                     string guidanceStatus = isExpired ? "PSG guidance overrun" :
                         IsSolutionStale(vesselState.UniversalTime) ? "PSG guidance stale" : "PSG guidance";
+
                     return CreateCommand(
                         PoweredGuidancePhase.PoweredGuidance,
                         guidanceStatus,
-                        ClampPitchForControl(psgPitch),
+                        MathHelpers.Clamp(psgPitch, -30.0, 90.0),
                         psgHeading,
                         commandedThrottle, // was guidance.Throttle
                         apError,
@@ -183,7 +229,7 @@ namespace Blackbird.Guidance
             return CreateCommand(
                 _phase,
                 _solveTask != null ? "PSG solving" : _optimizerStatus,
-                ClampPitchForControl(profilePitchDeg),
+                MathHelpers.Clamp(profilePitchDeg, -30.0, 90.0), 
                 profileHeadingDeg,
                 profileThrottle,
                 apError,
@@ -295,15 +341,41 @@ namespace Blackbird.Guidance
                 : SolveIntervalSeconds;
         }
 
-        private bool IsPsgTerminalComplete(VesselState vesselState)
+        //private bool IsPsgTerminalComplete(VesselState vesselState)
+        //{
+        //    if (_solution == null || !_solution.IsValid) return false;
+        //    if (IsSolutionExpired(vesselState.UniversalTime)) return false;
+
+        //    // if (vesselState.UniversalTime >= _solution.FinalUniversalTime) return true;
+
+        //    Vector3d relativePosition = vesselState.Position - vesselState.Body.position;
+        //    return _solution.TerminalGuidanceSatisfied(relativePosition, vesselState.OrbitalVelocity, vesselState.BodyGravParameter);
+        //}
+
+        private bool IsPsgTerminalComplete(VesselState vesselState, AscentProfile ascentProfile)
         {
             if (_solution == null || !_solution.IsValid) return false;
             if (IsSolutionExpired(vesselState.UniversalTime)) return false;
 
-            // if (vesselState.UniversalTime >= _solution.FinalUniversalTime) return true;
+            double targetPeRadius = vesselState.BodyRadius + ascentProfile.TargetPeriapsisAlt;
 
-            Vector3d relativePosition = vesselState.Position - vesselState.Body.position;
-            return _solution.TerminalGuidanceSatisfied(relativePosition, vesselState.OrbitalVelocity, vesselState.BodyGravParameter);
+            // Cheap pre-filter: osculating Pe is a lower bound on real Pe near a circular target, so only
+            // run the propagation once we're close — never skips a true completion.
+            double osculatingPeRadius = vesselState.BodyRadius + vesselState.CurrentPeriapsisAlt;
+            if (!MathHelpers.IsFinite(osculatingPeRadius) ||
+                osculatingPeRadius < targetPeRadius - TerminalPeMarginMeters) return false;
+
+            BodyOblateness.Oblateness ob = BodyOblateness.For(vesselState.Body);
+            Vector3d up = vesselState.Body.transform.up; // Claude used Vector3 for this but i disagree
+            Vector3d pole = new Vector3d(up.x, up.y, up.z).normalized;
+            Vector3d r = vesselState.Position - vesselState.Body.position;
+
+            double realPeRadius = J2Propagator.NextPeriapsisRadius(
+                r, vesselState.OrbitalVelocity, vesselState.BodyGravParameter,
+                ob.J2, ob.ReferenceRadiusMeters, pole,
+                TerminalPropagateMaxSeconds, TerminalPropagateStepSeconds);
+
+            return realPeRadius >= targetPeRadius;
         }
 
         private Vector3d GetCurrentThrustDirection(VesselState vesselState, double profileHeadingDeg, double profilePitchDeg)
@@ -372,8 +444,8 @@ namespace Blackbird.Guidance
             return vesselState.Body != null &&
                    MathHelpers.IsFinite(vesselState.BodyRadius) &&
                    MathHelpers.IsFinite(vesselState.BodyGravParameter) &&
-                   MathHelpers.IsFinite(vesselState.CurrentApoapsisAlt) &&
-                   MathHelpers.IsFinite(vesselState.CurrentPeriapsisAlt) &&
+                   //MathHelpers.IsFinite(vesselState.CurrentApoapsisAlt) &&
+                   //MathHelpers.IsFinite(vesselState.CurrentPeriapsisAlt) &&
                    MathHelpers.IsFinite(targetAp) &&
                    MathHelpers.IsFinite(targetPe);
         }
@@ -399,11 +471,6 @@ namespace Blackbird.Guidance
 
             double acceleration = vesselState.AvailableThrust / vesselState.TotalMass;
             return acceleration > 0.0 ? velocityToGo / acceleration : double.NaN;
-        }
-
-        private static double ClampPitchForControl(double pitchDeg)
-        {
-            return MathHelpers.Clamp(pitchDeg, -30.0, 90.0);
         }
 
         private static PoweredGuidanceCommand CreateUnavailable(double pitchDeg, double headingDeg, double throttle)

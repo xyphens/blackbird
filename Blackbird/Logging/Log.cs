@@ -157,8 +157,7 @@ namespace Blackbird.Logging
 
             FileStream stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
             StreamWriter writer = new StreamWriter(stream) { AutoFlush = true };
-            writer.WriteLine(string.Format("=== session start {0} ===",
-                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            writer.WriteLine(string.Format("=== session start {0} ===", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
             return writer;
         }
 
