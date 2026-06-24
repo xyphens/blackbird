@@ -82,19 +82,22 @@ namespace Blackbird.Psg
         }
 
         public static PsgTarget FromPlan(
-            VesselState vesselState,
-            LaunchPlan launchPlan,
-            AscentProfile ascentProfile)
+            VesselState vesselState, 
+            LaunchPlan launchPlan, 
+            AscentProfile ascentProfile, 
+            double apsisBiasMeters = 0.0)
         {
             OrbitInfo targetOrbit = launchPlan != null ? launchPlan.TargetOrbit : null;
             Vector3d orbitNormal = launchPlan != null ? launchPlan.TargetOrbitNormal : Vector3d.zero;
-            return FromProfile(vesselState, ascentProfile, targetOrbit, orbitNormal);
+            return FromProfile(vesselState, ascentProfile, targetOrbit, orbitNormal, apsisBiasMeters);
         }
 
         public static PsgTarget FromProfile(
-            VesselState vesselState,
-            AscentProfile ascentProfile,
-            OrbitInfo targetOrbit)
+            VesselState vesselState, 
+            AscentProfile ascentProfile, 
+            OrbitInfo targetOrbit, 
+            Vector3d targetOrbitNormal)
+
         {
             return FromProfile(vesselState, ascentProfile, targetOrbit, Vector3d.zero);
         }
@@ -103,7 +106,9 @@ namespace Blackbird.Psg
             VesselState vesselState,
             AscentProfile ascentProfile,
             OrbitInfo targetOrbit,
-            Vector3d targetOrbitNormal)
+            Vector3d targetOrbitNormal,
+            double apsisBiasMeters = 0.0
+            )
         {
             if (vesselState == null || ascentProfile == null)
             {
@@ -120,8 +125,11 @@ namespace Blackbird.Psg
                 return CreateInvalid("Reference body radius is unavailable.");
             }
 
-            double periapsisRadius = vesselState.BodyRadius + ascentProfile.TargetPeriapsisAlt;
-            double apoapsisRadius = vesselState.BodyRadius + ascentProfile.TargetApoapsisAlt;
+            //double periapsisRadius = vesselState.BodyRadius + ascentProfile.TargetPeriapsisAlt;
+            //double apoapsisRadius = vesselState.BodyRadius + ascentProfile.TargetApoapsisAlt;
+
+            double periapsisRadius = vesselState.BodyRadius + ascentProfile.TargetPeriapsisAlt + apsisBiasMeters;
+            double apoapsisRadius = vesselState.BodyRadius + ascentProfile.TargetApoapsisAlt + apsisBiasMeters;
 
             if (!MathHelpers.IsFinite(periapsisRadius) || periapsisRadius <= vesselState.BodyRadius ||
                 !MathHelpers.IsFinite(apoapsisRadius) || apoapsisRadius <= vesselState.BodyRadius)

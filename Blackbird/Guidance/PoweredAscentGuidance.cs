@@ -1,10 +1,11 @@
-using System;
-using System.Threading.Tasks;
-using Blackbird.Modules;
+using Blackbird.Logging;
 using Blackbird.Mathematics;
 using Blackbird.Models;
+using Blackbird.Modules;
 using Blackbird.Psg;
-using Blackbird.Logging;
+using System;
+using System.Threading.Tasks;
+using UnityEngine;
 
 namespace Blackbird.Guidance
 {
@@ -23,6 +24,9 @@ namespace Blackbird.Guidance
         private const double TerminalPeMarginMeters = 30000.0; // begin propagating once osc Pe within 30 km
         private const double TerminalPropagateMaxSeconds = 6000.0;  // > one LEO period
         private const double TerminalPropagateStepSeconds = 20.0;    // RK4 step
+
+        private const int MaxConsecutiveOptimizerFailures = 5;
+        private int _optimizerFailCount = 0;
 
         private readonly PsgOptimizer _optimizer = new PsgOptimizer();
         private readonly BlackbirdLog bbLogger = new BlackbirdLog(LogContext.Psg);
@@ -44,6 +48,7 @@ namespace Blackbird.Guidance
         {
             _phase = PoweredGuidancePhase.Unavailable;
             _complete = false;
+            _optimizerFailCount = 0;
             _solveTask = null;
             _pendingProblem = null;
             _solution = null;
@@ -118,6 +123,41 @@ namespace Blackbird.Guidance
             Vector3d initialThrustDirection = GetCurrentThrustDirection(vesselState, profileHeadingDeg, profilePitchDeg);
             UpdatePsgSolution(vesselState, launchPlan, ascentProfile, initialThrustDirection);
             PinSolutionToGroundedTime(vesselState);
+
+            // Energy-reached completion. Specific orbital energy is a measured, monotonically-rising-under-thrust
+            // quantity that (unlike osculating Pe) does not precess under J2 and is reachable from any point in
+            // the orbit. The Pe>=target cutoff is structurally unreachable once we hit circular: further burning
+            // at periapsis raises apoapsis, not periapsis, so Pe pins ~at target and the engine runs away. Cut
+            // the instant we achieve the solved terminal energy (which already carries the J2 target bias).
+            // Independent of solution validity — the retained-but-expired solution at the burn cusp is the hole.
+            if (!_complete && _solution != null && _solution.IsValid)
+            {
+                Vector3d rRel = vesselState.Position - vesselState.Body.position;
+                double rMag = rRel.magnitude;
+                if (rMag > 0.0)
+                {
+                    double e = 0.5 * vesselState.OrbitalVelocity.sqrMagnitude - vesselState.BodyGravParameter / rMag;
+                    if (MathHelpers.IsFinite(_solution.TerminalSpecificEnergy) && e >= _solution.TerminalSpecificEnergy)
+                    {
+                        _complete = true;
+                        _phase = PoweredGuidancePhase.Complete;
+                        LogCompletion("psg-energy-complete", vesselState);
+                    }
+                }
+            }
+
+            // Runaway backstop: the solver giving up for many consecutive cycles while we're already past the
+            // target apoapsis means we're over-energy with no feasible solution — cut rather than burn on.
+            // Independent of _solution validity (a stale-but-valid solution is retained on failure, which is
+            // the exact hole that caused the perpetual burn). The Ap guard keeps pad-bootstrap misses from cutting.
+            if (!_complete
+                && _optimizerFailCount >= MaxConsecutiveOptimizerFailures
+                && vesselState.CurrentApoapsisAlt > ascentProfile.TargetApoapsisAlt)
+            {
+                _complete = true;
+                _phase = PoweredGuidancePhase.Complete;
+                LogCompletion("psg-failure-bailout", vesselState);
+            }
 
             double velocityToGo = _solution != null && _solution.IsValid
                 ? _solution.VelocityToGo(vesselState.UniversalTime)
@@ -239,12 +279,34 @@ namespace Blackbird.Guidance
                 false);
         }
 
+        // J2 short-period periapsis offset (Keplerian Pe − real J2 Pe) for the current orbit. The optimizer must
+        // aim for osculating (target + offset) so the REAL periapsis lands on target, matching the propagate-Pe
+        // cutoff. Zero outside the terminal regime and in stock (J2=0).
+        private double TerminalJ2PeriapsisOffset(VesselState vesselState, AscentProfile ascentProfile)
+        {
+            double targetPeRadius = vesselState.BodyRadius + ascentProfile.TargetPeriapsisAlt;
+            double oscPeRadius = vesselState.BodyRadius + vesselState.CurrentPeriapsisAlt;
+            if (!MathHelpers.IsFinite(oscPeRadius) || oscPeRadius < targetPeRadius - TerminalPeMarginMeters) return 0.0;
+
+            BodyOblateness.Oblateness ob = BodyOblateness.For(vesselState.Body);
+            if (ob.J2 == 0.0) return 0.0;
+
+            Vector3 up = vesselState.Body.transform.up;
+            Vector3d pole = new Vector3d(up.x, up.y, up.z).normalized;
+            Vector3d r = vesselState.Position - vesselState.Body.position;
+
+            double kepPe = J2Propagator.NextPeriapsisRadius(r, vesselState.OrbitalVelocity, vesselState.BodyGravParameter, 0.0, ob.ReferenceRadiusMeters, pole, TerminalPropagateMaxSeconds, TerminalPropagateStepSeconds);
+            double j2Pe = J2Propagator.NextPeriapsisRadius(r, vesselState.OrbitalVelocity, vesselState.BodyGravParameter, ob.J2, ob.ReferenceRadiusMeters, pole, TerminalPropagateMaxSeconds, TerminalPropagateStepSeconds);
+            return Math.Max(0.0, kepPe - j2Pe);
+        }
+
         private void UpdatePsgSolution(
             VesselState vesselState,
             LaunchPlan launchPlan,
             AscentProfile ascentProfile,
             Vector3d initialThrustDirection)
         {
+
             if (_solveTask != null && _solveTask.IsCompleted)
             {
                 PsgOptimizationResult result = _solveTask.Result;
@@ -259,6 +321,7 @@ namespace Blackbird.Guidance
 
                 if (result != null && result.Success && result.Solution != null)
                 {
+                    _optimizerFailCount = 0;
                     _solution = result.Solution;
                     if (_solution.TimeToGo(vesselState.UniversalTime) > TerminalGuidanceLockSeconds)
                     {
@@ -266,14 +329,20 @@ namespace Blackbird.Guidance
                         _lockedTerminalDirection = Vector3d.zero;
                     }
                 }
+                else
+                {
+                    _optimizerFailCount++;
+                }
             }
 
             if (_solveTask != null) return;
 
             double interval = GetSolveIntervalSeconds(vesselState.UniversalTime);
             if (vesselState.UniversalTime - _lastSolveRequestUt < interval) return;
+            double j2Bias = TerminalJ2PeriapsisOffset(vesselState, ascentProfile);
 
-            PsgTarget target = PsgTarget.FromPlan(vesselState, launchPlan, ascentProfile);
+            PsgTarget target = PsgTarget.FromPlan(vesselState, launchPlan, ascentProfile, j2Bias);
+
             if (target == null || !target.IsValid)
             {
                 _optimizerStatus = target != null ? target.ReasonUnavailable : "PSG target unavailable";

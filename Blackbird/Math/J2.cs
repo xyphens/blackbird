@@ -39,6 +39,29 @@ namespace Blackbird.Mathematics
             return minR;
         }
 
+        // Min and max radius over one orbit (real Pe/Ap under J2). Scans until the radial-velocity sign has
+        // flipped twice (one full pe->ap->pe or ap->pe->ap cycle) so both extrema are captured, or maxSeconds.
+        public static void RadiusExtremes(Vector3d r0, Vector3d v0, double mu, double j2, double reEq, Vector3d pole, double maxSeconds, double dt, out double minR, out double maxR)
+        {
+            Vector3d r = r0, v = v0;
+            double t = 0.0;
+            minR = maxR = r.magnitude;
+            double prevRadial = Vector3d.Dot(r, v);
+            int flips = 0;
+            while (t < maxSeconds)
+            {
+                Rk4Step(ref r, ref v, mu, j2, reEq, pole, dt);
+                t += dt;
+                double rm = r.magnitude;
+                if (rm < minR) minR = rm;
+                if (rm > maxR) maxR = rm;
+                double radial = Vector3d.Dot(r, v);
+                if ((prevRadial < 0.0) != (radial < 0.0)) flips++;
+                if (flips >= 2) break;
+                prevRadial = radial;
+            }
+        }
+
         private static void Rk4Step(ref Vector3d r, ref Vector3d v, double mu, double j2, double reEq, Vector3d pole, double dt) {
             Vector3d k1r = v, k1v = Acceleration(r, mu, j2, reEq, pole);
             Vector3d k2r = v + (0.5 * dt) * k1v,    k2v = Acceleration(r + (0.5 * dt) * k1r, mu, j2, reEq, pole);

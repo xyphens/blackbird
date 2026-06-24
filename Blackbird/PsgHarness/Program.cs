@@ -1,6 +1,7 @@
 using System;
-using Blackbird.Guidance;
+using Blackbird.Mathematics;
 using Blackbird.Models;
+using Blackbird.Psg;
 using UnityEngine;
 
 namespace Blackbird.PsgHarness
@@ -12,9 +13,21 @@ namespace Blackbird.PsgHarness
         private const double KerbinRotationPeriod = 21549.425;
         private const double TargetInsertionAltitude = 81000.0;
 
+        // RSS Earth (Principia sol_gravity_model): GM matches the in-game log; J2 = -sqrt(5)*C-bar(2,0)
+        // with C-bar(2,0) = -4.8416945732e-04; Re = geopotential reference_radius (equatorial).
+        private const double EarthMu = 398600435436096.0;
+        private const double EarthMeanRadius = 6371000.0;     // KSP body Radius (mean) — used for altitudes
+        private const double EarthJ2 = 1.082636e-03;
+        private const double EarthRefRadius = 6378136.3;       // equatorial reference_radius
+
         private static int Main()
         {
             Console.WriteLine("BlackBird PSG Harness");
+            Console.WriteLine();
+
+            RunEarthJ2Check();
+            RunEarthShapeSweep();
+
             Console.WriteLine("Scenario: stock Kerbin, equatorial 81 km insertion");
             Console.WriteLine();
 
@@ -45,6 +58,67 @@ namespace Blackbird.PsgHarness
 
             PrintSolution(problem, result.Solution);
             return result.Success ? 0 : 1;
+        }
+
+        // Offline validation of J2Propagator against the flight: feed a near-circular ~186 km insertion
+        // state (the solved terminal point from a logged RSS ascent, KSP world frame) and confirm the
+        // J2-propagated periapsis sits ~9 km below the two-body osculating Pe (Principia showed ~9 km),
+        // while a J2=0 control reproduces the osculating Pe (no spurious integration drop).
+        private static void RunEarthJ2Check()
+        {
+            Console.WriteLine("J2 propagator check (RSS Earth, logged ~186 km insertion state):");
+
+            Vector3d r = new Vector3d(4616976.15665178, 2999292.9189727, 3559341.11249668);
+            Vector3d v = new Vector3d(-4248.80365397141, -1106.60175804457, 6443.79036928515);
+            Vector3d pole = new Vector3d(0.0, 1.0, 0.0); // Earth spin axis in KSP world frame (BodyAngularVelocity = [0, 7.29e-5, 0])
+
+            double oscPe = OrbitSummary.FromState(EarthMu, EarthMeanRadius, r, v).PeriapsisAlt;
+            double j2Pe = J2Propagator.NextPeriapsisRadius(r, v, EarthMu, EarthJ2, EarthRefRadius, pole, 6000.0, 20.0) - EarthMeanRadius;
+            double kepPe = J2Propagator.NextPeriapsisRadius(r, v, EarthMu, 0.0, EarthRefRadius, pole, 6000.0, 20.0) - EarthMeanRadius;
+
+            // This is the single number flight applies in BOTH places: the optimizer target bias
+            // (TerminalJ2PeriapsisOffset) and the propagate-Pe cutoff (IsPsgTerminalComplete). They share this
+            // propagation, so they stay consistent — disagreement between them was the perpetual-burn bug.
+            double flightBias = kepPe - j2Pe;
+
+            Console.WriteLine("  osculating Pe (two-body):      " + (oscPe / 1000.0).ToString("F2") + " km");
+            Console.WriteLine("  propagated Pe (J2=0 control):   " + (kepPe / 1000.0).ToString("F2") + " km  (should match osculating; stock J2=0 path)");
+            Console.WriteLine("  propagated Pe (J2 on):          " + (j2Pe / 1000.0).ToString("F2") + " km");
+            Console.WriteLine("  flight Pe bias = cutoff offset: " + (flightBias / 1000.0).ToString("F2") + " km  (expect ~7-11 km)");
+            Console.WriteLine("  control error (Kepler - osc):   " + (kepPe - oscPe).ToString("F1") + " m  (should be ~0; =0 bias in stock)");
+            Console.WriteLine();
+        }
+
+        // Does inserting osculating-CIRCULAR at radius R actually yield a circular REAL orbit under J2,
+        // or a skewed one? Models the optimizer's terminal state (|r|=R, FPA=0, v=circular) and propagates.
+        private static void RunEarthShapeSweep()
+        {
+            Console.WriteLine("Osculating-circular insertion -> real (J2) orbit shape:");
+
+            Vector3d rLog = new Vector3d(4616976.15665178, 2999292.9189727, 3559341.11249668);
+            Vector3d vLog = new Vector3d(-4248.80365397141, -1106.60175804457, 6443.79036928515);
+            Vector3d pole = new Vector3d(0.0, 1.0, 0.0);
+
+            Vector3d rHat = rLog.normalized;
+            Vector3d n    = Vector3d.Cross(rLog, vLog).normalized;   // orbital-plane normal
+            Vector3d tHat = Vector3d.Cross(n, rHat).normalized;      // prograde tangent
+
+            Console.WriteLine("  oscAlt(km)  realPe(km)  realAp(km)  realEcc");
+            for (double oscAltKm = 185.0; oscAltKm <= 200.0; oscAltKm += 2.5)
+            {
+                double R = EarthMeanRadius + oscAltKm * 1000.0;
+                Vector3d r = R * rHat;
+                Vector3d v = Math.Sqrt(EarthMu / R) * tHat;          // osculating-circular state
+
+                double minR, maxR;
+                J2Propagator.RadiusExtremes(r, v, EarthMu, EarthJ2, EarthRefRadius, pole, 7000.0, 10.0, out minR, out maxR);
+
+                double pe  = (minR - EarthMeanRadius) / 1000.0;
+                double ap  = (maxR - EarthMeanRadius) / 1000.0;
+                double ecc = (maxR - minR) / (maxR + minR);
+                Console.WriteLine($"  {oscAltKm,8:F1}  {pe,9:F2}  {ap,9:F2}  {ecc,8:F5}");
+            }
+            Console.WriteLine();
         }
 
         private static PsgProblem CreateKerbinScenario()
