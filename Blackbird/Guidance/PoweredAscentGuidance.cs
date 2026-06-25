@@ -25,6 +25,9 @@ namespace Blackbird.Guidance
         private const double TerminalPropagateMaxSeconds = 6000.0;  // > one LEO period
         private const double TerminalPropagateStepSeconds = 20.0;    // RK4 step
 
+        // Safety margin on how much stage dv we require to reach orbit
+        private const double StageTrimVelocityMargin = 1.25;
+
         private const int MaxConsecutiveOptimizerFailures = 5;
         private int _optimizerFailCount = 0;
 
@@ -124,21 +127,31 @@ namespace Blackbird.Guidance
             UpdatePsgSolution(vesselState, launchPlan, ascentProfile, initialThrustDirection);
             PinSolutionToGroundedTime(vesselState);
 
-            // Energy-reached completion. Specific orbital energy is a measured, monotonically-rising-under-thrust
-            // quantity that (unlike osculating Pe) does not precess under J2 and is reachable from any point in
-            // the orbit. The Pe>=target cutoff is structurally unreachable once we hit circular: further burning
-            // at periapsis raises apoapsis, not periapsis, so Pe pins ~at target and the engine runs away. Cut
-            // the instant we achieve the solved terminal energy (which already carries the J2 target bias).
-            // Independent of solution validity — the retained-but-expired solution at the burn cusp is the hole.
+            // energy-based completion shutoff
             if (!_complete && _solution != null && _solution.IsValid)
             {
+                //Vector3d rRel = vesselState.Position - vesselState.Body.position;
+                //double rMag = rRel.magnitude;
+                //if (rMag > 0.0)
+                //{
+                //    double e = 0.5 * vesselState.OrbitalVelocity.sqrMagnitude - vesselState.BodyGravParameter / rMag;
+                //    if (MathHelpers.IsFinite(_solution.TerminalSpecificEnergy) && e >= _solution.TerminalSpecificEnergy)
+                //    {
+                //        _complete = true;
+                //        _phase = PoweredGuidancePhase.Complete;
+                //        LogCompletion("psg-energy-complete", vesselState);
+                //    }
+                //}
                 Vector3d rRel = vesselState.Position - vesselState.Body.position;
                 double rMag = rRel.magnitude;
                 if (rMag > 0.0)
                 {
+                    double targetRadius = vesselState.BodyRadius + 0.5 * (ascentProfile.TargetPeriapsisAlt + ascentProfile.TargetApoapsisAlt);
                     double e = 0.5 * vesselState.OrbitalVelocity.sqrMagnitude - vesselState.BodyGravParameter / rMag;
-                    if (MathHelpers.IsFinite(_solution.TerminalSpecificEnergy) && e >= _solution.TerminalSpecificEnergy)
-                    {
+                    double targetPeRadius = vesselState.BodyRadius + ascentProfile.TargetPeriapsisAlt;
+                    bool energyReached = MathHelpers.IsFinite(_solution.TerminalSpecificEnergy) && e >= _solution.TerminalSpecificEnergy;
+                    if (energyReached && J2MeanRadius(vesselState) >= targetRadius) { 
+                        //if (energyReached && J2PeriapsisRadius(vesselState) >= targetPeRadius)
                         _complete = true;
                         _phase = PoweredGuidancePhase.Complete;
                         LogCompletion("psg-energy-complete", vesselState);
@@ -146,10 +159,7 @@ namespace Blackbird.Guidance
                 }
             }
 
-            // Runaway backstop: the solver giving up for many consecutive cycles while we're already past the
-            // target apoapsis means we're over-energy with no feasible solution — cut rather than burn on.
-            // Independent of _solution validity (a stale-but-valid solution is retained on failure, which is
-            // the exact hole that caused the perpetual burn). The Ap guard keeps pad-bootstrap misses from cutting.
+            // runaway backstop (stop the engines from burning perpetually if optimizer fails or gets stuck)
             if (!_complete
                 && _optimizerFailCount >= MaxConsecutiveOptimizerFailures
                 && vesselState.CurrentApoapsisAlt > ascentProfile.TargetApoapsisAlt)
@@ -279,9 +289,34 @@ namespace Blackbird.Guidance
                 false);
         }
 
-        // J2 short-period periapsis offset (Keplerian Pe − real J2 Pe) for the current orbit. The optimizer must
-        // aim for osculating (target + offset) so the REAL periapsis lands on target, matching the propagate-Pe
-        // cutoff. Zero outside the terminal regime and in stock (J2=0).
+        private double J2MeanRadius(VesselState vs)
+        {
+            BodyOblateness.Oblateness ob = BodyOblateness.For(vs.Body);
+            Vector3d up = vs.Body.transform.up;
+            Vector3d pole = new Vector3d(up.x, up.y, up.z).normalized;
+            Vector3d r = vs.Position - vs.Body.position;
+            double minR, maxR;
+            J2Propagator.RadiusExtremes(
+                r, vs.OrbitalVelocity, vs.BodyGravParameter,
+                ob.J2, ob.ReferenceRadiusMeters, pole,
+                TerminalPropagateMaxSeconds, TerminalPropagateStepSeconds, out minR, out maxR);
+            return 0.5 * (minR + maxR);
+        }
+
+
+        private double J2PeriapsisRadius(VesselState vs)
+        {
+            BodyOblateness.Oblateness ob = BodyOblateness.For(vs.Body);
+            Vector3d up = vs.Body.transform.up;
+            Vector3d pole = new Vector3d(up.x, up.y, up.z).normalized;
+            Vector3d r = vs.Position - vs.Body.position;
+            return J2Propagator.NextPeriapsisRadius(
+                r, vs.OrbitalVelocity, vs.BodyGravParameter,
+                ob.J2, ob.ReferenceRadiusMeters, pole,
+                TerminalPropagateMaxSeconds, TerminalPropagateStepSeconds);
+        }
+
+        // J2 short-period periapsis offset (Keplerian Pe − real J2 Pe) for the current orbit
         private double TerminalJ2PeriapsisOffset(VesselState vesselState, AscentProfile ascentProfile)
         {
             double targetPeRadius = vesselState.BodyRadius + ascentProfile.TargetPeriapsisAlt;
@@ -349,7 +384,10 @@ namespace Blackbird.Guidance
                 return;
             }
 
-            PsgPhase[] phases = PsgPhase.FromPoweredStages(vesselState.PoweredStages);
+            //PsgPhase[] phases = PsgPhase.FromPoweredStages(vesselState.PoweredStages);
+            PoweredStageInfo[] ascentStages = TrimStagesToOrbit(vesselState.PoweredStages, EstimateVelocityToGo(vesselState, ascentProfile));
+            PsgPhase[] phases = PsgPhase.FromPoweredStages(ascentStages);
+
             if (phases == null || phases.Length == 0)
             {
                 _optimizerStatus = "No powered PSG phases";
@@ -517,6 +555,40 @@ namespace Blackbird.Guidance
                    //MathHelpers.IsFinite(vesselState.CurrentPeriapsisAlt) &&
                    MathHelpers.IsFinite(targetAp) &&
                    MathHelpers.IsFinite(targetPe);
+        }
+
+        private static PoweredStageInfo[] TrimStagesToOrbit(PoweredStageInfo[] stages, double velocityToGo)
+        {
+            if (stages == null || stages.Length <= 1) return stages;
+            if (!MathHelpers.IsFinite(velocityToGo)) return stages;
+
+            double needed = velocityToGo * StageTrimVelocityMargin;
+            double cumulativeDv = 0.0;
+            int count = 0;
+            for (int i = 0; i < stages.Length; i++)
+            {
+                count++;
+                cumulativeDv += StageVacuumDeltaV(stages[i]);
+                if (cumulativeDv >= needed) break;
+            }
+
+            if (count >= stages.Length) return stages; // need them all (or estimate exceeds total available dv)
+
+            var trimmed = new PoweredStageInfo[count];
+            System.Array.Copy(stages, trimmed, count);
+            return trimmed;
+        }
+
+        private static double StageVacuumDeltaV(PoweredStageInfo stage)
+        {
+            if (stage == null) return 0.0;
+            if (!MathHelpers.IsFinite(stage.StartMass) || !MathHelpers.IsFinite(stage.EndMass) ||
+                stage.EndMass <= 0.0 || stage.StartMass <= stage.EndMass ||
+                !MathHelpers.IsFinite(stage.VacuumSpecificImpulse) || stage.VacuumSpecificImpulse <= 0.0)
+            {
+                return 0.0;
+            }
+            return stage.VacuumSpecificImpulse * 9.80665 * Math.Log(stage.StartMass / stage.EndMass);
         }
 
         private static double EstimateVelocityToGo(VesselState vesselState, AscentProfile ascentProfile)

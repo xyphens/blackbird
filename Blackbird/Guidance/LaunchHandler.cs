@@ -26,6 +26,9 @@ namespace Blackbird.Guidance
         private const double CoastHoldExitDeg = 0.40;            // ...and leave it only past this (hysteresis)
         private const double CoastHoldMaxRateDegPerSec = 0.10;   // ...and only when nearly stopped rotating
         private bool _coastAttitudeHeld;
+        // Set once at insertion cutoff: after the engine is cut we stop overriding the throttle so the
+        // operator regains manual control (continuously forcing throttle=0 every frame locked them out).
+        private bool _completionControlReleased;
 
         // manual guidance
         public double ManualPitchCommandDeg { get; private set; } = 90.0;
@@ -138,6 +141,7 @@ namespace Blackbird.Guidance
             if (State != LaunchGuidanceState.AwaitingLaunch && State != LaunchGuidanceState.WarpingToLaunch) return;
             TimeWarp.SetRate(0, true);
             _ascentGuidance.Reset();
+            _completionControlReleased = false;
             State = LaunchGuidanceState.GuidingAscent;
         }
 
@@ -370,18 +374,25 @@ namespace Blackbird.Guidance
                 }
             }
 
-            if (State == LaunchGuidanceState.Complete)
+            // release throttle control back to user
+            if (State != LaunchGuidanceState.GuidingAscent || GuidanceMode == GuidanceMode.None || GuidanceInfo == null)
             {
-                state.mainThrottle = 0.0f;
+                if (!_completionControlReleased)
+                {
+                    state.mainThrottle = 0.0f;
+                    if (FlightInputHandler.state != null) FlightInputHandler.state.mainThrottle = 0.0f;
+                    _completionControlReleased = true;
+                }
+
                 return;
             }
 
-            if (State != LaunchGuidanceState.GuidingAscent
-                || GuidanceMode == GuidanceMode.None
-                || GuidanceInfo == null)
-            {
-                return;
-            }
+            //if (State != LaunchGuidanceState.GuidingAscent
+            //    || GuidanceMode == GuidanceMode.None
+            //    || GuidanceInfo == null)
+            //{
+            //    return;
+            //}
 
             double throttle = bbState.GuidanceMode == GuidanceMode.Manual ? ManualThrottleCommand : GuidanceInfo.CommandThrottle;
 

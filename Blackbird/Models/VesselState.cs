@@ -129,6 +129,7 @@ namespace Blackbird.Models
         // Reads KSP's stage-resolved delta-v model so powered guidance can build PSG phases.
         private static PoweredStageInfo[] GetPoweredStages(Vessel vessel)
         {
+            // fixme: why aren't we just reading vessel variables directly?
             object vesselDeltaV = GetMember(vessel, "VesselDeltaV");
             if (vesselDeltaV == null) return new PoweredStageInfo[0];
 
