@@ -124,6 +124,7 @@
     <Compile Include="Rendezvous\RelativeState.cs" />
     <Compile Include="Rendezvous\InterceptSolver.cs" />
     <Compile Include="Rendezvous\ClosestApproachSolver.cs" />
+    <Compile Include="Rendezvous\PhasingPlanner.cs" />
     <Compile Include="Rendezvous\RendezvousExecution.cs" />
     <Compile Include="Rendezvous\TerminalRendezvousExecutor.cs" />
     <Compile Include="Rendezvous\VesselRendezvousWorld.cs" />

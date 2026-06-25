@@ -193,6 +193,19 @@ namespace Blackbird.Rendezvous
                 return;
             }
 
+            if (method == InterceptMethod.Phasing)
+            {
+                // Single tangential burn NOW to set the phasing period; meet the target back at the burn point
+                // after N orbits, then the MatchVelocity / CloseApproach stages finish it.
+                bbState.InterceptCandidates = PhasingPlanner.BuildPhasingPlans(world, HohmannCandidateCount);
+                bbState.SelectedInterceptCandidateIndex = bbState.InterceptCandidates.Count > 0 ? 0 : -1;
+                bbState.InterceptSolution = bbState.InterceptCandidates.Count > 0
+                    ? bbState.InterceptCandidates[0]
+                    : default(InterceptSolution);
+                HasInterceptPlan = bbState.InterceptSolution.Success;
+                return;
+            }
+
             bbState.InterceptCandidates = new List<InterceptSolution>();
             bbState.SelectedInterceptCandidateIndex = -1;
             bbState.InterceptSolution = PlanIntercept(world);
@@ -326,9 +339,11 @@ namespace Blackbird.Rendezvous
             stageComplete = false;
             if (!_burnArmed)
             {
-                // Hohmann: REUSE the cached preview plan so Execute fires at the same departure window the user previewed
-                InterceptSolution solution = bbState.InterceptMethod == InterceptMethod.Hohmann
-                    ? (HasInterceptPlan ? bbState.InterceptSolution : BuildHohmannPlan(world))
+                // Hohmann/Phasing: REUSE the cached preview plan so Execute fires the burn the user previewed/chose
+                // (Phasing ignites now; Hohmann coasts to its window). Single-phase re-solves a fresh Lambert.
+                InterceptSolution solution =
+                    bbState.InterceptMethod == InterceptMethod.Hohmann ? (HasInterceptPlan ? bbState.InterceptSolution : BuildHohmannPlan(world))
+                    : bbState.InterceptMethod == InterceptMethod.Phasing ? bbState.InterceptSolution
                     : PlanIntercept(world);
                 bbState.InterceptSolution = solution;
                 HasInterceptPlan = solution.Success;

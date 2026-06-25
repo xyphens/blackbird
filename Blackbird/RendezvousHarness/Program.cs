@@ -877,6 +877,8 @@ namespace Blackbird.RendezvousHarness
             public Vector3d TargetPosition => _tPos;
             public Vector3d TargetVelocity => _tVel;
             public Vector3d ReferenceNormal => _refN;
+            public double BodyRadius => 0.0;
+            public double AtmosphereDepth => 0.0;
 
             public void ApplyDeltaV(Vector3d dv) { _aVel += dv; }
 
@@ -911,6 +913,8 @@ namespace Blackbird.RendezvousHarness
             public Vector3d TargetPosition => _seed.TargetPosition;
             public Vector3d TargetVelocity => _seed.TargetVelocity;
             public Vector3d ReferenceNormal => _seed.ReferenceNormal;
+            public double BodyRadius => 0.0;
+            public double AtmosphereDepth => 0.0;
 
             public void AddVelocity(Vector3d dv) { _activeVel += dv; }
             public void Advance(double dt) { _ut += dt; }
@@ -926,6 +930,8 @@ namespace Blackbird.RendezvousHarness
             public Vector3d TargetPosition { get; set; }
             public Vector3d TargetVelocity { get; set; }
             public Vector3d ReferenceNormal { get; set; }
+            public double BodyRadius { get; set; }
+            public double AtmosphereDepth { get; set; }
         }
 
         // Case 18: docking-port geometry decomposition. Known geometry, then a rotation-invariance check

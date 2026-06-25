@@ -25,7 +25,7 @@ namespace Blackbird.Modules
     // execution methods within Rendezvous module
     // important: was RendezvousStage 
     public enum RendezvousMethod { None, Intercept, MatchVelocity, CloseApproach }; // note: had Docking before, now is separate
-    public enum InterceptMethod { SinglePhase, Hohmann };
+    public enum InterceptMethod { SinglePhase, Hohmann, Phasing };
     // Result of an intercept plan: the impulsive burn (world-frame ΔV at the ignition UT) that puts the
     // active vessel onto a conic transfer reaching the target's predicted position, plus the arrival
     // timing and a predicted closest approach. Planning only — execution happens in the executor.
@@ -108,7 +108,7 @@ namespace Blackbird.Modules
         public RendezvousMethod RendezvousMethod { get; set; } = RendezvousMethod.None;
         public bool RendezvousEnabled { get; set; } = false;
         public InterceptPhase InterceptPhase { get; set; } = InterceptPhase.Idle;
-        public string[] InterceptMethods = { "Single Phase", "Hohmann" };
+        public string[] InterceptMethods = { "Single Phase", "Hohmann", "Phasing" };
         public InterceptSolution InterceptSolution { get; set; }
         // Eligible Hohmann transfer windows for the user to choose from; selection copies one into InterceptSolution.
         public List<InterceptSolution> InterceptCandidates { get; set; } = new List<InterceptSolution>();

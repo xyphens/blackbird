@@ -114,6 +114,9 @@ namespace Blackbird.Planning
             double vt1 = Math.Sqrt(mu * (2.0 / r1 - 1.0 / transferSma));
             double vt2 = Math.Sqrt(mu * (2.0 / r2 - 1.0 / transferSma));
             double deltaV = Math.Abs(vt1 - v1) + Math.Abs(v2 - vt2);
+            // Add the ascent cost to this phasing circle (energy-based, rises with altitude) so cheaper-to-reach
+            // LOWER orbits become competitive and surface, instead of always picking the near-target/higher side.
+            deltaV += Math.Sqrt(mu * (2.0 / body.Radius - 1.0 / r1));
             double transferTime = Math.PI * Math.Sqrt(transferSma * transferSma * transferSma / mu);
 
             double periodDiff = period - targetPeriod;

@@ -26,7 +26,7 @@ namespace Blackbird.Planning
 
             PhasingOrbit po = PhasingOrbit.FromInsertionTarget(targetInsertion, targetOrbit, target.mainBody, phaseAngleDeg);
             LaunchWindowInfo lwi = LaunchWindowInfo.Create(active, targetOrbit, ls);
-            ApplyPlaneDerivedHeadings(active, target, lwi);
+            // Use LaunchWindowInfo's inclination-based azimuth; the plane-derived override launched retrograde at one node.
             LaunchCandidate[] candidates = CreateCandidates(vesselState, target, targetOrbit, targetInsertion, lwi, phaseAngleDeg);
 
             return new LaunchPlan
@@ -52,45 +52,6 @@ namespace Blackbird.Planning
             };
         }
 
-
-        // Replaces inclination-only launch azimuths with headings derived from the target orbit plane.
-        private static void ApplyPlaneDerivedHeadings(Vessel active, Vessel target, LaunchWindowInfo launchWindow)
-        {
-            if (active == null || target == null || launchWindow == null) return;
-
-            Vector3d activePosition = TrajectoryProvider.GetPosition(active);
-            Vector3d targetOrbitNormal = TrajectoryProvider.GetOrbitNormal(target);
-            Vector3d surfaceUp = active.mainBody != null && activePosition.sqrMagnitude > 0.0
-                ? (activePosition - active.mainBody.position).normalized
-                : active.upAxis;
-            Vector3d surfaceNorth = active.north;
-
-            double ascendingHeading = OrbitMath.GetLaunchHeadingFromOrbitNormal(
-                surfaceUp,
-                surfaceNorth,
-                targetOrbitNormal,
-                true);
-
-            double descendingHeading = OrbitMath.GetLaunchHeadingFromOrbitNormal(
-                surfaceUp,
-                surfaceNorth,
-                targetOrbitNormal,
-                false);
-
-            if (MathHelpers.IsFinite(ascendingHeading))
-            {
-                launchWindow.AscendingAzimuthDeg = ascendingHeading;
-            }
-
-            if (MathHelpers.IsFinite(descendingHeading))
-            {
-                launchWindow.DescendingAzimuthDeg = descendingHeading;
-            }
-
-            launchWindow.SelectedAzimuthDeg = launchWindow.UseAscendingNode
-                ? launchWindow.AscendingAzimuthDeg
-                : launchWindow.DescendingAzimuthDeg;
-        }
 
         // Builds selectable launch opportunities from the current plane-crossing windows.
         private static LaunchCandidate[] CreateCandidates(
@@ -262,9 +223,13 @@ namespace Blackbird.Planning
                                 OrbitInfo targetOrbit)
         {
             double insertionAltitude = (insertionApoapsisAlt + insertionPeriapsisAlt) * 0.5;
-            double circularVelocity = OrbitMath.GetCircularVelocity(body, insertionAltitude);
 
-            if (!MathHelpers.IsFinite(circularVelocity)) return double.NaN;
+            // Energy-based characteristic velocity to reach the insertion orbit. Orbital speed FALLS with
+            // altitude, so the old circular-speed term made higher phasing orbits look cheaper; this rises with
+            // altitude, so the higher detour is correctly costed.
+            double rInsertion = body.Radius + insertionAltitude;
+            double ascentDeltaV = Math.Sqrt(body.gravParameter * (2.0 / body.Radius - 1.0 / rInsertion));
+            if (!MathHelpers.IsFinite(ascentDeltaV)) return double.NaN;
 
             double targetAltitude = targetOrbit != null
                 ? (targetOrbit.ApoapsisAlt + targetOrbit.PeriapsisAlt) * 0.5
@@ -273,7 +238,7 @@ namespace Blackbird.Planning
             double transferDeltaV = OrbitMath.EstimateHohmannDeltaV(body, insertionAltitude, targetAltitude);
             if (!MathHelpers.IsFinite(transferDeltaV)) transferDeltaV = 0.0;
 
-            return circularVelocity + transferDeltaV;
+            return ascentDeltaV + transferDeltaV;
         }
 
         // Scores candidates so lower dV, lower error, fewer phasing orbits, and earlier launches sort first.

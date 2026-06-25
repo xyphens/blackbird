@@ -26,5 +26,7 @@ namespace Blackbird.Rendezvous
         public Vector3d TargetPosition => TrajectoryProvider.GetPosition(_target) - _active.mainBody.position;
         public Vector3d TargetVelocity => TrajectoryProvider.GetVelocity(_target);
         public Vector3d ReferenceNormal => TrajectoryProvider.GetOrbitNormal(_target);
+        public double BodyRadius => _active.mainBody.Radius;
+        public double AtmosphereDepth => _active.mainBody.atmosphere ? _active.mainBody.atmosphereDepth : 0.0;
     }
 }

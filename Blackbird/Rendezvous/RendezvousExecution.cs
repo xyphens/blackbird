@@ -40,5 +40,7 @@ namespace Blackbird.Rendezvous
         Vector3d TargetPosition { get; }
         Vector3d TargetVelocity { get; }
         Vector3d ReferenceNormal { get; }   // target orbit normal, for transfer-direction disambiguation
+        double BodyRadius { get; }           // central body radius (m), for phasing-orbit safety floor
+        double AtmosphereDepth { get; }      // atmosphere top altitude (m), 0 if airless
     }
 }
