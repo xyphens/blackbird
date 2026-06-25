@@ -15,6 +15,8 @@ namespace Blackbird.Rendezvous
     public sealed class RendezvousHandler
     {
         private SharedState bbState;
+        private WarpHelper warp;
+
         private readonly TerminalRendezvousExecutor _executor = new TerminalRendezvousExecutor();
         private readonly AttitudeControl _attitude = new AttitudeControl();
         private readonly BlackbirdLog _log = new BlackbirdLog(LogContext.Rendezvous);
@@ -62,7 +64,7 @@ namespace Blackbird.Rendezvous
         // Warp-to-closest-approach: absolute target UT, auto-stopped a lead short so the craft can pre-orient.
         // The lead is a fixed minimum for arrival-fired stages; for Match Velocity it is the estimated slew to
         // the retro-relative-velocity attitude (+settle/margin).
-        private const double WarpLeadMinSeconds = 10.0;    // minimum lead before the event (any stage)
+        private const double WarpLeadMinSeconds = 15.0;    // minimum lead before the event (any stage)
         private const double WarpLeadMaxSeconds = 120.0;   // cap, so a huge slew estimate can't strand the warp
         private const double OrientPaddingSeconds = 3.0;   // safety margin on top of the estimated slew + dwell
         private double _warpTargetUt;
@@ -138,6 +140,7 @@ namespace Blackbird.Rendezvous
 
         public void Init(SharedState s) {
             bbState = s;
+            warp = new WarpHelper();
             _executor.Init(bbState);
             _executor.Reset();
         }
@@ -258,13 +261,14 @@ namespace Blackbird.Rendezvous
             if (Warping)
             {
                 double secondsToWarpTarget = _warpTargetUt - now;
+
                 // Stop on a burn or at the lead; let the warp run through the Hohmann coast-to-ignition
                 // (Executing but not burning) toward the ignition window.
                 bool burning = bbState.InterceptPhase == InterceptPhase.Executing && !CoastingToIgnition;
                 if (burning || secondsToWarpTarget <= _warpLeadSeconds)
                     StopWarp();
                 else
-                    WarpHelper.SetSafeWarpRate(secondsToWarpTarget, bbState.IsRSS);
+                    warp.BetterWarpToUt(_warpTargetUt, active);
             }
             
             if (!_engaged) return;

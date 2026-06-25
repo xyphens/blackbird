@@ -1,3 +1,4 @@
+using System;
 using Blackbird.Guidance;
 using Blackbird.Helpers;
 using Blackbird.Models;
@@ -43,14 +44,14 @@ namespace Blackbird.Modules
 
             if (target != null) targetVessel = (Vessel) target;
 
+            
             if (targetVessel != null && !ReferenceEquals(vessel, targetVessel) && vessel.id != targetVessel.id)
             {
                 GUILayout.Label($"Target: {targetVessel.vesselName}");
 
-                GUILayout.Label($"Apoapsis: {FormatKm(bbState.LaunchPlan.TargetVessel.orbit.ApA)}km", GUILayout.Width(100));
-                GUILayout.Label($"Periapsis: {FormatKm(bbState.LaunchPlan.TargetVessel.orbit.PeA)}km", GUILayout.Width(100));
-                GUILayout.Label($"Orbital Inc.: {bbState.LaunchPlan.TargetVessel.orbit.inclination}°", GUILayout.Width(100));
-                GUILayout.Label(string.IsNullOrEmpty(_launchTimeText) ? "--" : _launchTimeText);
+                GUILayout.Label($"Apoapsis: {FormatKm(targetVessel.orbit.ApA)}km", GUILayout.Width(175));
+                GUILayout.Label($"Periapsis: {FormatKm(targetVessel.orbit.PeA)}km", GUILayout.Width(175));
+                GUILayout.Label($"Orbital Inc.: {Math.Round(targetVessel.orbit.inclination, 4)}°", GUILayout.Width(175));
 
                 if (bbState.LaunchPlan == null) GeneratePlan(vessel, targetVessel);
                 DisplayLaunchPlanCandidates();
@@ -63,10 +64,8 @@ namespace Blackbird.Modules
             GUILayout.Space(10);
 
             // -- USER INPUTS / EDITS --
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Launch At:", GUILayout.Width(70));
-            GUILayout.Label(string.IsNullOrEmpty(_launchTimeText) ? "--" : _launchTimeText);
-            GUILayout.EndHorizontal();
+            string _ltFullText = string.IsNullOrEmpty(_launchTimeText) ? "--" : _launchTimeText;
+            GUILayout.Label($"Launch in: {_ltFullText}");
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("Apoapsis:", GUILayout.Width(70));
@@ -117,8 +116,8 @@ namespace Blackbird.Modules
             GUILayout.Label("Pe", GUILayout.Width(45));
             GUILayout.Label("Hdg", GUILayout.Width(50));
             GUILayout.Label("Num Orbits", GUILayout.Width(40));
-            GUILayout.Label("dV Start", GUILayout.Width(45));
-            GUILayout.Label("dv End", GUILayout.Width(45));
+            GUILayout.Label("Req. Dv", GUILayout.Width(45));
+            GUILayout.Label("Rmg. Dv", GUILayout.Width(45));
             GUILayout.Label("-", GUILayout.Width(45));
             GUILayout.EndHorizontal();
 

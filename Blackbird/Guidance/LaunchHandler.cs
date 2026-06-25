@@ -12,6 +12,7 @@ namespace Blackbird.Guidance
         private double _targetUt;
 
         SharedState bbState;
+        WarpHelper warp;
 
         private readonly AttitudeControl _attitudeControl = new AttitudeControl();
 
@@ -61,6 +62,7 @@ namespace Blackbird.Guidance
         public void Init(SharedState s)
         {
             if (s == null || FlightGlobals.ActiveVessel == null) return;
+            warp = new WarpHelper();
             bbState = s;
             State = s.LaunchPlan != null ? LaunchGuidanceState.PlanReady : LaunchGuidanceState.Idle;
 
@@ -118,9 +120,14 @@ namespace Blackbird.Guidance
 
         private void RefreshGuidanceComputer()
         {
-            _ascentGuidance.Refresh(bbState.IsRSS, _minAltToPitch, _minVSpd);
+            _ascentGuidance.Refresh(bbState.IsRSS, bbState.IsPrincipia, _minAltToPitch, _minVSpd);
         }
-        private static void SetSafeWarpRate(double secondsRemaining, bool isRss) => WarpHelper.SetSafeWarpRate(secondsRemaining, isRss);
+        //private static void SetSafeWarpRate(double toUt, bool isRss) => WarpHelper.SetSafeWarpRate(secondsRemaining, isRss);
+        private void WarpToUT(double UT, Vessel vessel)
+        {
+            if (warp == null) return;
+            warp.BetterWarpToUt(UT, vessel, false);
+        }
 
         // "Arm" the launch: reveals Warp To Launch + the flight-mode selector. No flying yet — choosing a
         // flight mode (BeginAscent) is what starts the ascent.
@@ -157,29 +164,6 @@ namespace Blackbird.Guidance
                 return;
             }
 
-            // handle guidance
-            //if (State == LaunchGuidanceState.GuidingAscent)
-            //{
-            //    GuidanceInfo =
-            //        _ascentGuidance.GetGuidance(
-            //            vessel,
-            //            bbState.LaunchPlan,
-            //            ManualPitchCommandDeg,
-            //            ManualHeadingCommandDeg,
-            //            ManualThrottleCommand,
-            //            ManualRollCommand,
-            //            GuidanceMode);
-
-            //    if (GuidanceInfo != null && GuidanceInfo.IsGuidanceComplete)
-            //    {
-            //        State = LaunchGuidanceState.Complete;
-            //        bbState.GuidanceState = LaunchGuidanceState.Complete;
-            //        bbState.GuidanceVisible = false;
-            //        bbState.ActiveModule = BlackbirdModule.None;
-            //    }
-            //    return;
-            //}
-
             if (State != LaunchGuidanceState.WarpingToLaunch) return;
 
             // monitor / adjust warp rate
@@ -196,7 +180,11 @@ namespace Blackbird.Guidance
                 return;
             }
 
-            SetSafeWarpRate(secondsRemaining, bbState.IsRSS);
+            WarpToUT(_targetUt - WarpStopLeadTimeSeconds, vessel);
+
+            //SetSafeWarpRate(_targetUt - WarpStopLeadTimeSeconds, bbState.IsRSS);
+
+            // SetSafeWarpRate(secondsRemaining, bbState.IsRSS);
         }
 
         public void SetGuidanceMode(GuidanceMode gMode, Vessel vessel = null)

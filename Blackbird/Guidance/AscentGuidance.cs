@@ -12,14 +12,16 @@ namespace Blackbird.Guidance
         private readonly ClassicAscentGuidance2 _classicGuidance = new ClassicAscentGuidance2();
 
         private bool IsRSS = false;
+        private bool IsPrincipia = false;
         private double _holdPitchUntilAlt = 0.0;
         private double _minVrfSpeedToPitch = 100.0;
 
         // important to call this before the class is used
-        public void Refresh(bool isRss, double holdUntilAltitude, double minVrfSp = 100.0)
+        public void Refresh(bool isRss, bool isPrincipia, double holdUntilAltitude, double minVrfSp = 100.0)
         {
             _holdPitchUntilAlt = holdUntilAltitude;
             IsRSS = isRss;
+            IsPrincipia = isPrincipia;
             _minVrfSpeedToPitch = minVrfSp;
         }
         public void Reset()
@@ -155,9 +157,9 @@ namespace Blackbird.Guidance
                     ? poweredCommand.OptimizerStatus
                     : string.Empty,
 
-                PredictedApoapsisAlt = IsRSS ? _poweredGuidance.PredictedApoapsisAlt
+                PredictedApoapsisAlt = IsPrincipia ? _poweredGuidance.PredictedApoapsisAlt
                              : (ascentProfile != null ? ascentProfile.PredictedApoapsisAlt : double.NaN),
-                PredictedPeriapsisAlt = IsRSS ? _poweredGuidance.PredictedPeriapsisAlt
+                PredictedPeriapsisAlt = IsPrincipia ? _poweredGuidance.PredictedPeriapsisAlt
                               : (ascentProfile != null ? ascentProfile.PredictedPeriapsisAlt : double.NaN),
 
                 EstimatedDeltaVUsed = selectedCandidate != null ? selectedCandidate.EstimatedDeltaVUsed : double.NaN,

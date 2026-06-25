@@ -27,12 +27,13 @@ namespace Blackbird.Guidance
         private Vector3d _insertionSteerDir = Vector3d.zero;
         private double _minVelToGo = double.MaxValue;   // for the overshoot cutoff
         private double _lastProgressUt = double.NegativeInfinity;
+        private int _lastVesselStage = int.MinValue;
 
         private const double InsertionCutoffMps = 1.0; // "on the orbit" — cut here, don't chase to zero
         private const double InsertionOvershootMps = 0.5; // velToGo climbing back up = overshot
         private const double InsertionSteerLockMps = 5.0; // freeze steer dir below this (no end-game pivot)
         private const double InsertionProgressDeadband = 0.1;
-        private const double InsertionStallSeconds = 2.0; // no progress this long (out of fuel) = cut
+        private const double InsertionStallSeconds = 5.0; // empty stages have this long to burn before we consider it a stall
 
         public void Reset()
         {
@@ -47,6 +48,7 @@ namespace Blackbird.Guidance
             _circAtUt = 0.0;
             _insertionSteerDir = Vector3d.zero;
             _minVelToGo = double.MaxValue;
+            _lastVesselStage = int.MinValue;
             _lastProgressUt = double.NegativeInfinity;
             for (int i = 0; i < _apRateSamples.Length; i++) _apRateSamples[i] = 0.0;
         }
@@ -152,6 +154,15 @@ namespace Blackbird.Guidance
                 Vector3d velToGo = ComputeTargetVelocity(vs) - vs.OrbitalVelocity;
                 double mag = velToGo.magnitude;
                 double now = Planetarium.GetUniversalTime();
+
+                int stage = vs.Vessel != null ? vs.Vessel.currentStage : _lastVesselStage;
+                if (stage != _lastVesselStage && _lastVesselStage != int.MinValue)
+                {
+                    _lastProgressUt = now;   // restart the out-of-fuel timer
+                    _minVelToGo = mag;       // re-baseline so the coast drift isn't read as overshoot
+                }
+
+                _lastVesselStage = stage;
 
                 // Re-aim along velToGo while well-defined; freeze the direction for the final approach so the
                 // craft can't pivot chasing a noise-dominated near-zero vector (the velToGo oscillation).

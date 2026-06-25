@@ -21,6 +21,7 @@ namespace Blackbird.Guidance
         private const double TerminalGuidanceLockSeconds = 2.0;
         private const double TerminalOverrunGraceSeconds = 30.0;
 
+        // this effectively asks our guidance computer to go into overdrive calculating a more optimal orbit
         private const double TerminalPeMarginMeters = 30000.0; // begin propagating once osc Pe within 30 km
         private const double TerminalPropagateMaxSeconds = 6000.0;  // > one LEO period
         private const double TerminalPropagateStepSeconds = 20.0;    // RK4 step
@@ -44,9 +45,9 @@ namespace Blackbird.Guidance
         private string _optimizerStatus = "PSG idle";
         private int _optimizerIterations;
         private double _constraintViolation = double.NaN;
-        private Vector3d _prevRelativePosition = Vector3d.zero;
-        private double _prevPositionUt = double.NaN;
 
+        private int _lastVesselStage = int.MinValue;
+        private bool _runColdSolve;
 
         // expose guidance state to listeners
         public double PredictedApoapsisAlt { get; private set; } = double.NaN;
@@ -68,12 +69,13 @@ namespace Blackbird.Guidance
             _optimizerStatus = "PSG idle";
             _optimizerIterations = 0;
             _constraintViolation = double.NaN;
-            _prevRelativePosition = Vector3d.zero;
-            _prevPositionUt = double.NaN;
 
             PredictedApoapsisAlt = double.NaN;
             PredictedPeriapsisAlt = double.NaN;
             _lastPredictionUt = double.NegativeInfinity;
+
+            _lastVesselStage = int.MinValue;
+            _runColdSolve = false;
         }
 
         // Logs measured |h| and specific energy at shutdown against the solved terminal targets — the
@@ -88,27 +90,6 @@ namespace Blackbird.Guidance
             double targetH = _solution != null ? _solution.TerminalAngularMomentum : double.NaN;
             double targetE = _solution != null ? _solution.TerminalSpecificEnergy : double.NaN;
             bbLogger.Write($"[{tag}] h={h:F0} (target {targetH:F0}, dH={h - targetH:F0}) e={e:F1} (target {targetE:F1}, dE={e - targetE:F1}) ap={vesselState.CurrentApoapsisAlt:F0} pe={vesselState.CurrentPeriapsisAlt:F0}");
-        }
-
-        // TEMP diagnostic: is vessel.obt_velocity the real physical velocity, or a synthesized conic vector?
-        // Finite-difference the body-relative position (our "IMU") and compare to obt_velocity. Gated to the
-        // last second so it isn't per-frame spam. Remove once answered.
-        private void LogVelocityCheck(VesselState vesselState, double timeToGo)
-        {
-            Vector3d relPos = vesselState.Position - vesselState.Body.position;
-            if (MathHelpers.IsFinite(_prevPositionUt)
-                && vesselState.UniversalTime > _prevPositionUt
-                && MathHelpers.IsFinite(timeToGo) && timeToGo <= 1.0)
-            {
-                double dt = vesselState.UniversalTime - _prevPositionUt;
-                Vector3d fdVel = (relPos - _prevRelativePosition) / dt;
-                double obtSpeed = vesselState.OrbitalVelocity.magnitude;
-                double fdSpeed = fdVel.magnitude;
-                double angleDeg = Vector3d.Angle(vesselState.OrbitalVelocity, fdVel);
-                bbLogger.Write($"[vel-check] obt={obtSpeed:F3} fd={fdSpeed:F3} dSpeed={obtSpeed - fdSpeed:F3} angleDeg={angleDeg:F3} dt={dt:F4}");
-            }
-            _prevRelativePosition = relPos;
-            _prevPositionUt = vesselState.UniversalTime;
         }
 
         public PoweredGuidanceCommand GetCommand(
@@ -142,18 +123,6 @@ namespace Blackbird.Guidance
             // energy-based completion shutoff
             if (!_complete && _solution != null && _solution.IsValid)
             {
-                //Vector3d rRel = vesselState.Position - vesselState.Body.position;
-                //double rMag = rRel.magnitude;
-                //if (rMag > 0.0)
-                //{
-                //    double e = 0.5 * vesselState.OrbitalVelocity.sqrMagnitude - vesselState.BodyGravParameter / rMag;
-                //    if (MathHelpers.IsFinite(_solution.TerminalSpecificEnergy) && e >= _solution.TerminalSpecificEnergy)
-                //    {
-                //        _complete = true;
-                //        _phase = PoweredGuidancePhase.Complete;
-                //        LogCompletion("psg-energy-complete", vesselState);
-                //    }
-                //}
                 Vector3d rRel = vesselState.Position - vesselState.Body.position;
                 double rMag = rRel.magnitude;
                 if (rMag > 0.0)
@@ -188,7 +157,7 @@ namespace Blackbird.Guidance
                 ? _solution.TimeToGo(vesselState.UniversalTime)
                 : EstimateTimeToGoSeconds(vesselState, velocityToGo);
 
-            LogVelocityCheck(vesselState, timeToGo);
+            //LogVelocityCheck(vesselState, timeToGo);
 
             if (_complete)
             {
@@ -374,6 +343,18 @@ namespace Blackbird.Guidance
             Vector3d initialThrustDirection)
         {
 
+            // bridge to allow optimizer to continue if vessel stages mid-circularization
+            int currentStage = vesselState.PoweredStages != null && vesselState.PoweredStages.Length > 0
+                ? vesselState.PoweredStages[0].KspStage : _lastVesselStage;
+
+            if (currentStage != _lastVesselStage && _lastVesselStage != int.MinValue)
+            {
+                _optimizerFailCount = 0;
+                _runColdSolve = true;     // next solve ignores the stale warm-start
+            }
+
+            _lastVesselStage = currentStage;
+
             if (_solveTask != null && _solveTask.IsCompleted)
             {
                 PsgOptimizationResult result = _solveTask.Result;
@@ -433,7 +414,9 @@ namespace Blackbird.Guidance
                 return;
             }
 
-            PsgSolution warmStart = _solution;
+            PsgSolution warmStart = _runColdSolve ? null : _solution;
+            _runColdSolve = false;
+
             _lastSolveRequestUt = vesselState.UniversalTime;
             _optimizerStatus = "PSG solving";
             _pendingProblem = problem;
@@ -498,8 +481,7 @@ namespace Blackbird.Guidance
 
             double targetPeRadius = vesselState.BodyRadius + ascentProfile.TargetPeriapsisAlt;
 
-            // Cheap pre-filter: osculating Pe is a lower bound on real Pe near a circular target, so only
-            // run the propagation once we're close — never skips a true completion.
+            // wait until we're in range
             double osculatingPeRadius = vesselState.BodyRadius + vesselState.CurrentPeriapsisAlt;
             if (!MathHelpers.IsFinite(osculatingPeRadius) ||
                 osculatingPeRadius < targetPeRadius - TerminalPeMarginMeters) return false;
