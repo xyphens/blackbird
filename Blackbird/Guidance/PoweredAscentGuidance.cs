@@ -47,6 +47,13 @@ namespace Blackbird.Guidance
         private Vector3d _prevRelativePosition = Vector3d.zero;
         private double _prevPositionUt = double.NaN;
 
+
+        // expose guidance state to listeners
+        public double PredictedApoapsisAlt { get; private set; } = double.NaN;
+        public double PredictedPeriapsisAlt { get; private set; } = double.NaN;
+        private double _lastPredictionUt = double.NegativeInfinity;
+        private const double PredictionIntervalSeconds = 0.5;
+
         public void Reset()
         {
             _phase = PoweredGuidancePhase.Unavailable;
@@ -63,6 +70,10 @@ namespace Blackbird.Guidance
             _constraintViolation = double.NaN;
             _prevRelativePosition = Vector3d.zero;
             _prevPositionUt = double.NaN;
+
+            PredictedApoapsisAlt = double.NaN;
+            PredictedPeriapsisAlt = double.NaN;
+            _lastPredictionUt = double.NegativeInfinity;
         }
 
         // Logs measured |h| and specific energy at shutdown against the solved terminal targets — the
@@ -125,6 +136,7 @@ namespace Blackbird.Guidance
 
             Vector3d initialThrustDirection = GetCurrentThrustDirection(vesselState, profileHeadingDeg, profilePitchDeg);
             UpdatePsgSolution(vesselState, launchPlan, ascentProfile, initialThrustDirection);
+            UpdateOrbitPrediction(vesselState);
             PinSolutionToGroundedTime(vesselState);
 
             // energy-based completion shutoff
@@ -289,6 +301,27 @@ namespace Blackbird.Guidance
                 false);
         }
 
+        private void UpdateOrbitPrediction(VesselState vs)
+        {
+            double rMag = (vs.Position - vs.Body.position).magnitude;
+            if (rMag <= 0.0) return;
+            double e = 0.5 * vs.OrbitalVelocity.sqrMagnitude - vs.BodyGravParameter / rMag;
+            if (e >= 0.0) { PredictedApoapsisAlt = PredictedPeriapsisAlt = double.NaN; return; }  // not bound yet
+            if (vs.UniversalTime - _lastPredictionUt < PredictionIntervalSeconds) return;
+            _lastPredictionUt = vs.UniversalTime;
+
+            BodyOblateness.Oblateness ob = BodyOblateness.For(vs.Body);
+            Vector3d up = vs.Body.transform.up;
+            Vector3d pole = new Vector3d(up.x, up.y, up.z).normalized;
+            Vector3d r = vs.Position - vs.Body.position;
+            double minR, maxR;
+            J2Propagator.RadiusExtremes(r, vs.OrbitalVelocity, vs.BodyGravParameter,
+                ob.J2, ob.ReferenceRadiusMeters, pole,
+                TerminalPropagateMaxSeconds, TerminalPropagateStepSeconds, out minR, out maxR);
+            PredictedPeriapsisAlt = minR - vs.BodyRadius;
+            PredictedApoapsisAlt = maxR - vs.BodyRadius;
+        }
+
         private double J2MeanRadius(VesselState vs)
         {
             BodyOblateness.Oblateness ob = BodyOblateness.For(vs.Body);
@@ -302,7 +335,6 @@ namespace Blackbird.Guidance
                 TerminalPropagateMaxSeconds, TerminalPropagateStepSeconds, out minR, out maxR);
             return 0.5 * (minR + maxR);
         }
-
 
         private double J2PeriapsisRadius(VesselState vs)
         {

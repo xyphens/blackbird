@@ -155,8 +155,10 @@ namespace Blackbird.Guidance
                     ? poweredCommand.OptimizerStatus
                     : string.Empty,
 
-                PredictedApoapsisAlt = ascentProfile != null ? ascentProfile.PredictedApoapsisAlt : double.NaN,
-                PredictedPeriapsisAlt = ascentProfile != null ? ascentProfile.PredictedPeriapsisAlt : double.NaN,
+                PredictedApoapsisAlt = IsRSS ? _poweredGuidance.PredictedApoapsisAlt
+                             : (ascentProfile != null ? ascentProfile.PredictedApoapsisAlt : double.NaN),
+                PredictedPeriapsisAlt = IsRSS ? _poweredGuidance.PredictedPeriapsisAlt
+                              : (ascentProfile != null ? ascentProfile.PredictedPeriapsisAlt : double.NaN),
 
                 EstimatedDeltaVUsed = selectedCandidate != null ? selectedCandidate.EstimatedDeltaVUsed : double.NaN,
                 EstimatedRemainingDeltaV = selectedCandidate != null
