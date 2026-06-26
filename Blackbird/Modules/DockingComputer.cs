@@ -57,12 +57,27 @@ namespace Blackbird.Modules
             GUILayout.Space(6);
 
             // --- autopilot toggle buttons (see the state logic in the header of DockingHandler) ---
-            bool guidance = bbState.DockingMode == DockingControlMode.Guidance;
-            bool runEnabled = _handler.HasTarget && !guidance && !bbState.GuidanceEnabled && !bbState.RendezvousEnabled;
-            bool assumeEnabled = guidance || (bbState.DockingMode == DockingControlMode.Off && _handler.HasTarget);
+            bool alreadyRunning = bbState.DockingMode == DockingControlMode.Guidance;
+
+            bool canRun = _handler.HasTarget && !alreadyRunning && bbState.CanClaimControl(BlackbirdModule.Docking);
+
+            if (!canRun && !alreadyRunning)
+            {
+                string cantRunReason = "unavailable";
+                if (!_handler.HasTarget)
+                    cantRunReason = "no target selected";
+                else if (bbState.ActiveModule == BlackbirdModule.LaunchGuidance)
+                    cantRunReason = "ascent guidance is running";
+                else if (bbState.ActiveModule == BlackbirdModule.Rendezvous)
+                    cantRunReason = "rendezvous in progress";
+
+                GUILayout.Label($"Docking unavailable: {cantRunReason}");
+            }
+
+            bool assumeEnabled = alreadyRunning || (bbState.DockingMode == DockingControlMode.Off && _handler.HasTarget);
 
             GUILayout.BeginHorizontal();
-            GUI.enabled = runEnabled;
+            GUI.enabled = canRun;
             if (GUILayout.Button("Run Docking Guidance", GUILayout.Height(30))) _handler.RunDockingGuidance();
             GUI.enabled = assumeEnabled;
             if (GUILayout.Button("Assume Control", GUILayout.Height(30))) _handler.AssumeControl();

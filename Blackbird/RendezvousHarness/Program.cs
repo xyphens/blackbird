@@ -32,6 +32,7 @@ namespace Blackbird.RendezvousHarness
             CheckExecutorGating();
             CheckInterceptBurnClosedLoop();
             CheckClosestApproachCountsDown();
+            CheckClosestApproachJ2ShiftsResult();
             CheckInterceptLargeCoOrbitalGap();
             CheckInterceptBurnTerminatesUnderWeakThrust();
             CheckMatchVelocityNullsRelativeVelocity();
@@ -433,6 +434,58 @@ namespace Blackbird.RendezvousHarness
             Console.WriteLine(string.Format(
                 "    period={0:F0}s  CA#1={1:F0}m in {2:F0}s  CA#2 in {3:F0}s (expected ~{4:F0})",
                 period, first.DistanceMeters, first.TimeSeconds, second.TimeSeconds, first.TimeSeconds - advance));
+        }
+
+        // J2 materially shifts the predicted closest approach at RSS scale. Two coplanar inclined circular
+        // orbits (250 / 400 km, i=51.6 deg) with the lower chaser catching the leading target over ~hours:
+        // conic and J2 disagree on WHEN they line up (differential draconic period) and HOW close they pass
+        // (differential nodal regression opens cross-track). Verifies the J2 path is wired and changes the
+        // answer; the absolute accuracy vs Principia is an in-game check, not provable offline.
+        private static void CheckClosestApproachJ2ShiftsResult()
+        {
+            Console.WriteLine("Case 10b: J2 shifts closest approach at RSS scale");
+
+            const double earthMu = 3.986004418e14;
+            const double earthRe = 6378136.3;
+            const double earthJ2 = 1.082636e-03;
+            double inc = 51.6 * Math.PI / 180.0;
+
+            // Inclined plane whose line of nodes is +x; in-plane basis (u along node, p perpendicular).
+            Vector3d u = new Vector3d(1.0, 0.0, 0.0);
+            Vector3d p = new Vector3d(0.0, Math.Cos(inc), Math.Sin(inc));
+            Vector3d pole = new Vector3d(0.0, 0.0, 1.0);   // body spin axis = +z (equator is XY)
+
+            double R1 = earthRe + 250000.0, vc1 = Math.Sqrt(earthMu / R1);
+            double R2 = earthRe + 400000.0, vc2 = Math.Sqrt(earthMu / R2);
+            double lead = 40.0 * Math.PI / 180.0;          // target ahead; lower/faster chaser catches up
+
+            Vector3d aPos = R1 * u;
+            Vector3d aVel = vc1 * p;
+            Vector3d tPos = R2 * (Math.Cos(lead) * u + Math.Sin(lead) * p);
+            Vector3d tVel = vc2 * (-Math.Sin(lead) * u + Math.Cos(lead) * p);
+
+            double horizon = 6.0 * 3600.0;
+            int samples = 360;
+
+            ApproachResult conic = ClosestApproachSolver.FindNextApproach(
+                aPos, aVel, tPos, tVel, earthMu, horizon, samples);
+            ApproachResult conicExplicitZero = ClosestApproachSolver.FindNextApproach(
+                aPos, aVel, tPos, tVel, earthMu, horizon, samples, 0.0, earthRe, pole);
+            ApproachResult j2 = ClosestApproachSolver.FindNextApproach(
+                aPos, aVel, tPos, tVel, earthMu, horizon, samples, earthJ2, earthRe, pole);
+
+            double timeShift = Math.Abs(j2.TimeSeconds - conic.TimeSeconds);
+            double distShift = Math.Abs(j2.DistanceMeters - conic.DistanceMeters);
+
+            Console.WriteLine(string.Format(
+                "    conic: {0:F0}m in {1:F0}s   J2: {2:F0}m in {3:F0}s   dt={4:F0}s  dd={5:F0}m",
+                conic.DistanceMeters, conic.TimeSeconds, j2.DistanceMeters, j2.TimeSeconds, timeShift, distShift));
+
+            AssertTrue("conic and J2 both find an approach", conic.Found && j2.Found);
+            AssertTrue("j2=0 reproduces the conic path exactly",
+                Math.Abs(conicExplicitZero.TimeSeconds - conic.TimeSeconds) < 1e-6
+                && Math.Abs(conicExplicitZero.DistanceMeters - conic.DistanceMeters) < 1e-6);
+            AssertTrue("J2 materially shifts CA time (> 20 s)", timeShift > 20.0);
         }
 
         // DIAGNOSTIC: reproduces the in-game "accurate launch" geometry — target ~20 km radially out on a

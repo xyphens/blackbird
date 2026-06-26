@@ -63,7 +63,13 @@ namespace Blackbird.Modules
     public sealed class SharedState
     {
         // general
+        // Single owner of vessel actuation. A module may run/actuate only while it holds this; everything
+        // else self-stops. Set when an action starts, cleared (to None) when it ends or control is handed off.
         public BlackbirdModule ActiveModule { get; set; }
+
+        // True when `module` may take control: nothing else owns it (idle/user) or it already does.
+        public bool CanClaimControl(BlackbirdModule module) =>
+            ActiveModule == BlackbirdModule.None || ActiveModule == module;
 
         public bool PlannerVisible = false;
         public bool RendezvousVisible = false;

@@ -109,6 +109,7 @@
     <Compile Include="Planning\PhasingRecommendationCalculator.cs" />
     <Compile Include="Models\PhasingRecommendationMode.cs" />
     <Compile Include="Planning\LaunchPlanner.cs" />
+    <Compile Include="Planning\LaunchWindowSolver.cs" />
     <Compile Include="BlackBird.cs" />
     <Compile Include="Modules\GuidanceComputer.cs" />
     <Compile Include="Modules\DockingComputer.cs" />

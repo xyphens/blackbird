@@ -62,6 +62,11 @@ namespace Blackbird.Mathematics
             }
         }
 
+        // Public single RK4 step, for callers that integrate a trajectory themselves (e.g. closest-approach
+        // sampling of two states). Same integrator the apsis finders use.
+        public static void Step(ref Vector3d r, ref Vector3d v, double mu, double j2, double reEq, Vector3d pole, double dt)
+            => Rk4Step(ref r, ref v, mu, j2, reEq, pole, dt);
+
         private static void Rk4Step(ref Vector3d r, ref Vector3d v, double mu, double j2, double reEq, Vector3d pole, double dt) {
             Vector3d k1r = v, k1v = Acceleration(r, mu, j2, reEq, pole);
             Vector3d k2r = v + (0.5 * dt) * k1v,    k2v = Acceleration(r + (0.5 * dt) * k1r, mu, j2, reEq, pole);

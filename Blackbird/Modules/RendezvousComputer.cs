@@ -42,16 +42,13 @@ namespace Blackbird.Modules
         {
             if (bbState == null || !bbState.RendezvousVisible)
             {
-                _handler.ToggleEngage(false);
-                if (bbState != null) bbState.RendezvousEnabled = false;   // release the cross-module lock
+                // Window closed: stop preview/monitor only. A running stage keeps control (it owns ActiveModule).
+                _handler?.ToggleEngage(false);
                 return;
             }
 
-            // Engaged when the window is open AND a target is selected.
-            bool enabled = _handler.Target != null;
-            bbState.RendezvousEnabled = enabled;
-            _handler.ToggleEngage(enabled);
-
+            // Engaged (preview + monitor) while the window is open with a target; control authority is separate.
+            _handler.ToggleEngage(_handler.Target != null);
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Rendezvous Computer");
         }
 
@@ -60,13 +57,11 @@ namespace Blackbird.Modules
 
             if (GUI.Button(new Rect(_windowRect.width - 22, 2, 18, 18), " ")) bbState.RendezvousVisible = false;
 
-            
             if (_handler == null || _handler.Target == null || !Universe.IsInSpace(FlightGlobals.ActiveVessel?.altitude ?? 0))
             {
                 string strTarget = _handler?.Target?.name ?? "no target";
 
                 GUILayout.Label($"Rendezvous computer unavailable (target: {strTarget}, altitude: {FlightGlobals.ActiveVessel.altitude} m / {FlightGlobals.currentMainBody.atmosphereDepth} m)");
-                bbState.RendezvousEnabled = false;
                 GUI.DragWindow();
                 return;
             }
@@ -132,9 +127,8 @@ namespace Blackbird.Modules
             GUILayout.Space(8);
             
 
-            // --- action buttons: any stage can be executed at any time ---
-            bool canExecute = bbState.RendezvousEnabled
-                              && !bbState.DockingEnabled && !bbState.GuidanceEnabled
+            // --- action buttons: any stage can be executed when rendezvous can hold control and isn't mid-burn ---
+            bool canExecute = bbState.CanClaimControl(BlackbirdModule.Rendezvous)
                               && bbState.InterceptPhase != InterceptPhase.Executing
                               && bbState.InterceptPhase != InterceptPhase.Aborted;
             if (bbState.InterceptPhase == InterceptPhase.Executing)
@@ -183,13 +177,14 @@ namespace Blackbird.Modules
                 GUI.enabled = true;
             }
 
+            GUI.enabled = canExecute;
             if (GUILayout.Button("Execute: Match Velocity"))
             {
                 bbState.RendezvousMethod = RendezvousMethod.MatchVelocity;
                 ApplyCloseStandoff();
                 _handler.Execute(RendezvousMethod.MatchVelocity);
             }
-                
+
             if (GUILayout.Button("Execute: Close Approach"))
             {
                 bbState.RendezvousMethod = RendezvousMethod.CloseApproach;

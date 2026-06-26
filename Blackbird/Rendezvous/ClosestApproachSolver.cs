@@ -20,7 +20,8 @@ namespace Blackbird.Rendezvous
         public static ApproachResult FindNextApproach(
             Vector3d activePosition, Vector3d activeVelocity,
             Vector3d targetPosition, Vector3d targetVelocity,
-            double mu, double maxHorizonSeconds, int coarseSamples)
+            double mu, double maxHorizonSeconds, int coarseSamples,
+            double j2 = 0.0, double referenceRadius = 0.0, Vector3d pole = default(Vector3d))
         {
             if (mu <= 0.0 || coarseSamples < 2 || maxHorizonSeconds <= 0.0)
                 return new ApproachResult { Found = false };
@@ -37,6 +38,14 @@ namespace Blackbird.Rendezvous
                 double want = MathHelpers.IsFinite(synodic) ? synodic : maxHorizonSeconds;
                 horizon = Math.Min(maxHorizonSeconds, Math.Max(want, Math.Max(periodA, periodT)));
             }
+
+            // With oblateness, conic propagation diverges over a multi-orbit horizon (differential nodal
+            // regression / apsidal precession / J2 period shift between two non-identical orbits) — at RSS
+            // scale that's hundreds of km of CA error. Integrate both trajectories under J2 instead.
+            // j2 == 0 (stock; bodies Principia models as point masses) keeps the cheap closed-form path.
+            if (j2 != 0.0 && pole.sqrMagnitude > 0.0)
+                return FindNextApproachJ2(activePosition, activeVelocity, targetPosition, targetVelocity,
+                    mu, horizon, coarseSamples, j2, referenceRadius, pole);
 
             // Coarse scan brackets the global minimum, then refine within +/- one coarse step.
             ScanMinimum(activePosition, activeVelocity, targetPosition, targetVelocity, mu,
@@ -55,6 +64,64 @@ namespace Blackbird.Rendezvous
                 DistanceMeters = useFine ? fineDist : coarseDist,
                 TimeSeconds = useFine ? fineTime : coarseTime
             };
+        }
+
+        // J2-aware closest approach: forward-integrate both states with the RK4 J2 propagator at a uniform
+        // step, sampling separation, then parabolic-interpolate distance^2 around the minimum for sub-step
+        // timing. Uniform integration (vs. the conic two-phase coarse/refine) because the J2 propagator is
+        // incremental — it has no closed-form "state at arbitrary t" to re-evaluate cheaply.
+        private static ApproachResult FindNextApproachJ2(
+            Vector3d aPos, Vector3d aVel, Vector3d tPos, Vector3d tVel,
+            double mu, double horizon, int samples, double j2, double reEq, Vector3d pole)
+        {
+            double dt = horizon / samples;
+            Vector3d ra = aPos, va = aVel, rt = tPos, vt = tVel;
+
+            // Single forward pass; track the minimum sample and its left/right neighbours' distance^2 for
+            // the parabolic refine. The right neighbour is captured on the iteration after a new minimum.
+            int minIndex = 0;
+            double minD2 = (ra - rt).sqrMagnitude;
+            double d2Prev = minD2, d2Left = minD2, d2Right = minD2;
+            bool wantRight = false;
+
+            for (int i = 1; i <= samples; i++)
+            {
+                J2Propagator.Step(ref ra, ref va, mu, j2, reEq, pole, dt);
+                J2Propagator.Step(ref rt, ref vt, mu, j2, reEq, pole, dt);
+                double d2 = (ra - rt).sqrMagnitude;
+                if (wantRight) { d2Right = d2; wantRight = false; }
+                if (d2 < minD2)
+                {
+                    minD2 = d2;
+                    minIndex = i;
+                    d2Left = d2Prev;      // sample i-1
+                    d2Right = d2;         // provisional until the next sample lands
+                    wantRight = i < samples;
+                }
+                d2Prev = d2;
+            }
+
+            double tMin = minIndex * dt;
+            double minDist = Math.Sqrt(minD2);
+
+            // Parabolic vertex of distance^2 through (i-1, i, i+1); offset in [-1,1] samples. Interior only.
+            if (minIndex > 0 && minIndex < samples)
+            {
+                double f0 = d2Left, f1 = minD2, f2 = d2Right;
+                double denom = f0 - 2.0 * f1 + f2;
+                if (denom > 0.0)
+                {
+                    double offset = 0.5 * (f0 - f2) / denom;
+                    if (offset > -1.0 && offset < 1.0)
+                    {
+                        tMin = (minIndex + offset) * dt;
+                        double vertex = f1 - 0.25 * (f0 - f2) * offset;
+                        if (vertex > 0.0) minDist = Math.Sqrt(vertex);
+                    }
+                }
+            }
+
+            return new ApproachResult { Found = true, DistanceMeters = minDist, TimeSeconds = tMin };
         }
 
         // Minimum separation over [t0, t1], sampled uniformly; returns the distance and the time of it.

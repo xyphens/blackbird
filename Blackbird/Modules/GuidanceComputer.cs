@@ -55,6 +55,14 @@ namespace Blackbird.Modules
                 return;
             }
 
+            // Finished flight: show the insertion result, not the pre-launch arming details.
+            if (_launchHandler.State == LaunchGuidanceState.Complete)
+            {
+                DrawGuidanceResult(_launchHandler.GuidanceInfo);
+                GUI.DragWindow();
+                return;
+            }
+
             if (_launchHandler.State != LaunchGuidanceState.GuidingAscent)
             {
                 LaunchWindowInfo lw = bbState.LaunchPlan.LaunchWindow;
@@ -89,7 +97,7 @@ namespace Blackbird.Modules
                 {
                     // arm the launch
                     GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted
-                                  && !bbState.DockingEnabled && !bbState.RendezvousEnabled;
+                                  && bbState.CanClaimControl(BlackbirdModule.LaunchGuidance);
                     if (GUILayout.Button("Start Guidance")) _launchHandler.StartGuidance();
                 }
                 else
@@ -245,7 +253,7 @@ namespace Blackbird.Modules
             {
                 PhasingOrbit phasing = bbState.LaunchPlan?.PhasingOrbit;
 
-                if (phasing != null)
+                if (phasing != null && bbState?.LaunchPlan?.TargetVessel != null)
                 {
                     GUILayout.Label(phasing.IsFasterThanTarget
                         ? "Phasing: insertion orbit is faster than target"
@@ -362,6 +370,37 @@ namespace Blackbird.Modules
                 GUILayout.Label($"Time to Desc: {launchPlan.LaunchWindow.TimeToDescendingNodeSeconds:F0}s");
                 GUILayout.Label($"Selected Offset: {launchPlan.LaunchWindow.PlaneOffsetDeg:F2}°");
             }
+        }
+
+        // Insertion result after a completed ascent: target apsides and the achieved error. GuidanceInfo holds
+        // the final guidance frame until the plan is aborted or replaced.
+        private void DrawGuidanceResult(AscentGuidanceInfo guidanceInfo)
+        {
+            GUILayout.Label("Ascent complete");
+            if (guidanceInfo == null)
+            {
+                GUILayout.Label("No guidance result available");
+                return;
+            }
+
+            GUILayout.Space(6);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("", GUILayout.Width(80));
+            GUILayout.Label("Target", GUILayout.Width(70));
+            GUILayout.Label("Error", GUILayout.Width(70));
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Apoapsis", GUILayout.Width(80));
+            GUILayout.Label(FormatKm(guidanceInfo.TargetApoapsisAlt, "F0"), GUILayout.Width(70));
+            GUILayout.Label(FormatKm(guidanceInfo.ApoapsisErrorMeters, "F1"), GUILayout.Width(70));
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Periapsis", GUILayout.Width(80));
+            GUILayout.Label(FormatKm(guidanceInfo.TargetPeriapsisAlt, "F0"), GUILayout.Width(70));
+            GUILayout.Label(FormatKm(guidanceInfo.PeriapsisErrorMeters, "F1"), GUILayout.Width(70));
+            GUILayout.EndHorizontal();
         }
 
         private void DrawSelectGuidanceMethod()

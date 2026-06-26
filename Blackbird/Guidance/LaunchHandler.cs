@@ -251,12 +251,16 @@ namespace Blackbird.Guidance
             _targetUt = 0.0;
 
             State = bbState.LaunchPlan != null ? LaunchGuidanceState.PlanReady : LaunchGuidanceState.Idle;
+            bbState.GuidanceEnabled = false;
+            if (bbState.ActiveModule == BlackbirdModule.LaunchGuidance) bbState.ActiveModule = BlackbirdModule.None;
+            GuidanceInfo = null;   // drop the stale result; a completed flight keeps it for the result panel
             _ascentGuidance.Reset();
         }
 
         public void ConstructLaunchPlan(Vessel vessel, Vessel target, double apoapsisAlt, double periapsisAlt, double headingDeg, double launchUt = double.NaN)
         {
             if (vessel == null) return;
+            GuidanceInfo = null;   // a replaced plan invalidates the previous flight's result
             TargetVessel = target != null ? target : null;
 
             VesselState vs = VesselState.FromVessel(vessel);
@@ -308,6 +312,7 @@ namespace Blackbird.Guidance
         public void Reset()
         {
             if (bbState != null) bbState.LaunchPlan = null;
+            if (bbState != null && bbState.ActiveModule == BlackbirdModule.LaunchGuidance) bbState.ActiveModule = BlackbirdModule.None;
             TimeWarp.SetRate(0, true);
             _targetUt = 0.0;
             State = LaunchGuidanceState.Idle;
@@ -340,6 +345,8 @@ namespace Blackbird.Guidance
         public void ApplyFlightControls(FlightCtrlState state, Vessel vessel)
         {
             if (state == null) return;
+            // Actuate only while we own control; another module taking over (e.g. rendezvous/docking) stops us.
+            if (bbState != null && bbState.ActiveModule != BlackbirdModule.LaunchGuidance) return;
 
             if (State == LaunchGuidanceState.GuidingAscent)
             {
@@ -357,7 +364,6 @@ namespace Blackbird.Guidance
                 {
                     State = LaunchGuidanceState.Complete;
                     bbState.GuidanceState = LaunchGuidanceState.Complete;
-                    bbState.GuidanceVisible = false;
                     bbState.ActiveModule = BlackbirdModule.None;
                 }
             }

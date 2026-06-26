@@ -66,10 +66,12 @@ namespace Blackbird.Docking
             bbState.ActiveModule = BlackbirdModule.Docking;
             _autopilot.Engage(); 
         }
-        public void AssumeControl() { 
+        // Take manual control: claim the authority (Docking) so rendezvous/ascent self-stop, switch to Manual,
+        // and stop the docking autopilot. Stock control still passes through when no panel button is held.
+        public void AssumeControl() {
+            bbState.ActiveModule = BlackbirdModule.Docking;
             bbState.DockingMode = DockingControlMode.Manual;
             bbState.DockingEnabled = true;
-            bbState.ActiveModule = BlackbirdModule.None;
             _autopilot.Disengage();
         }
 

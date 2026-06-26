@@ -3,6 +3,7 @@ using Blackbird.Guidance;
 using Blackbird.Logging;
 using Blackbird.Mathematics;
 using Blackbird.Models;
+using Blackbird.Psg;
 using Blackbird.Trajectory;
 using UnityEngine;
 using Blackbird.Modules;
@@ -101,9 +102,19 @@ namespace Blackbird.Rendezvous
         }
 
         // User gates (pass-through to the executor). Executing a stage cancels any warp.
-        public bool Execute() { StopWarp(); return _executor.Execute(); }
+        public bool Execute() {
+            StopWarp();
+            bool executing = _executor.Execute();
+            bbState.RendezvousEnabled = executing;
+            return executing;
+        }
         // Execute a specific stage out of order (e.g. Match Velocity any time, to kill a closing rate).
-        public bool Execute(RendezvousMethod method) { StopWarp(); return _executor.ForceExecute(method); }
+        public bool Execute(RendezvousMethod method) {
+            StopWarp();
+            bool executing = _executor.ForceExecute(method);
+            bbState.RendezvousEnabled = executing;
+            return executing;
+        }
 
         // Close-approach park distance ("match velocities at X m"); the default is restored when the UI
         // option is off so a one-off custom value doesn't persist into the next approach.
@@ -135,8 +146,20 @@ namespace Blackbird.Rendezvous
         // Invalidate the cached plan preview so it recomputes once (planner switched / manual refresh).
         public const double CloseApproachGainDefault = TerminalRendezvousExecutor.RendezDistanceApproachGainDefault;
         public const double CloseApproachMaxSpeedDefault = TerminalRendezvousExecutor.RendezMaxApproachSpeedDefaultMetersPerSecond;
-        public void Abort() { _executor.Abort(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
+        public void Abort() { _executor.Abort(); _attitude.Reset(); _burnAligned = false; StopWarp(); bbState.RendezvousEnabled = false; }
         public void ResetSequence() { _executor.Reset(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
+
+        // Stop cleanly after losing the control authority (e.g. Docking Assume Control) mid-stage: drop to
+        // idle, release attitude/warp. ActiveModule is already owned by the new module, so it is not touched.
+        private void ReleaseControl()
+        {
+            _executor.Reset();
+            _attitude.Reset();
+            _burnAligned = false;
+            _steadySinceUt = double.NegativeInfinity;
+            StopWarp();
+            bbState.RendezvousEnabled = false;
+        }
 
         public void Init(SharedState s) {
             bbState = s;
@@ -271,7 +294,14 @@ namespace Blackbird.Rendezvous
                     warp.BetterWarpToUt(_warpTargetUt, active);
             }
             
-            if (!_engaged) return;
+            // ActiveModule is the control authority: step + actuate only while we own it. Losing it mid-stage
+            // (e.g. Docking Assume Control) stops us cleanly.
+            bool owns = bbState.ActiveModule == BlackbirdModule.Rendezvous;
+            if (!owns && (bbState.InterceptPhase == InterceptPhase.Executing || bbState.InterceptPhase == InterceptPhase.Coast))
+                ReleaseControl();
+
+            // Preview needs a world too; build it when the panel is engaged (planning) or we own control.
+            if (!_engaged && !owns) return;
 
             VesselRendezvousWorld world = new VesselRendezvousWorld(active, target);
 
@@ -293,6 +323,9 @@ namespace Blackbird.Rendezvous
                         _executor.BurnAccelMetersPerSecondSquared = vs.AvailableThrust / vs.TotalMass;
                 }
             }
+
+            // Past here we step the executor and drive controls; only when we own control.
+            if (!owns) return;
 
             // Feed the close-approach brake its braking-distance inputs: available decel (thrust/mass) and the
             // slew time to flip retrograde-relative. Throttled, close stage only; a bad reading keeps the last.
@@ -436,8 +469,14 @@ namespace Blackbird.Rendezvous
             Vector3d tPos = TrajectoryProvider.GetPosition(target) - body.position;
             Vector3d tVel = TrajectoryProvider.GetVelocity(target);
 
+            // J2 so the multi-orbit propagation matches the real (oblate) trajectory under RSS/Principia;
+            // ob.J2 == 0 in stock, where the solver falls back to the conic path.
+            BodyOblateness.Oblateness ob = BodyOblateness.For(body);
+            Vector3d pole = ((Vector3d)body.transform.up).normalized;
+
             ApproachResult approach = ClosestApproachSolver.FindNextApproach(
-                aPos, aVel, tPos, tVel, mu, CaMaxHorizonSeconds, CaSampleCount);
+                aPos, aVel, tPos, tVel, mu, CaMaxHorizonSeconds, CaSampleCount,
+                ob.J2, ob.ReferenceRadiusMeters, pole);
 
             if (approach.Found)
             {
@@ -452,7 +491,7 @@ namespace Blackbird.Rendezvous
         {
             if (state == null || vessel == null || bbState == null) return;
 
-            bool wantBurn = _engaged && _hasCommand && _command.HasBurn
+            bool wantBurn = bbState.ActiveModule == BlackbirdModule.Rendezvous && _hasCommand && _command.HasBurn
                             && _command.ThrustDirection.sqrMagnitude > 0.0;
 
             if (wantBurn)

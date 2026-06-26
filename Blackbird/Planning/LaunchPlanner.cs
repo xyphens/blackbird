@@ -1,10 +1,9 @@
 using Blackbird.Guidance;
 using Blackbird.Mathematics;
 using Blackbird.Models;
+using Blackbird.Psg;
 using Blackbird.Trajectory;
-using System;
 using System.Collections.Generic;
-using System.Data;
 using System.Linq;
 
 namespace Blackbird.Planning
@@ -26,8 +25,7 @@ namespace Blackbird.Planning
 
             PhasingOrbit po = PhasingOrbit.FromInsertionTarget(targetInsertion, targetOrbit, target.mainBody, phaseAngleDeg);
             LaunchWindowInfo lwi = LaunchWindowInfo.Create(active, targetOrbit, ls);
-            // Use LaunchWindowInfo's inclination-based azimuth; the plane-derived override launched retrograde at one node.
-            LaunchCandidate[] candidates = CreateCandidates(vesselState, target, targetOrbit, targetInsertion, lwi, phaseAngleDeg);
+            LaunchCandidate[] candidates = CreateCandidates(active, vesselState, target, targetOrbit, ls);
 
             return new LaunchPlan
             {
@@ -52,211 +50,100 @@ namespace Blackbird.Planning
             };
         }
 
-
-        // Builds selectable launch opportunities from the current plane-crossing windows.
+        // Adapter: feed the live vessel/target/body into the pure LaunchWindowSolver and map its best ascending
+        // and best descending option back to the UI's LaunchCandidate. AscentProfile is used both ways — a
+        // nominal profile gives the solver its launch->insertion duration, and each result gets its own profile.
         private static LaunchCandidate[] CreateCandidates(
-            VesselState vesselState,
-            Vessel target,
-            OrbitInfo targetOrbit,
-            InsertionTarget insertionTarget,
-            LaunchWindowInfo launchWindow,
-            double currentPhaseAngleDeg)
+            Vessel active, VesselState vesselState, Vessel target, OrbitInfo targetOrbit, LaunchLocation launchLocation)
         {
-            if (vesselState == null || target == null || targetOrbit == null || insertionTarget == null || launchWindow == null)
-            {
+            if (active == null || vesselState == null || target == null || targetOrbit == null || launchLocation == null)
                 return new[] { CreateInvalidCandidate("Planner inputs are incomplete.") };
-            }
 
-            List<LaunchCandidate> candidates = new List<LaunchCandidate>();
+            CelestialBody body = active.mainBody;
+            BodyOblateness.Oblateness ob = BodyOblateness.For(body);
+            double targetAlt = (targetOrbit.ApoapsisAlt + targetOrbit.PeriapsisAlt) * 0.5;
 
-            foreach (PhasingRecommendationMode mode in Enum.GetValues(typeof(PhasingRecommendationMode)))
+            // Physical prograde normal: cross(r,v) sign is unreliable in KSP's left-handed frame, so flip it to
+            // match KSP's inclination (prograde < 90 deg -> normal on the +pole side). Without this the solver
+            // reads prograde orbits as retrograde and recommends a westward launch.
+            Vector3d pole = ((Vector3d)body.transform.up).normalized;
+            Vector3d targetRelPos = TrajectoryProvider.GetPosition(target) - body.position;
+            Vector3d targetVel = TrajectoryProvider.GetVelocity(target);
+            Vector3d targetNormal = Vector3d.Cross(targetRelPos, targetVel).normalized;
+            if ((targetOrbit.InclinationDeg < 90.0) != (Vector3d.Dot(targetNormal, pole) > 0.0))
+                targetNormal = -targetNormal;
+
+            // Nominal ascent at the target altitude, only to get the launch->insertion duration the solver needs.
+            double nominalAzimuth = OrbitMath.GetLaunchAzimuth(targetOrbit.InclinationDeg, launchLocation.LatitudeDeg);
+            AscentProfile nominalAscent = AscentProfileSolver.Create(
+                vesselState, targetAlt, targetAlt, nominalAzimuth, vesselState.RemainingDeltaV);
+            double ascentDuration = nominalAscent.IsValid && MathHelpers.IsFinite(nominalAscent.EstimatedTimeToInsertionSeconds)
+                ? nominalAscent.EstimatedTimeToInsertionSeconds : 300.0;
+
+            LaunchWindowSolver.Inputs inputs = new LaunchWindowSolver.Inputs
             {
-                candidates.Add(CreateCandidateForWindow(
-                    vesselState, target, targetOrbit, insertionTarget,
-                    launchWindow.TimeToAscendingNodeSeconds,
-                    launchWindow.AscendingAzimuthDeg,
-                    launchWindow.PlaneErrorDeg,
-                    currentPhaseAngleDeg,
-                    "Ascending launch window is unavailable.",
-                    mode));
-            }
+                Mu = body.gravParameter,
+                BodyRadius = body.Radius,
+                AtmosphereDepth = body.atmosphere ? body.atmosphereDepth : 0.0,
+                RotationPeriodSeconds = body.rotationPeriod,
+                J2 = ob.J2,
+                J2ReferenceRadius = ob.ReferenceRadiusMeters,
+                Pole = pole,
+                CurrentUt = vesselState.UniversalTime,
+                LaunchSitePosition = TrajectoryProvider.GetPosition(active) - body.position,
+                TargetPosition = targetRelPos,
+                TargetVelocity = targetVel,
+                TargetOrbitNormal = targetNormal,
+                AscentDurationSeconds = ascentDuration,
+                RemainingDeltaV = vesselState.RemainingDeltaV
+            };
 
-            foreach (PhasingRecommendationMode mode in Enum.GetValues(typeof(PhasingRecommendationMode)))
-            {
-                candidates.Add(CreateCandidateForWindow(
-                    vesselState, target, targetOrbit, insertionTarget,
-                    launchWindow.TimeToDescendingNodeSeconds,
-                    launchWindow.DescendingAzimuthDeg,
-                    launchWindow.PlaneErrorDeg,
-                    currentPhaseAngleDeg,
-                    "Descending launch window is unavailable.",
-                    mode));
-            }
+            List<LaunchWindowSolver.Candidate> solved = LaunchWindowSolver.Solve(inputs);
+            if (solved.Count == 0) return new[] { CreateInvalidCandidate("No launch window inside the next day.") };
 
-            return candidates
-                .OrderBy(candidate => candidate.IsValid ? 0 : 1)
-                .ThenBy(candidate => candidate.EstimatedDeltaVUsed)
-                .ThenBy(candidate => Math.Abs(candidate.PhaseErrorDeg))
-                .ThenBy(candidate => candidate.RelativeDistanceMeters)
-                .ThenBy(candidate => candidate.EstimatedOrbitsToRendezvous)
-                .ThenBy(candidate => candidate.LaunchUt)
-                .ToArray();
+            return solved.Select(c => MapCandidate(vesselState, c)).OrderBy(c => c.Score).ToArray();
         }
 
-        // Creates one candidate by combining a launch window, phasing orbit, and ascent profile.
-        private static LaunchCandidate CreateCandidateForWindow(
-            VesselState vesselState,
-            Vessel target,
-            OrbitInfo targetOrbit,
-            InsertionTarget insertionTarget,
-            double secondsUntilLaunch,
-            double launchHeadingDeg,
-            double planeErrorDeg,
-            double currentPhaseAngleDeg,
-            string unavailableReason,
-            PhasingRecommendationMode mode
-            )
+        private static LaunchCandidate MapCandidate(VesselState vesselState, LaunchWindowSolver.Candidate c)
         {
-            if (!IsUsableWindow(secondsUntilLaunch, launchHeadingDeg))
-            {
-                return CreateInvalidCandidate(unavailableReason);
-            }
+            if (!c.IsValid)
+                return new LaunchCandidate
+                {
+                    IsValid = false,
+                    ReasonUnavailable = c.Reason,
+                    LaunchUt = c.LaunchUt,
+                    SecondsUntilLaunch = c.SecondsUntilLaunch,
+                    EstimatedOrbitsToRendezvous = double.PositiveInfinity,
+                    EstimatedDeltaVUsed = double.PositiveInfinity,
+                    Score = c.Score,
+                    AscentProfile = AscentProfileSolver.CreateInvalid(c.Reason)
+                };
 
-            double launchUt = vesselState.UniversalTime + secondsUntilLaunch;
-            double phaseAngleAtLaunch = EstimatePhaseAngleAtLaunch(currentPhaseAngleDeg, targetOrbit, secondsUntilLaunch);
-
-            PhasingRecommendation phasingRecommendation = PhasingRecommendationCalculator.Create(
-                vesselState.Body,
-                targetOrbit,
-                phaseAngleAtLaunch,
-                mode);
-
-            double insertionApoapsisAlt = phasingRecommendation.HasRecommendation
-                ? phasingRecommendation.ApoapsisAlt
-                : insertionTarget.ApoapsisAlt;
-
-            double insertionPeriapsisAlt = phasingRecommendation.HasRecommendation
-                ? phasingRecommendation.PeriapsisAlt
-                : insertionTarget.PeriapsisAlt;
-
-            double estimatedDeltaVUsed = EstimateLaunchDeltaVUsed(vesselState.Body, insertionApoapsisAlt, insertionPeriapsisAlt, targetOrbit);
-            double estimatedRemainingDeltaV = vesselState.RemainingDeltaV - estimatedDeltaVUsed;
-
-            AscentProfile ascentProfile = AscentProfileSolver.Create(
-                vesselState,
-                insertionApoapsisAlt,
-                insertionPeriapsisAlt,
-                launchHeadingDeg,
-                estimatedRemainingDeltaV);
-
-            Vector3d targetPositionAtLaunch = TrajectoryProvider.GetPositionAtUt(target, launchUt);
-            double relativeDistanceMeters = Vector3d.Distance(vesselState.Position, targetPositionAtLaunch);
-            double estimatedOrbits = phasingRecommendation.HasRecommendation
-                ? phasingRecommendation.EstimatedOrbitsToRendezvous
-                : double.PositiveInfinity;
-
-            double phaseErrorDeg = phasingRecommendation.HasRecommendation
-                ? 0.0
-                : MathHelpers.DeltaDegrees(phaseAngleAtLaunch, 0.0);
-
-            bool isValid =
-                phasingRecommendation.HasRecommendation &&
-                ascentProfile.IsValid &&
-                MathHelpers.IsFinite(estimatedDeltaVUsed);
-
-            double score = ScoreCandidate(
-                isValid,
-                estimatedDeltaVUsed,
-                phaseErrorDeg,
-                planeErrorDeg,
-                estimatedOrbits,
-                secondsUntilLaunch);
+            // Real ascent profile for the chosen phasing orbit, so the guidance panel flies the planned insertion.
+            AscentProfile ascent = AscentProfileSolver.Create(
+                vesselState, c.PhasingApoapsisAlt, c.PhasingPeriapsisAlt, c.AzimuthDeg, vesselState.RemainingDeltaV);
 
             return new LaunchCandidate
             {
-                IsValid = isValid,
-                ReasonUnavailable = isValid ? string.Empty : phasingRecommendation.ReasonUnavailable,
-
-                LaunchUt = launchUt,
-                SecondsUntilLaunch = secondsUntilLaunch,
-
-                InsertionApoapsisAlt = insertionApoapsisAlt,
-                InsertionPeriapsisAlt = insertionPeriapsisAlt,
-                LaunchHeadingDeg = launchHeadingDeg,
-
-                EstimatedInsertionTimeSeconds = ascentProfile.EstimatedTimeToInsertionSeconds,
-                EstimatedOrbitsToRendezvous = estimatedOrbits,
-
-                EstimatedDeltaVUsed = estimatedDeltaVUsed,
-                EstimatedRemainingDeltaV = estimatedRemainingDeltaV,
-
-                PlaneErrorDeg = planeErrorDeg,
-                PhaseErrorDeg = phaseErrorDeg,
-                RelativeDistanceMeters = relativeDistanceMeters,
-                Score = score,
-
-                AscentProfile = ascentProfile,
-                PhasingRecommendation = phasingRecommendation
+                IsValid = true,
+                ReasonUnavailable = string.Empty,
+                LaunchUt = c.LaunchUt,
+                SecondsUntilLaunch = c.SecondsUntilLaunch,
+                InsertionApoapsisAlt = c.PhasingApoapsisAlt,
+                InsertionPeriapsisAlt = c.PhasingPeriapsisAlt,
+                LaunchHeadingDeg = c.AzimuthDeg,
+                EstimatedInsertionTimeSeconds = ascent.IsValid ? ascent.EstimatedTimeToInsertionSeconds : double.NaN,
+                EstimatedOrbitsToRendezvous = c.OrbitsToRendezvous,
+                EstimatedDeltaVUsed = c.EstimatedDeltaVUsed,
+                EstimatedRemainingDeltaV = c.RemainingDeltaV,
+                PlaneErrorDeg = c.PlaneErrorDeg,
+                PhaseErrorDeg = c.PhaseErrorDeg,
+                PhasingOrbit = c.PhasingApoapsisAlt,
+                RelativeDistanceMeters = c.PredictedClosestApproachMeters,
+                Score = c.Score,
+                AscentProfile = ascent,
+                PhasingRecommendation = null
             };
-        }
-
-        // Returns false when a node cannot produce a usable launch heading or future launch time.
-        private static bool IsUsableWindow(double secondsUntilLaunch, double launchHeadingDeg)
-        {
-            return MathHelpers.IsFinite(secondsUntilLaunch) && MathHelpers.IsFinite(launchHeadingDeg) && secondsUntilLaunch >= 0.0;
-        }
-
-        // Advances the current phase estimate by target mean motion during the wait to launch.
-        private static double EstimatePhaseAngleAtLaunch(double currentPhaseAngleDeg, OrbitInfo targetOrbit, double secondsUntilLaunch)
-        {
-            if (targetOrbit == null || targetOrbit.PeriodSeconds <= 0.0) return currentPhaseAngleDeg;
-
-            double targetMotionDeg = secondsUntilLaunch / targetOrbit.PeriodSeconds * 360.0;
-            return MathHelpers.NormalizeDegrees(currentPhaseAngleDeg + targetMotionDeg);
-        }
-
-        // Estimates ascent plus phasing insertion dV from circular velocity and transfer cost.
-        private static double EstimateLaunchDeltaVUsed(
-                                CelestialBody body,
-                                double insertionApoapsisAlt,
-                                double insertionPeriapsisAlt,
-                                OrbitInfo targetOrbit)
-        {
-            double insertionAltitude = (insertionApoapsisAlt + insertionPeriapsisAlt) * 0.5;
-
-            // Energy-based characteristic velocity to reach the insertion orbit. Orbital speed FALLS with
-            // altitude, so the old circular-speed term made higher phasing orbits look cheaper; this rises with
-            // altitude, so the higher detour is correctly costed.
-            double rInsertion = body.Radius + insertionAltitude;
-            double ascentDeltaV = Math.Sqrt(body.gravParameter * (2.0 / body.Radius - 1.0 / rInsertion));
-            if (!MathHelpers.IsFinite(ascentDeltaV)) return double.NaN;
-
-            double targetAltitude = targetOrbit != null
-                ? (targetOrbit.ApoapsisAlt + targetOrbit.PeriapsisAlt) * 0.5
-                : insertionAltitude;
-
-            double transferDeltaV = OrbitMath.EstimateHohmannDeltaV(body, insertionAltitude, targetAltitude);
-            if (!MathHelpers.IsFinite(transferDeltaV)) transferDeltaV = 0.0;
-
-            return ascentDeltaV + transferDeltaV;
-        }
-
-        // Scores candidates so lower dV, lower error, fewer phasing orbits, and earlier launches sort first.
-        private static double ScoreCandidate(
-            bool isValid,
-            double estimatedDeltaVUsed,
-            double phaseErrorDeg,
-            double planeErrorDeg,
-            double estimatedOrbitsToRendezvous,
-            double secondsUntilLaunch)
-        {
-            if (!isValid) return double.PositiveInfinity;
-
-            return estimatedDeltaVUsed +
-                   Math.Abs(phaseErrorDeg) * 100.0 +
-                   Math.Abs(planeErrorDeg) * 50.0 +
-                   estimatedOrbitsToRendezvous * 10.0 +
-                   secondsUntilLaunch / 1000.0;
         }
 
         // Creates an invalid candidate that can still be surfaced by UI.

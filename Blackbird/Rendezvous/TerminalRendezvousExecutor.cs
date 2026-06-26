@@ -110,7 +110,8 @@ namespace Blackbird.Rendezvous
         {
             bbState.RendezvousMethod = RendezvousMethod.None;
             bbState.InterceptPhase = InterceptPhase.Idle;
-            if (bbState.InterceptPhase == InterceptPhase.Complete) bbState.ActiveModule = BlackbirdModule.None;
+            bbState.RendezvousEnabled = false;
+            if (bbState.ActiveModule == BlackbirdModule.Rendezvous) bbState.ActiveModule = BlackbirdModule.None;
             ClearBurnState();
             HasInterceptPlan = false;
             _burnArmed = false;
@@ -165,7 +166,8 @@ namespace Blackbird.Rendezvous
         public void Abort()
         {
             bbState.InterceptPhase = InterceptPhase.Aborted;
-            if (bbState.InterceptPhase == InterceptPhase.Complete) bbState.ActiveModule = BlackbirdModule.None;
+            bbState.RendezvousEnabled = false;
+            if (bbState.ActiveModule == BlackbirdModule.Rendezvous) bbState.ActiveModule = BlackbirdModule.None;
             ClearBurnState();
         }
 
@@ -287,7 +289,7 @@ namespace Blackbird.Rendezvous
             return plans;
         }
 
-        // Per-tick update. Runs the active stage while Executing (advancing on completion); otherwise idle.
+        // Per-tick update. Runs the active stage while Executing (advancing on completion); otherwise idle
         public RendezvousCommand Update(IRendezvousWorld world,
             double closestApproach = double.PositiveInfinity, double timeToClosestApproach = double.PositiveInfinity)
         {
@@ -304,20 +306,28 @@ namespace Blackbird.Rendezvous
                     return cmd;
 
                 case InterceptPhase.Coast:
-                    return Idle("coasting — Execute " + bbState.RendezvousMethod);
+                    return Idle("coasting — Execute " + bbState.RendezvousMethod);   // still owns control between stages
                 case InterceptPhase.Complete:
+                    ReleaseModule();
                     return Idle("rendezvous complete — control handed back");
                 case InterceptPhase.Aborted:
+                    ReleaseModule();
                     return Idle("aborted");
                 default:
+                    ReleaseModule();
                     return Idle("idle — Execute " + bbState.RendezvousMethod);
             }
         }
 
+        // Release the rendezvous lock + control authority (handing back to the user) when a run ends.
+        private void ReleaseModule()
+        {
+            bbState.RendezvousEnabled = false;
+            if (bbState.ActiveModule == BlackbirdModule.Rendezvous) bbState.ActiveModule = BlackbirdModule.None;
+        }
+
         private RendezvousCommand StepStage(IRendezvousWorld world, out bool stageComplete)
         {
-            
-            // we no longer "auto-advance" to a next stage, just flag it as complete
             if (bbState.RendezvousMethod == RendezvousMethod.Intercept)
                 return StepIntercept(world, out stageComplete);
             if (bbState.RendezvousMethod == RendezvousMethod.MatchVelocity)
@@ -328,6 +338,7 @@ namespace Blackbird.Rendezvous
                 return StepCloseApproach(world, out stageComplete, false);
 
             stageComplete = true;
+            ReleaseModule();
             return Idle("Idle");
         }
 
@@ -657,7 +668,7 @@ namespace Blackbird.Rendezvous
             bbState.InterceptPhase = bbState.RendezvousMethod == RendezvousMethod.CloseApproach
                 ? InterceptPhase.Complete
                 : InterceptPhase.Coast;
-            if (bbState.InterceptPhase == InterceptPhase.Complete) bbState.ActiveModule = BlackbirdModule.None;
+            if (bbState.InterceptPhase == InterceptPhase.Complete) ReleaseModule();
         }
 
         private void ClearBurnState()

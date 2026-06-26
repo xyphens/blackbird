@@ -16,7 +16,6 @@ namespace Blackbird.Modules
         private string _insertionApText = "";
         private string _insertionPeText = "";
         private string _insertionHdgText = "";
-        private string _launchTimeText = "";
 
         private LaunchHandler _launchHandler;
 
@@ -64,7 +63,12 @@ namespace Blackbird.Modules
             GUILayout.Space(10);
 
             // -- USER INPUTS / EDITS --
-            string _ltFullText = string.IsNullOrEmpty(_launchTimeText) ? "--" : _launchTimeText;
+            // Live countdown to the selected candidate's absolute launch UT (the stored seconds-to-launch is a
+            // stale snapshot from plan time).
+            double selectedLaunchUt = bbState.SelectedLaunchCandidate?.LaunchUt ?? double.NaN;
+            string _ltFullText = !double.IsNaN(selectedLaunchUt)
+                ? BlackbirdHelpers.FormatDuration(selectedLaunchUt - Planetarium.GetUniversalTime())
+                : "--";
             GUILayout.Label($"Launch in: {_ltFullText}");
 
             GUILayout.BeginHorizontal();
@@ -121,14 +125,18 @@ namespace Blackbird.Modules
             GUILayout.Label("-", GUILayout.Width(45));
             GUILayout.EndHorizontal();
 
+            int shown = 0;
             for (int i = 0; i < bbState.LaunchPlan.Candidates.Length; i++)
             {
                 LaunchCandidate candidate = bbState.LaunchPlan.Candidates[i];
+                if (!candidate.IsValid) continue;   // hide unusable (all-N/A) rows
+                shown++;
 
                 GUILayout.BeginHorizontal();
 
+                // Live countdown (LaunchUt is absolute), so the row keeps ticking down rather than freezing.
                 GUILayout.Label(
-                    candidate.IsValid ? BlackbirdHelpers.FormatDuration(candidate.SecondsUntilLaunch) : "N/A",
+                    BlackbirdHelpers.FormatDuration(candidate.LaunchUt - Planetarium.GetUniversalTime()),
                     GUILayout.Width(80));
                 GUILayout.Label($"{FormatKm(candidate.InsertionApoapsisAlt)}km", GUILayout.Width(45));
                 GUILayout.Label($"{FormatKm(candidate.InsertionPeriapsisAlt)}km", GUILayout.Width(45));
@@ -149,10 +157,9 @@ namespace Blackbird.Modules
                 GUI.enabled = true;
 
                 GUILayout.EndHorizontal();
-
-                if (!candidate.IsValid && !string.IsNullOrEmpty(candidate.ReasonUnavailable))
-                    GUILayout.Label(candidate.ReasonUnavailable);
             }
+
+            if (shown == 0) GUILayout.Label("No viable launch window in the next day.");
         }
 
         private void SelectCandidate(LaunchPlan launchPlan, int index)
@@ -166,7 +173,6 @@ namespace Blackbird.Modules
             _insertionApText = c.InsertionApoapsisAlt.ToString("F0");
             _insertionPeText = c.InsertionPeriapsisAlt.ToString("F0");
             _insertionHdgText = c.LaunchHeadingDeg.ToString("F1");
-            _launchTimeText = BlackbirdHelpers.FormatDuration(c.SecondsUntilLaunch);
         }
 
         private void CommitPlanInputs(Vessel vessel, Vessel targetVessel)
@@ -196,7 +202,6 @@ namespace Blackbird.Modules
                 Heading = 0
             };
             bbState.LaunchPlan = LaunchPlanner.Create(vessel, targetVessel, targetIt, ll);
-            _launchTimeText = "";
         }
 
         private InsertionTarget CreateInsertionTargetFromUi()

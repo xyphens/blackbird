@@ -69,13 +69,8 @@ namespace Blackbird
             }
 
             _launchHandler.Update(activeVessel);
-            // "Guidance running" = actively guiding the ascent. Maintained here (not in the panel) so it
-            // stays accurate whether or not the Guidance window is open.
+            // "Guidance running" mirror for the UI; control arbitration is via ActiveModule, not this flag.
             _bbState.GuidanceEnabled = _launchHandler.State == LaunchGuidanceState.GuidingAscent;
-            // A manual launch never formally completes, so GuidingAscent (and thus GuidanceEnabled) can
-            // persist and wrongly block rendezvous. Once we're in orbit working a rendezvous, clear it.
-            if (_bbState.RendezvousVisible && activeVessel != null && activeVessel.altitude > 70000.0)
-                _bbState.GuidanceEnabled = false;
 
             ITargetable target = FlightGlobals.fetch != null ? FlightGlobals.fetch.VesselTarget : null;
             // A targeted docking port is a ModuleDockingNode, not a Vessel; resolve to its vessel so the
