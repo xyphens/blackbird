@@ -1,3 +1,4 @@
+using Blackbird.Psg;
 using Blackbird.Trajectory;
 using UnityEngine;
 
@@ -28,5 +29,10 @@ namespace Blackbird.Rendezvous
         public Vector3d ReferenceNormal => TrajectoryProvider.GetOrbitNormal(_target);
         public double BodyRadius => _active.mainBody.Radius;
         public double AtmosphereDepth => _active.mainBody.atmosphere ? _active.mainBody.atmosphereDepth : 0.0;
+
+        // Oblateness from the per-body table (Earth under RSS/Principia; 0 for Stock/point-mass bodies).
+        public double J2 => BodyOblateness.For(_active.mainBody).J2;
+        public double J2ReferenceRadius => BodyOblateness.For(_active.mainBody).ReferenceRadiusMeters;
+        public Vector3d Pole => ((Vector3d)_active.mainBody.transform.up).normalized;
     }
 }

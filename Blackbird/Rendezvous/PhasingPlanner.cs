@@ -13,6 +13,7 @@ namespace Blackbird.Rendezvous
     public static class PhasingPlanner
     {
         private const double SafetyMarginMeters = 5000.0;
+        private const int PhasingCaSamples = 200;   // samples for the honest (J2) predicted-CA of a phasing plan
 
         // One candidate per orbit-count N (both directions to close the phase), sorted cheapest-first.
         public static List<InterceptSolution> BuildPhasingPlans(IRendezvousWorld world, int maxCount)
@@ -42,9 +43,9 @@ namespace Blackbird.Rendezvous
 
             for (int n = 1; n <= maxCount; n++)
             {
-                AddCandidate(plans, signedPhase / n, n, mu, rMag, vMag, vHat, v, targetPeriod, minSafeR, now);
+                AddCandidate(world, plans, signedPhase / n, n, mu, rMag, vMag, vHat, v, targetPeriod, minSafeR, now);
                 if (Math.Abs(signedPhase) > 1e-6)
-                    AddCandidate(plans, otherWayPhase / n, n, mu, rMag, vMag, vHat, v, targetPeriod, minSafeR, now);
+                    AddCandidate(world, plans, otherWayPhase / n, n, mu, rMag, vMag, vHat, v, targetPeriod, minSafeR, now);
             }
 
             plans.Sort((a, b) => a.DeltaVMagnitude.CompareTo(b.DeltaVMagnitude));
@@ -53,7 +54,7 @@ namespace Blackbird.Rendezvous
         }
 
         private static void AddCandidate(
-            List<InterceptSolution> plans, double gainPerOrbitDeg, int orbits,
+            IRendezvousWorld world, List<InterceptSolution> plans, double gainPerOrbitDeg, int orbits,
             double mu, double rMag, double vMag, Vector3d vHat, Vector3d v,
             double targetPeriod, double minSafeR, double now)
         {
@@ -74,6 +75,15 @@ namespace Blackbird.Rendezvous
 
             double dvMag = vNew - vMag;                     // signed: + prograde (raise), - retrograde (lower)
             Vector3d dv = dvMag * vHat;
+            double arrivalUt = now + orbits * phasePeriod;
+
+            // Honest predicted CA: fly the phasing orbit and the target under J2 (conic when J2=0) over the N
+            // orbits and take the minimum separation. Conic meets at the burn point (~0); J2 shifts the period
+            // so the real meet-up drifts — this surfaces that miss instead of the optimistic 0.
+            double predictedCa = ClosestApproachSolver.MinSeparationOverWindow(
+                world.ActivePosition, v + dv, now, arrivalUt,
+                world.TargetPosition, world.TargetVelocity, now, mu, PhasingCaSamples,
+                world.J2, world.J2ReferenceRadius, world.Pole);
 
             plans.Add(new InterceptSolution
             {
@@ -82,9 +92,9 @@ namespace Blackbird.Rendezvous
                 DeltaV = dv,
                 DeltaVMagnitude = Math.Abs(dvMag),
                 IgnitionUt = now,
-                ArrivalUt = now + orbits * phasePeriod,
+                ArrivalUt = arrivalUt,
                 TimeOfFlight = orbits * phasePeriod,
-                PredictedClosestApproach = 0.0,             // meet at the burn point after N phasing orbits
+                PredictedClosestApproach = predictedCa,     // real miss under J2 (conic = ~0 at the burn point)
                 TransferDepartureVelocity = v + dv,
                 TransferArrivalVelocity = Vector3d.zero,
                 SamplesEvaluated = 0

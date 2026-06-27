@@ -37,6 +37,9 @@ namespace Blackbird.RendezvousHarness
             CheckClosestApproachSeparatingNowFindsNext();
             CheckClosestApproachFastPassMatchesBruteForce();
             CheckClosestApproachNoApproachReturnsNotFound();
+            CheckHonestPredictedCaUnderJ2();
+            CheckJ2AimReducesMiss();
+            CheckReSolveAtIgnitionBeatsFrozen();
             CheckInterceptLargeCoOrbitalGap();
             CheckInterceptBurnTerminatesUnderWeakThrust();
             CheckMatchVelocityNullsRelativeVelocity();
@@ -631,6 +634,141 @@ namespace Blackbird.RendezvousHarness
             Console.WriteLine("    flat co-orbital + short-horizon both correctly NotFound");
         }
 
+        // Phase 2A: the honest predicted-CA helper. A conic Lambert transfer that hits the target under conic
+        // propagation must read ~0 from MinSeparationOverWindow with j2=0, and a material miss with Earth J2 —
+        // proving the helper surfaces the real oblate miss a conic plan will fly.
+        private static void CheckHonestPredictedCaUnderJ2()
+        {
+            Console.WriteLine("Case 33: honest predicted CA — conic plan hits under conic, misses under J2");
+
+            const double earthMu = 3.986004418e14, earthRe = 6378136.3, earthJ2 = 1.082636e-3;
+            double inc = 51.6 * Math.PI / 180.0;
+            Vector3d u = new Vector3d(1, 0, 0);
+            Vector3d p = new Vector3d(0, Math.Cos(inc), Math.Sin(inc));
+            Vector3d pole = new Vector3d(0, 0, 1);
+            Vector3d planeNormal = Vector3d.Cross(u, p).normalized;
+
+            double R1 = earthRe + 250000.0, vc1 = Math.Sqrt(earthMu / R1);
+            double R2 = earthRe + 400000.0, vc2 = Math.Sqrt(earthMu / R2);
+            double lead = 40.0 * Math.PI / 180.0;
+            Vector3d aPos = R1 * u;
+            Vector3d tPos = R2 * (Math.Cos(lead) * u + Math.Sin(lead) * p);
+            Vector3d tVel = vc2 * (-Math.Sin(lead) * u + Math.Cos(lead) * p);
+
+            double tof = 3000.0;
+            TwoBody.Propagate(tPos, tVel, earthMu, tof, out Vector3d tArrConic, out _);
+            LambertResult lam = LambertSolver.Solve(aPos, tArrConic, tof, earthMu, true, planeNormal);
+            AssertTrue("lambert success", lam.Success);
+
+            double conicCa = ClosestApproachSolver.MinSeparationOverWindow(
+                aPos, lam.V1, 0.0, tof, tPos, tVel, 0.0, earthMu, 200, 0.0, 0.0, Vector3d.zero);
+            double j2Ca = ClosestApproachSolver.MinSeparationOverWindow(
+                aPos, lam.V1, 0.0, tof, tPos, tVel, 0.0, earthMu, 200, earthJ2, earthRe, pole);
+
+            AssertTrue("conic plan hits under conic (<5 m)", conicCa < 5.0);
+            AssertTrue("same plan misses under J2 (>10 m)", j2Ca > 10.0);
+            Console.WriteLine(string.Format("    conic CA={0:F1} m   J2 CA={1:F1} m", conicCa, j2Ca));
+        }
+
+        // Phase 2A: aiming the transfer at the J2-propagated target reduces the achieved miss — for the case it
+        // actually matters: a FAR-FUTURE departure (the Hohmann window), where the target has coasted hours so
+        // its conic-vs-J2 position error is large. (Harness finding: for a near-term transfer the chaser's own
+        // transfer-arc J2 deviation dominates and aiming alone barely helps — that residual is for 2B re-solve /
+        // 2C shooting / the closed loop.) Here the long target coast makes the J2 aim the dominant correction.
+        private static void CheckJ2AimReducesMiss()
+        {
+            Console.WriteLine("Case 34: J2 aim reduces the miss for a far-future (Hohmann-style) departure");
+
+            const double earthMu = 3.986004418e14, earthRe = 6378136.3, earthJ2 = 1.082636e-3;
+            double inc = 51.6 * Math.PI / 180.0;
+            Vector3d u = new Vector3d(1, 0, 0);
+            Vector3d p = new Vector3d(0, Math.Cos(inc), Math.Sin(inc));
+            Vector3d pole = new Vector3d(0, 0, 1);
+            Vector3d planeNormal = Vector3d.Cross(u, p).normalized;
+
+            double R1 = earthRe + 250000.0, vc1 = Math.Sqrt(earthMu / R1);
+            double R2 = earthRe + 400000.0, vc2 = Math.Sqrt(earthMu / R2);
+            double lead = 40.0 * Math.PI / 180.0;
+            Vector3d aPos = R1 * u, aVel = vc1 * p;
+            Vector3d tPos = R2 * (Math.Cos(lead) * u + Math.Sin(lead) * p);
+            Vector3d tVel = vc2 * (-Math.Sin(lead) * u + Math.Cos(lead) * p);
+
+            double ignitionUt = 18000.0;   // ~5 h out: a Hohmann window, long target coast
+            double tof = 2000.0;           // short transfer arc, so target-position error dominates
+            double arrivalUt = ignitionUt + tof;
+
+            // Chaser's real (J2) state at the future ignition.
+            ClosestApproachSolver.Propagate(aPos, aVel, ignitionUt, earthMu, earthJ2, earthRe, pole,
+                out Vector3d aIg, out _);
+
+            // Target position at arrival: conic prediction vs the real J2 position (differ by the long coast).
+            TwoBody.Propagate(tPos, tVel, earthMu, arrivalUt, out Vector3d tArrConic, out _);
+            ClosestApproachSolver.Propagate(tPos, tVel, arrivalUt, earthMu, earthJ2, earthRe, pole,
+                out Vector3d tArrJ2, out _);
+
+            LambertResult conicAim = LambertSolver.Solve(aIg, tArrConic, tof, earthMu, true, planeNormal);
+            LambertResult j2Aim = LambertSolver.Solve(aIg, tArrJ2, tof, earthMu, true, planeNormal);
+            AssertTrue("both lambert solves succeed", conicAim.Success && j2Aim.Success);
+
+            double missConicAim = ClosestApproachSolver.MinSeparationOverWindow(
+                aIg, conicAim.V1, ignitionUt, arrivalUt, tPos, tVel, 0.0, earthMu, 200, earthJ2, earthRe, pole);
+            double missJ2Aim = ClosestApproachSolver.MinSeparationOverWindow(
+                aIg, j2Aim.V1, ignitionUt, arrivalUt, tPos, tVel, 0.0, earthMu, 200, earthJ2, earthRe, pole);
+
+            AssertTrue("J2 aim beats conic aim under J2", missJ2Aim < missConicAim);
+            AssertTrue("J2 aim at least halves the miss", missJ2Aim < 0.5 * missConicAim);
+            Console.WriteLine(string.Format("    conic-aim miss={0:F0} m   J2-aim miss={1:F0} m", missConicAim, missJ2Aim));
+        }
+
+        // Phase 2B: re-solving the burn at ignition (from the real measured/J2 state, J2 target, fixed UTs)
+        // beats flying the hours-old frozen conic vector. Models a Hohmann: a conic plan made at t=0 is flown
+        // from the chaser's REAL (J2) state at a far ignition; re-solving there cuts the miss sharply.
+        private static void CheckReSolveAtIgnitionBeatsFrozen()
+        {
+            Console.WriteLine("Case 35: re-solve at ignition beats the stale frozen conic vector (under J2)");
+
+            const double earthMu = 3.986004418e14, earthRe = 6378136.3, earthJ2 = 1.082636e-3;
+            double inc = 51.6 * Math.PI / 180.0;
+            Vector3d u = new Vector3d(1, 0, 0);
+            Vector3d p = new Vector3d(0, Math.Cos(inc), Math.Sin(inc));
+            Vector3d pole = new Vector3d(0, 0, 1);
+            Vector3d planeNormal = Vector3d.Cross(u, p).normalized;
+
+            double R1 = earthRe + 250000.0, vc1 = Math.Sqrt(earthMu / R1);
+            double R2 = earthRe + 400000.0, vc2 = Math.Sqrt(earthMu / R2);
+            double lead = 40.0 * Math.PI / 180.0;
+            Vector3d aPos = R1 * u, aVel = vc1 * p;
+            Vector3d tPos = R2 * (Math.Cos(lead) * u + Math.Sin(lead) * p);
+            Vector3d tVel = vc2 * (-Math.Sin(lead) * u + Math.Cos(lead) * p);
+
+            double ignitionUt = 18000.0, tof = 2000.0, arrivalUt = ignitionUt + tof;
+
+            // Stale plan made at t=0 on CONIC states (what the frozen vector assumed).
+            TwoBody.Propagate(aPos, aVel, earthMu, ignitionUt, out Vector3d aIgConic, out Vector3d aIgConicVel);
+            TwoBody.Propagate(tPos, tVel, earthMu, arrivalUt, out Vector3d tArrConic, out _);
+            LambertResult frozen = LambertSolver.Solve(aIgConic, tArrConic, tof, earthMu, true, planeNormal);
+
+            // Reality at ignition: the chaser is at its J2 state.
+            ClosestApproachSolver.Propagate(aPos, aVel, ignitionUt, earthMu, earthJ2, earthRe, pole,
+                out Vector3d aIgJ2, out Vector3d aIgJ2Vel);
+            ClosestApproachSolver.Propagate(tPos, tVel, arrivalUt, earthMu, earthJ2, earthRe, pole,
+                out Vector3d tArrJ2, out _);
+            LambertResult resolved = LambertSolver.Solve(aIgJ2, tArrJ2, tof, earthMu, true, planeNormal);
+            AssertTrue("both solves succeed", frozen.Success && resolved.Success);
+
+            // Frozen: deliver the stale world-frame dv1 onto the real velocity; fly under J2.
+            Vector3d dv1Frozen = frozen.V1 - aIgConicVel;
+            double frozenMiss = ClosestApproachSolver.MinSeparationOverWindow(
+                aIgJ2, aIgJ2Vel + dv1Frozen, ignitionUt, arrivalUt, tPos, tVel, 0.0, earthMu, 200, earthJ2, earthRe, pole);
+            // Re-solve: fresh Lambert from the real state to the J2 target.
+            double resolvedMiss = ClosestApproachSolver.MinSeparationOverWindow(
+                aIgJ2, resolved.V1, ignitionUt, arrivalUt, tPos, tVel, 0.0, earthMu, 200, earthJ2, earthRe, pole);
+
+            AssertTrue("re-solve beats frozen", resolvedMiss < frozenMiss);
+            AssertTrue("re-solve much better (< 0.3x frozen)", resolvedMiss < 0.3 * frozenMiss);
+            Console.WriteLine(string.Format("    frozen miss={0:F0} m   re-solved miss={1:F0} m", frozenMiss, resolvedMiss));
+        }
+
         // Dense uniform-sweep ground truth for the closest approach over [t0, t1]: returns the minimum
         // separation and the time of it. Independent of the solver (brute force) for accuracy assertions.
         private static void BruteApproach(
@@ -1093,6 +1231,9 @@ namespace Blackbird.RendezvousHarness
             public Vector3d ReferenceNormal => _refN;
             public double BodyRadius => 0.0;
             public double AtmosphereDepth => 0.0;
+            public double J2 => 0.0;
+            public double J2ReferenceRadius => 0.0;
+            public Vector3d Pole => Vector3d.zero;
 
             public void ApplyDeltaV(Vector3d dv) { _aVel += dv; }
 
@@ -1129,6 +1270,9 @@ namespace Blackbird.RendezvousHarness
             public Vector3d ReferenceNormal => _seed.ReferenceNormal;
             public double BodyRadius => 0.0;
             public double AtmosphereDepth => 0.0;
+            public double J2 => 0.0;
+            public double J2ReferenceRadius => 0.0;
+            public Vector3d Pole => Vector3d.zero;
 
             public void AddVelocity(Vector3d dv) { _activeVel += dv; }
             public void Advance(double dt) { _ut += dt; }
@@ -1146,6 +1290,9 @@ namespace Blackbird.RendezvousHarness
             public Vector3d ReferenceNormal { get; set; }
             public double BodyRadius { get; set; }
             public double AtmosphereDepth { get; set; }
+            public double J2 { get; set; }
+            public double J2ReferenceRadius { get; set; }
+            public Vector3d Pole { get; set; }
         }
 
         // Case 18: docking-port geometry decomposition. Known geometry, then a rotation-invariance check

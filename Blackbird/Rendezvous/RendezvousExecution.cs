@@ -42,5 +42,11 @@ namespace Blackbird.Rendezvous
         Vector3d ReferenceNormal { get; }   // target orbit normal, for transfer-direction disambiguation
         double BodyRadius { get; }           // central body radius (m), for phasing-orbit safety floor
         double AtmosphereDepth { get; }      // atmosphere top altitude (m), 0 if airless
+
+        // Oblateness model for J2-aware planning/prediction. J2 == 0 => point-mass (Stock; bodies Principia
+        // models as point masses), so every J2 path falls back to the conic two-body result.
+        double J2 { get; }                   // unnormalized J2 (0 = none)
+        double J2ReferenceRadius { get; }    // equatorial reference radius (m) the J2 term is defined against
+        Vector3d Pole { get; }               // body spin axis (unit), for the J2 acceleration
     }
 }

@@ -11,6 +11,7 @@ namespace Blackbird.Rendezvous
         // --- intercept tuning (public so callers/tests can adjust) ---
         public int InterceptArrivalSamples = 60;          // Lambert solves per plan
         public double InterceptBudgetMilliseconds = 20.0; // wall-clock cap per plan
+        public int InterceptCaSamples = 120;              // samples for the honest (J2) predicted-CA of the chosen plan
         public double InterceptTofMinFraction = 0.05;     // arrival sweep, fraction of the orbital period
         public double InterceptTofMaxFraction = 0.95;
 
@@ -23,6 +24,7 @@ namespace Blackbird.Rendezvous
         // inside the final window the orient is just a drift correction before the burn.
         private const double HohmannPreOrientWindowSeconds = 600.0;  // 10 min: start the orientation maneuver
         private const double HohmannFinalOrientSeconds = 15.0;       // 15 s: corrective orientation
+        private const double HohmannReSolveIntervalSeconds = 0.5;    // re-solve the burn at most this often in the window
 
         private const double MinUsefulDeltaV = 0.5;              // a plan below this is a no-op/degenerate
         private const double AlreadyCloseMeters = 2000.0;        // only skip intercept if genuinely this close
@@ -87,6 +89,8 @@ namespace Blackbird.Rendezvous
         //public bool UseHohmannPlanner = false;
         private double _plannedIgnitionUt;
         private double _burnIgnitionUt;            // centered-burn start = planned ignition - half the burn duration
+        private double _hohmannArrivalUt;          // fixed transfer arrival UT, held across re-solves
+        private double _lastReSolveUt;             // throttle for the Hohmann re-solve-at-ignition
         public double PlannedIgnitionUt => _plannedIgnitionUt;
         public bool BurnArmed => _burnArmed;
 
@@ -218,6 +222,50 @@ namespace Blackbird.Rendezvous
             HasInterceptPlan = bbState.InterceptSolution.Success;
         }
 
+        // Honest predicted closest approach for a transfer that applies impulse dv1 at ignitionUt and arrives
+        // at arrivalUt: coast the chaser to ignition, add dv1, then fly the transfer and the target under J2
+        // (conic when J2 == 0) and take the minimum separation. This is the real miss a conic plan flies under
+        // oblateness — what the panel should show — replacing the optimistic "arrives by construction" 0.
+        private double HonestPredictedCa(IRendezvousWorld world, Vector3d dv1, double ignitionUt, double arrivalUt)
+        {
+            double mu = world.Mu, now = world.UniversalTime;
+            ClosestApproachSolver.Propagate(world.ActivePosition, world.ActiveVelocity, ignitionUt - now, mu,
+                world.J2, world.J2ReferenceRadius, world.Pole, out Vector3d chaserPos, out Vector3d chaserVel);
+            return ClosestApproachSolver.MinSeparationOverWindow(chaserPos, chaserVel + dv1, ignitionUt, arrivalUt,
+                world.TargetPosition, world.TargetVelocity, now, mu, InterceptCaSamples,
+                world.J2, world.J2ReferenceRadius, world.Pole);
+        }
+
+        // Re-solve the Hohmann departure burn from the current MEASURED state: a fresh Lambert from the chaser
+        // at the fixed ignition UT to the J2-propagated target at the fixed arrival UT (both coasted under J2
+        // from now). Updates the burn vector/magnitude and the centered ignition in place. No-op on a
+        // non-finite/absurd solve so the prior frozen vector stands. Kills the open-loop "fly an hours-old
+        // conic vector" staleness; both UTs are fixed so only the vector moves (no moving-target chase).
+        private void ReSolveHohmannBurn(IRendezvousWorld world)
+        {
+            double mu = world.Mu, now = world.UniversalTime;
+            double tof = _hohmannArrivalUt - _plannedIgnitionUt;
+            if (tof <= 0.0) return;
+
+            ClosestApproachSolver.Propagate(world.ActivePosition, world.ActiveVelocity, _plannedIgnitionUt - now, mu,
+                world.J2, world.J2ReferenceRadius, world.Pole, out Vector3d chaserIg, out Vector3d chaserIgVel);
+            ClosestApproachSolver.Propagate(world.TargetPosition, world.TargetVelocity, _hohmannArrivalUt - now, mu,
+                world.J2, world.J2ReferenceRadius, world.Pole, out Vector3d targetArr, out _);
+
+            LambertResult lam = LambertSolver.Solve(chaserIg, targetArr, tof, mu, true, world.ReferenceNormal);
+            if (!lam.Success) return;
+
+            Vector3d dv1 = lam.V1 - chaserIgVel;
+            double dvMag = dv1.magnitude;
+            if (!MathHelpers.IsFinite(dvMag) || dvMag < 1e-6 || dvMag > 1e8) return;   // keep prior on a bad solve
+
+            _plannedDvUnit = dv1 / dvMag;
+            _plannedDvMagnitude = dvMag;
+            _targetDepartureVelocity = lam.V1;
+            double halfBurn = BurnAccelMetersPerSecondSquared > 0.0 ? 0.5 * dvMag / BurnAccelMetersPerSecondSquared : 0.0;
+            _burnIgnitionUt = _plannedIgnitionUt - halfBurn;
+        }
+
         // Intercept-shaped plan from the MJ-derived two-impulse Hohmann transfer. The state-vector core runs in
         // the world's KSP frame, so dv1 is already world-frame. Fail-soft: any throw / non-sane result => Success false.
         private InterceptSolution BuildHohmannPlan(IRendezvousWorld world)
@@ -241,7 +289,7 @@ namespace Blackbird.Rendezvous
                     IgnitionUt = ut1,
                     ArrivalUt = ut2,
                     TimeOfFlight = ut2 - ut1,
-                    PredictedClosestApproach = 0.0,                      // Hohmann arrives at the target by construction
+                    PredictedClosestApproach = HonestPredictedCa(world, dv1, ut1, ut2),  // real miss under J2 (conic = ~0)
                     TransferDepartureVelocity = world.ActiveVelocity + dv1,
                     TransferArrivalVelocity = Vector3d.zero,
                     SamplesEvaluated = 0
@@ -282,7 +330,7 @@ namespace Blackbird.Rendezvous
                         IgnitionUt = ut1,
                         ArrivalUt = ut2,
                         TimeOfFlight = ut2 - ut1,
-                        PredictedClosestApproach = 0.0,                  // Hohmann arrives at the target by construction
+                        PredictedClosestApproach = HonestPredictedCa(world, dv1, ut1, ut2),  // real miss under J2 (conic = ~0)
                         TransferDepartureVelocity = world.ActiveVelocity + dv1,
                         TransferArrivalVelocity = Vector3d.zero,
                         SamplesEvaluated = 0
@@ -381,6 +429,8 @@ namespace Blackbird.Rendezvous
                 _plannedDvMagnitude = solution.DeltaVMagnitude;
                 _plannedDvUnit = solution.DeltaV.normalized;
                 _plannedIgnitionUt = solution.IgnitionUt;
+                _hohmannArrivalUt = solution.ArrivalUt;
+                _lastReSolveUt = double.NegativeInfinity;   // re-solve on the first orient-window tick
                 double halfBurn = BurnAccelMetersPerSecondSquared > 0.0
                     ? 0.5 * _plannedDvMagnitude / BurnAccelMetersPerSecondSquared : 0.0;
                 _burnIgnitionUt = _plannedIgnitionUt - halfBurn;
@@ -406,7 +456,17 @@ namespace Blackbird.Rendezvous
                 if (timeToIgnition > HohmannPreOrientWindowSeconds)
                     return Idle(string.Format("intercept: coasting to ignition in {0:F0}s", timeToIgnition));
 
-                string orientPhase = timeToIgnition <= HohmannFinalOrientSeconds ? "final orientation" : "orienting";
+                // Re-solve the burn from the (fresh) measured state to the J2 target at the FIXED arrival, for
+                // departure at the FIXED ignition — only the vector/magnitude move, so it can't chase a moving
+                // target. Throttled; frozen once inside the commit zone; a stale/absurd solve keeps the prior.
+                bool committed = timeToIgnition <= HohmannFinalOrientSeconds;
+                if (!committed && world.UniversalTime - _lastReSolveUt >= HohmannReSolveIntervalSeconds)
+                {
+                    _lastReSolveUt = world.UniversalTime;
+                    ReSolveHohmannBurn(world);
+                }
+
+                string orientPhase = committed ? "final orientation" : "orienting";
                 return Burn(_plannedDvUnit, 0.0,
                     string.Format("intercept: {0}, ignition in {1:F0}s", orientPhase, timeToIgnition));
             }
@@ -633,15 +693,29 @@ namespace Blackbird.Rendezvous
             Vector3d targetVelocity = world.TargetVelocity;
 
             // Target prediction propagates from the MEASUREMENT epoch, so absolute arrival UTs map correctly.
+            // Under oblateness (J2 != 0) it integrates the target under J2 so Lambert aims where the target
+            // REALLY will be (the dominant RSS error is the target drifting off the conic path over hours).
+            double j2 = world.J2, reEq = world.J2ReferenceRadius;
+            Vector3d pole = world.Pole;
             Func<double, Vector3d> targetPositionAt = ut =>
             {
-                TwoBody.Propagate(targetPosition, targetVelocity, mu, ut - measureUt, out Vector3d rt, out _);
+                ClosestApproachSolver.Propagate(targetPosition, targetVelocity, ut - measureUt, mu,
+                    j2, reEq, pole, out Vector3d rt, out _);
                 return rt;
             };
 
-            return InterceptSolver.Solve(ignitionPos, ignitionVel, mu,
+            InterceptSolution solution = InterceptSolver.Solve(ignitionPos, ignitionVel, mu,
                 world.ReferenceNormal, ignitionUt, targetPositionAt, tofMin, tofMax,
                 InterceptArrivalSamples, true, InterceptBudgetMilliseconds);
+
+            // Replace the solver's optimistic (conic) predicted CA with the honest miss the conic transfer will
+            // actually fly under J2 — both transfer and target propagated under oblateness.
+            if (solution.Success)
+                solution.PredictedClosestApproach = ClosestApproachSolver.MinSeparationOverWindow(
+                    ignitionPos, solution.TransferDepartureVelocity, ignitionUt, solution.ArrivalUt,
+                    targetPosition, targetVelocity, measureUt, mu, InterceptCaSamples, j2, reEq, pole);
+
+            return solution;
         }
 
         // Keplerian period from a state vector; NaN if the orbit is unbound.
@@ -672,6 +746,8 @@ namespace Blackbird.Rendezvous
             _burnArmed = false;
             HaveHohmannTransfer = false;
             _burnIgnitionUt = 0.0;
+            _hohmannArrivalUt = 0.0;
+            _lastReSolveUt = 0.0;
             _burnStartVelocity = Vector3d.zero;
             _targetDepartureVelocity = Vector3d.zero;
             _plannedDvMagnitude = 0.0;

@@ -82,6 +82,68 @@ namespace Blackbird.Rendezvous
             return new ApproachResult { Found = false };
         }
 
+        // Propagate a single state forward (or back) by dt under J2 (conic when j2 == 0), in steps no larger
+        // than ~one CoarseStepsPerOrbit fraction of the orbit so the RK4 stays accurate. Public so the planners
+        // can advance the target under real oblateness when aiming a transfer.
+        public static void Propagate(Vector3d r, Vector3d v, double dt, double mu,
+            double j2, double referenceRadius, Vector3d pole, out Vector3d rOut, out Vector3d vOut)
+        {
+            rOut = r; vOut = v;
+            if (dt == 0.0 || mu <= 0.0) return;
+
+            if (!(j2 != 0.0 && pole.sqrMagnitude > 0.0))
+            {
+                TwoBody.Propagate(r, v, mu, dt, out rOut, out vOut);
+                return;
+            }
+
+            double period = OrbitMath.OrbitalPeriod(r, v, mu);
+            double cap = MathHelpers.IsFinite(period) && period > 0.0 ? period / CoarseStepsPerOrbit : FallbackCoarseStepSeconds;
+            int n = Math.Max(1, (int)Math.Ceiling(Math.Abs(dt) / Math.Max(MinStepSeconds, cap)));
+            double step = dt / n;
+            for (int i = 0; i < n; i++) J2Propagator.Step(ref rOut, ref vOut, mu, j2, referenceRadius, pole, step);
+        }
+
+        // Honest predicted closest approach of a planned transfer: the minimum separation between the transfer
+        // arc (from its departure state at ignitionUt) and the target over [ignitionUt, arrivalUt], with BOTH
+        // propagated under J2 (conic when j2 == 0). The target is coasted from its measurement epoch to ignition
+        // first. This is the real miss a conic plan will fly under oblateness — what the panel should show.
+        public static double MinSeparationOverWindow(
+            Vector3d transferDepPos, Vector3d transferDepVel, double ignitionUt, double arrivalUt,
+            Vector3d targetPos, Vector3d targetVel, double measureUt,
+            double mu, int samples, double j2 = 0.0, double referenceRadius = 0.0, Vector3d pole = default(Vector3d))
+        {
+            if (mu <= 0.0) return double.PositiveInfinity;
+            bool useJ2 = j2 != 0.0 && pole.sqrMagnitude > 0.0;
+
+            Propagate(targetPos, targetVel, ignitionUt - measureUt, mu, j2, referenceRadius, pole,
+                out Vector3d rt, out Vector3d vt);
+
+            Vector3d ra = transferDepPos, va = transferDepVel;
+            double minD = (ra - rt).magnitude;
+            double window = arrivalUt - ignitionUt;
+            if (window <= 0.0) return minD;
+
+            // Cap the step by the orbital period so a multi-orbit window (phasing) isn't stepped OVER — a fixed
+            // sample count alone gives ~1000 km/step over several orbits and misses the encounter entirely.
+            double periodA = OrbitMath.OrbitalPeriod(ra, va, mu);
+            double periodT = OrbitMath.OrbitalPeriod(rt, vt, mu);
+            double minPeriod = double.PositiveInfinity;
+            if (MathHelpers.IsFinite(periodA) && periodA > 0.0) minPeriod = Math.Min(minPeriod, periodA);
+            if (MathHelpers.IsFinite(periodT) && periodT > 0.0) minPeriod = Math.Min(minPeriod, periodT);
+            double cap = MathHelpers.IsFinite(minPeriod) ? minPeriod / CoarseStepsPerOrbit : FallbackCoarseStepSeconds;
+
+            int n = Math.Max(samples, (int)Math.Ceiling(window / Math.Max(MinStepSeconds, cap)));
+            double dt = window / n;
+            for (int i = 0; i < n; i++)
+            {
+                Advance(ref ra, ref va, ref rt, ref vt, dt, mu, useJ2, j2, referenceRadius, pole);
+                double d = (ra - rt).magnitude;
+                if (d < minD) minD = d;
+            }
+            return minD;
+        }
+
         // Re-integrates the bracket [start.T, start.T + window] from the start state at a fine step, tracking
         // the minimum and its neighbours, then parabolic-interpolates distance^2 for sub-step timing.
         private static ApproachResult Refine(
