@@ -11,101 +11,103 @@ namespace Blackbird.Rendezvous
         public double TimeSeconds;   // time from now until the closest approach
     }
 
-    // Finds the next closest approach between two coasting two-body trajectories. The search horizon is the
-    // SYNODIC period (when the relative phase realigns), capped at maxHorizon, so an approach many orbits
-    // away is still found rather than reporting the edge of a one-period window. A coarse scan brackets the
-    // global minimum, then a local refine pins the time. Pure/offline-testable.
+    // Finds the NEXT closest approach between two coasting trajectories — the next local minimum of range
+    // (the next time the pair stops separating and reaches closest), at a fixed absolute event. Returning a
+    // fixed event is what makes the prediction STABLE: as the measurement time advances the same approach is
+    // returned, its distance unchanged and its time counting down to zero, instead of a grid-quantized value
+    // that jumps. A coarse forward sweep (step tied to the orbital period so a fast pass can't be skipped)
+    // brackets the first local minimum and early-terminates; a fine sub-pass pins it. Pure/offline-testable.
+    //
+    // One propagation path: conic two-body when j2 == 0 (stock; bodies Principia models as point masses),
+    // RK4 under J2 when j2 != 0 (RSS/Principia oblateness). Both run through the same sweep + refine.
     public static class ClosestApproachSolver
     {
+        // Coarse bracketing step is at most the shorter period / this, so the sweep cannot step over an
+        // approach narrower than ~one such fraction of an orbit.
+        private const int CoarseStepsPerOrbit = 64;
+        private const int FineStepsPerBracket = 200;        // sub-steps used to pin the minimum within a bracket
+        private const double MinStepSeconds = 0.05;         // floor for both passes
+        private const double FallbackCoarseStepSeconds = 30.0; // when neither orbit has a finite (bound) period
+
+        // A minimum is the range-rate sign change closing -> separating. Require the closing sample's
+        // line-of-sight rate to exceed this fraction of |relPos|*|relVel|, i.e. the relative velocity has a
+        // real radial (closing) component; below it the motion is purely tangential = no approach (two craft
+        // holding a constant separation), so propagation/round-off noise can't fabricate a minimum.
+        private const double ClosingRateFloorFraction = 1e-5;
+
         public static ApproachResult FindNextApproach(
             Vector3d activePosition, Vector3d activeVelocity,
             Vector3d targetPosition, Vector3d targetVelocity,
             double mu, double maxHorizonSeconds, int coarseSamples,
             double j2 = 0.0, double referenceRadius = 0.0, Vector3d pole = default(Vector3d))
         {
-            if (mu <= 0.0 || coarseSamples < 2 || maxHorizonSeconds <= 0.0)
+            if (mu <= 0.0 || maxHorizonSeconds <= 0.0)
                 return new ApproachResult { Found = false };
 
+            bool useJ2 = j2 != 0.0 && pole.sqrMagnitude > 0.0;
+
+            // Coarse step: the shorter orbital period / CoarseStepsPerOrbit, never coarser than the caller's
+            // sample budget allows, floored so a degenerate period can't drive it to zero.
             double periodA = OrbitMath.OrbitalPeriod(activePosition, activeVelocity, mu);
             double periodT = OrbitMath.OrbitalPeriod(targetPosition, targetVelocity, mu);
+            double minPeriod = double.PositiveInfinity;
+            if (MathHelpers.IsFinite(periodA) && periodA > 0.0) minPeriod = Math.Min(minPeriod, periodA);
+            if (MathHelpers.IsFinite(periodT) && periodT > 0.0) minPeriod = Math.Min(minPeriod, periodT);
 
-            // Horizon: at least the longer period (to catch a near pass), out to the synodic period
-            // (the natural recurrence of close approaches), but never beyond maxHorizon.
-            double horizon = maxHorizonSeconds;
-            if (MathHelpers.IsFinite(periodA) && MathHelpers.IsFinite(periodT) && periodA > 0.0 && periodT > 0.0)
+            double periodStep = MathHelpers.IsFinite(minPeriod) ? minPeriod / CoarseStepsPerOrbit : FallbackCoarseStepSeconds;
+            double budgetStep = coarseSamples >= 2 ? maxHorizonSeconds / coarseSamples : maxHorizonSeconds;
+            double coarseDt = Math.Max(MinStepSeconds, Math.Min(periodStep, budgetStep));
+
+            // Forward sweep watching the range RATE: a minimum is where it crosses closing (<0) to separating
+            // (>=0). The bracketing sample STATE is the restart point for the fine refine. A "closest now,
+            // separating" start has a positive rate from t=0, so it is never reported as t=0 — the sweep
+            // continues to the next real closing->separating crossing.
+            Sample prev = new Sample(activePosition, activeVelocity, targetPosition, targetVelocity, 0.0);
+
+            long maxIters = (long)(maxHorizonSeconds / coarseDt) + 4;
+            for (long iter = 0; iter < maxIters && prev.T < maxHorizonSeconds; iter++)
             {
-                double synodic = OrbitMath.SynodicPeriod(periodA, periodT);
-                double want = MathHelpers.IsFinite(synodic) ? synodic : maxHorizonSeconds;
-                horizon = Math.Min(maxHorizonSeconds, Math.Max(want, Math.Max(periodA, periodT)));
+                if (!Step(prev, coarseDt, mu, useJ2, j2, referenceRadius, pole, out Sample cur))
+                    break;
+
+                // Crossing closing -> separating with a real closing component at prev (gate rejects the
+                // tangential/constant-separation case where round-off could flip the sign).
+                if (prev.RangeRate < 0.0 && cur.RangeRate >= 0.0
+                    && -prev.RangeRate > ClosingRateFloorFraction * prev.RangeRateScale)
+                    return Refine(prev, cur.T - prev.T, mu, useJ2, j2, referenceRadius, pole);
+
+                prev = cur;
             }
 
-            // With oblateness, conic propagation diverges over a multi-orbit horizon (differential nodal
-            // regression / apsidal precession / J2 period shift between two non-identical orbits) — at RSS
-            // scale that's hundreds of km of CA error. Integrate both trajectories under J2 instead.
-            // j2 == 0 (stock; bodies Principia models as point masses) keeps the cheap closed-form path.
-            if (j2 != 0.0 && pole.sqrMagnitude > 0.0)
-                return FindNextApproachJ2(activePosition, activeVelocity, targetPosition, targetVelocity,
-                    mu, horizon, coarseSamples, j2, referenceRadius, pole);
-
-            // Coarse scan brackets the global minimum, then refine within +/- one coarse step.
-            ScanMinimum(activePosition, activeVelocity, targetPosition, targetVelocity, mu,
-                0.0, horizon, coarseSamples, out double coarseDist, out double coarseTime);
-
-            double step = horizon / coarseSamples;
-            double refineLow = Math.Max(0.0, coarseTime - step);
-            double refineHigh = coarseTime + step;
-            ScanMinimum(activePosition, activeVelocity, targetPosition, targetVelocity, mu,
-                refineLow, refineHigh, coarseSamples, out double fineDist, out double fineTime);
-
-            bool useFine = fineDist <= coarseDist;
-            return new ApproachResult
-            {
-                Found = true,
-                DistanceMeters = useFine ? fineDist : coarseDist,
-                TimeSeconds = useFine ? fineTime : coarseTime
-            };
+            return new ApproachResult { Found = false };
         }
 
-        // J2-aware closest approach: forward-integrate both states with the RK4 J2 propagator at a uniform
-        // step, sampling separation, then parabolic-interpolate distance^2 around the minimum for sub-step
-        // timing. Uniform integration (vs. the conic two-phase coarse/refine) because the J2 propagator is
-        // incremental — it has no closed-form "state at arbitrary t" to re-evaluate cheaply.
-        private static ApproachResult FindNextApproachJ2(
-            Vector3d aPos, Vector3d aVel, Vector3d tPos, Vector3d tVel,
-            double mu, double horizon, int samples, double j2, double reEq, Vector3d pole)
+        // Re-integrates the bracket [start.T, start.T + window] from the start state at a fine step, tracking
+        // the minimum and its neighbours, then parabolic-interpolates distance^2 for sub-step timing.
+        private static ApproachResult Refine(
+            Sample start, double window, double mu, bool useJ2, double j2, double reEq, Vector3d pole)
         {
-            double dt = horizon / samples;
-            Vector3d ra = aPos, va = aVel, rt = tPos, vt = tVel;
+            int n = Math.Max(1, (int)Math.Ceiling(window / Math.Max(MinStepSeconds, window / FineStepsPerBracket)));
+            double dt = window / n;
 
-            // Single forward pass; track the minimum sample and its left/right neighbours' distance^2 for
-            // the parabolic refine. The right neighbour is captured on the iteration after a new minimum.
+            Vector3d ra = start.Ra, va = start.Va, rt = start.Rt, vt = start.Vt;
+            double minD2 = (ra - rt).sqrMagnitude, d2Prev = minD2, d2Left = minD2, d2Right = minD2;
             int minIndex = 0;
-            double minD2 = (ra - rt).sqrMagnitude;
-            double d2Prev = minD2, d2Left = minD2, d2Right = minD2;
             bool wantRight = false;
 
-            for (int i = 1; i <= samples; i++)
+            for (int i = 1; i <= n; i++)
             {
-                J2Propagator.Step(ref ra, ref va, mu, j2, reEq, pole, dt);
-                J2Propagator.Step(ref rt, ref vt, mu, j2, reEq, pole, dt);
+                Advance(ref ra, ref va, ref rt, ref vt, dt, mu, useJ2, j2, reEq, pole);
                 double d2 = (ra - rt).sqrMagnitude;
                 if (wantRight) { d2Right = d2; wantRight = false; }
-                if (d2 < minD2)
-                {
-                    minD2 = d2;
-                    minIndex = i;
-                    d2Left = d2Prev;      // sample i-1
-                    d2Right = d2;         // provisional until the next sample lands
-                    wantRight = i < samples;
-                }
+                if (d2 < minD2) { minD2 = d2; minIndex = i; d2Left = d2Prev; d2Right = d2; wantRight = i < n; }
                 d2Prev = d2;
             }
 
-            double tMin = minIndex * dt;
+            double tMin = start.T + minIndex * dt;
             double minDist = Math.Sqrt(minD2);
 
-            // Parabolic vertex of distance^2 through (i-1, i, i+1); offset in [-1,1] samples. Interior only.
-            if (minIndex > 0 && minIndex < samples)
+            if (minIndex > 0 && minIndex < n)
             {
                 double f0 = d2Left, f1 = minD2, f2 = d2Right;
                 double denom = f0 - 2.0 * f1 + f2;
@@ -114,7 +116,7 @@ namespace Blackbird.Rendezvous
                     double offset = 0.5 * (f0 - f2) / denom;
                     if (offset > -1.0 && offset < 1.0)
                     {
-                        tMin = (minIndex + offset) * dt;
+                        tMin = start.T + (minIndex + offset) * dt;
                         double vertex = f1 - 0.25 * (f0 - f2) * offset;
                         if (vertex > 0.0) minDist = Math.Sqrt(vertex);
                     }
@@ -124,23 +126,51 @@ namespace Blackbird.Rendezvous
             return new ApproachResult { Found = true, DistanceMeters = minDist, TimeSeconds = tMin };
         }
 
-        // Minimum separation over [t0, t1], sampled uniformly; returns the distance and the time of it.
-        private static void ScanMinimum(
-            Vector3d aPos, Vector3d aVel, Vector3d tPos, Vector3d tVel, double mu,
-            double t0, double t1, int samples, out double minDistance, out double timeAtMin)
+        // One coarse step from a sample, returning the advanced sample (the input is left untouched so it can
+        // remain the bracket's restart state). Returns false if propagation fails.
+        private static bool Step(Sample s, double dt, double mu, bool useJ2, double j2, double reEq, Vector3d pole, out Sample next)
         {
-            minDistance = double.PositiveInfinity;
-            timeAtMin = t0;
-            if (t1 <= t0) { t1 = t0; samples = 0; }
-
-            for (int i = 0; i <= samples; i++)
+            Vector3d ra = s.Ra, va = s.Va, rt = s.Rt, vt = s.Vt;
+            if (!Advance(ref ra, ref va, ref rt, ref vt, dt, mu, useJ2, j2, reEq, pole))
             {
-                double t = samples > 0 ? t0 + (t1 - t0) * i / samples : t0;
-                if (!TwoBody.Propagate(aPos, aVel, mu, t, out Vector3d ra, out _)) continue;
-                if (!TwoBody.Propagate(tPos, tVel, mu, t, out Vector3d rt, out _)) continue;
+                next = default(Sample);
+                return false;
+            }
+            next = new Sample(ra, va, rt, vt, s.T + dt);
+            return true;
+        }
 
-                double d = (ra - rt).magnitude;
-                if (d < minDistance) { minDistance = d; timeAtMin = t; }
+        // Advances both states one step in place. Conic (exact per step) when not under J2; RK4 otherwise.
+        private static bool Advance(ref Vector3d ra, ref Vector3d va, ref Vector3d rt, ref Vector3d vt,
+            double dt, double mu, bool useJ2, double j2, double reEq, Vector3d pole)
+        {
+            if (useJ2)
+            {
+                J2Propagator.Step(ref ra, ref va, mu, j2, reEq, pole, dt);
+                J2Propagator.Step(ref rt, ref vt, mu, j2, reEq, pole, dt);
+                return true;
+            }
+
+            bool a = TwoBody.Propagate(ra, va, mu, dt, out Vector3d nra, out Vector3d nva);
+            bool b = TwoBody.Propagate(rt, vt, mu, dt, out Vector3d nrt, out Vector3d nvt);
+            if (!a || !b) return false;
+            ra = nra; va = nva; rt = nrt; vt = nvt;
+            return true;
+        }
+
+        // Sweep sample: both states, the elapsed time, and the relative-range rate at that time. RangeRate has
+        // the sign of d|relPos|/dt (dot of relative position and velocity); RangeRateScale = |relPos|*|relVel|
+        // is its magnitude bound, used to gate out tangential (no-approach) motion.
+        private struct Sample
+        {
+            public readonly Vector3d Ra, Va, Rt, Vt;
+            public readonly double T, RangeRate, RangeRateScale;
+            public Sample(Vector3d ra, Vector3d va, Vector3d rt, Vector3d vt, double t)
+            {
+                Ra = ra; Va = va; Rt = rt; Vt = vt; T = t;
+                Vector3d relPos = rt - ra, relVel = vt - va;
+                RangeRate = Vector3d.Dot(relPos, relVel);
+                RangeRateScale = relPos.magnitude * relVel.magnitude;
             }
         }
     }

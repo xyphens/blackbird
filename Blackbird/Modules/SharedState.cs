@@ -24,7 +24,7 @@ namespace Blackbird.Modules
     // RENDEZVOUS
     // execution methods within Rendezvous module
     // important: was RendezvousStage 
-    public enum RendezvousMethod { None, Intercept, MatchVelocity, CloseApproach }; // note: had Docking before, now is separate
+    public enum RendezvousMethod { None, Intercept, MatchVelocity, FinalApproach }; // note: had Docking before, now is separate
     public enum InterceptMethod { SinglePhase, Hohmann, Phasing };
     // Result of an intercept plan: the impulsive burn (world-frame ΔV at the ignition UT) that puts the
     // active vessel onto a conic transfer reaching the target's predicted position, plus the arrival

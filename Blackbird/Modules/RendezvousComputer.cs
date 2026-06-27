@@ -30,6 +30,9 @@ namespace Blackbird.Modules
         private string _closeGainText = "0.2";
         private string _closeMaxSpeedText = "5";
 
+        // Extra warp-stop lead (seconds) before the closest approach; floors the auto (slew + half the burn).
+        private string _warpLeadText = "30";
+
         private InterceptMethod _lastAlgorithm;
 
         public void Init(RendezvousHandler handler, SharedState s)
@@ -86,6 +89,12 @@ namespace Blackbird.Modules
                 {
                     GUILayout.Label("Status: separating");
                 }
+            }
+            else if (_handler.HasRelative)
+            {
+                // No upcoming pass within the horizon (holding / velocity-matched, or a single monotonic close):
+                // the closest approach is the current range, now. Keep the line visible regardless of state.
+                GUILayout.Label($"Closest approach: {FormatDistance(_handler.Relative.Range)} now (no upcoming pass)");
             }
 
             // Intercept plan preview (computed whenever idle/coast, before any method is chosen).
@@ -185,9 +194,9 @@ namespace Blackbird.Modules
                 _handler.Execute(RendezvousMethod.MatchVelocity);
             }
 
-            if (GUILayout.Button("Execute: Close Approach"))
+            if (GUILayout.Button("Execute: Final Approach"))
             {
-                bbState.RendezvousMethod = RendezvousMethod.CloseApproach;
+                bbState.RendezvousMethod = RendezvousMethod.FinalApproach;
                 ApplyCloseStandoff();
                 _handler.Execute();
             }
@@ -212,6 +221,11 @@ namespace Blackbird.Modules
             GUILayout.Label("Max closing speed:", GUILayout.Width(160));
             _closeMaxSpeedText = GUILayout.TextField(_closeMaxSpeedText, GUILayout.Width(60));
             GUILayout.Label("m/s");
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Warp lead (0=auto):", GUILayout.Width(160));
+            _warpLeadText = GUILayout.TextField(_warpLeadText, GUILayout.Width(60));
+            GUILayout.Label("s");
             GUILayout.EndHorizontal();
             ApplyCloseApproachParams();
 
@@ -286,7 +300,7 @@ namespace Blackbird.Modules
                         return "Intercept done. Coasting toward closest approach "
                              + $"in {FormatTime(_handler.LiveTimeToClosestApproachSeconds)}. "
                              + "Execute Match Velocity as you near it.";
-                    if (bbState.RendezvousMethod == RendezvousMethod.CloseApproach)
+                    if (bbState.RendezvousMethod == RendezvousMethod.FinalApproach)
                         return "Velocities matched.";
                     return $"Stage done";
 
@@ -301,6 +315,7 @@ namespace Blackbird.Modules
         private void ApplyCloseStandoff()
         {
             double meters;
+
             if (_matchAtEnabled
                 && double.TryParse(_matchAtMetersText, out meters)
                 && !double.IsNaN(meters) && meters > 0.0)
@@ -323,6 +338,8 @@ namespace Blackbird.Modules
                 _handler.CloseApproachGain = gain;
             if (double.TryParse(_closeMaxSpeedText, out double maxSpeed) && !double.IsNaN(maxSpeed) && maxSpeed > 0.0)
                 _handler.CloseApproachMaxSpeedMetersPerSecond = maxSpeed;
+            if (double.TryParse(_warpLeadText, out double warpLead) && !double.IsNaN(warpLead) && warpLead >= 0.0)
+                _handler.WarpLeadInputSeconds = warpLead;
         }
 
         private static string StageName(RendezvousMethod stage)

@@ -27,16 +27,20 @@ namespace Blackbird.Rendezvous
         private bool _engaged;
         private bool _burningLastApply;   // were we actuating thrust on the previous fly-by-wire pass?
 
-        // Soft-enable RCS during a maneuver so torque-poor craft can still point, restoring the player's
-        // setting on handback. Disabled for now.
-        //private bool _rcsForcedOn;
-        //private bool _rcsPriorState;
+        // Soft-enable RCS during a maneuver so torque-poor craft can still point (engine off during the orient
+        // hold gives no gimbal torque, and reaction wheels alone are often too weak), restoring the player's
+        // setting on handback.
+        private bool _rcsForced;
+        private bool _rcsPriorState;
 
         // Live closest-approach monitor: recomputed off the draw path on a throttle, searching out to the
         // synodic period (capped) so time-to-CA actually counts down rather than pinning at one period.
         private const double CaRecomputeIntervalSeconds = 0.5;
         private const int CaSampleCount = 240;
-        private const double CaMaxHorizonSeconds = 6.0 * 3600.0;
+        // Horizon for the next-approach search. Must exceed the synodic period of nearly-matched rendezvous
+        // orbits (which the old 6 h cap truncated, pinning time-to-CA and never letting it count to zero). The
+        // solver early-terminates at the first real approach, so this is only the no-near-approach scan bound.
+        private const double CaMaxHorizonSeconds = 24.0 * 3600.0;
         private double _lastCaComputeUt = double.NegativeInfinity;
 
         // Plan preview refresh throttle (so the panel shows ΔV/CA before the user Executes).
@@ -66,11 +70,16 @@ namespace Blackbird.Rendezvous
         // The lead is a fixed minimum for arrival-fired stages; for Match Velocity it is the estimated slew to
         // the retro-relative-velocity attitude (+settle/margin).
         private const double WarpLeadMinSeconds = 15.0;    // minimum lead before the event (any stage)
-        private const double WarpLeadMaxSeconds = 120.0;   // cap, so a huge slew estimate can't strand the warp
+        private const double WarpLeadMaxSeconds = 300.0;   // cap, so a huge slew estimate can't strand the warp
         private const double OrientPaddingSeconds = 3.0;   // safety margin on top of the estimated slew + dwell
         private double _warpTargetUt;
         private double _warpLeadSeconds = WarpLeadMinSeconds;   // lead actually used for the active warp
+        private bool _warpingToCa;                              // CA warp (re-targeted live) vs Hohmann ignition warp
         public bool Warping { get; private set; }
+
+        // User floor (seconds) on the warp-stop lead, 0 = auto. The auto lead is slew + half the match burn so
+        // the craft can orient and the null straddles the closest approach; this only ever raises it.
+        public double WarpLeadInputSeconds { get; set; } = 30.0;
 
         //public RendezvousPhase Phase => _executor.Phase;
         //public RendezvousStage Stage => _executor.Stage;
@@ -108,9 +117,13 @@ namespace Blackbird.Rendezvous
             bbState.RendezvousEnabled = executing;
             return executing;
         }
-        // Execute a specific stage out of order (e.g. Match Velocity any time, to kill a closing rate).
+        // Execute a specific stage out of order (e.g. Match Velocity any time, to kill a closing rate). Preempts
+        // whatever was running (warp, intercept, close approach) and forces a fresh orient to the new burn
+        // vector so Match Velocity always re-points to the terminal/retrograde direction before firing.
         public bool Execute(RendezvousMethod method) {
             StopWarp();
+            _burnAligned = false;
+            _steadySinceUt = double.NegativeInfinity;
             bool executing = _executor.ForceExecute(method);
             bbState.RendezvousEnabled = executing;
             return executing;
@@ -179,6 +192,7 @@ namespace Blackbird.Rendezvous
 
             _warpLeadSeconds = lead;
             _warpTargetUt = Planetarium.GetUniversalTime() + timeToCa;
+            _warpingToCa = true;
             Warping = true;
         }
 
@@ -194,6 +208,7 @@ namespace Blackbird.Rendezvous
 
             _warpLeadSeconds = lead;
             _warpTargetUt = ignitionUt;
+            _warpingToCa = false;
             Warping = true;
         }
 
@@ -206,7 +221,8 @@ namespace Blackbird.Rendezvous
             double padding = OrientPaddingSeconds + StabilizeDwellSeconds;
             double slew = AttitudeControl.EstimateSlewTimeSeconds(active, bbState.InterceptSolution.DeltaV, padding);
             double halfBurn = HalfBurnSeconds(active, bbState.InterceptSolution.DeltaVMagnitude);
-            return MathHelpers.Clamp(slew + halfBurn, WarpLeadMinSeconds, WarpLeadMaxSeconds);
+            double auto = MathHelpers.Clamp(slew + halfBurn, WarpLeadMinSeconds, WarpLeadMaxSeconds);
+            return Math.Max(Math.Max(0.0, WarpLeadInputSeconds), auto);
         }
 
         // Half the intercept burn duration = 0.5 * ΔV / (thrust/mass). 0 if thrust/mass is unavailable.
@@ -236,22 +252,29 @@ namespace Blackbird.Rendezvous
         // Velocity the estimated slew to the retro-relative attitude (+settle dwell + margin), clamped.
         private double ComputeWarpLeadSeconds()
         {
-            if (bbState.RendezvousMethod != RendezvousMethod.MatchVelocity || !HasRelative) return WarpLeadMinSeconds;
+            double floor = Math.Max(0.0, WarpLeadInputSeconds);
+            if (bbState.RendezvousMethod != RendezvousMethod.MatchVelocity || !HasRelative)
+                return Math.Max(floor, WarpLeadMinSeconds);
 
             Vessel active = FlightGlobals.ActiveVessel;
-            if (active == null) return WarpLeadMinSeconds;
+            if (active == null) return Math.Max(floor, WarpLeadMinSeconds);
 
             // Burn direction that nulls the relative velocity = (targetVel - activeVel) = RelativeVelocityWorld.
+            // Lead = slew to that attitude + half the null-burn duration, so the warp stops with time to orient
+            // AND the burn (ignited at CA - halfBurn) straddles the closest approach.
             Vector3d burnDirection = Relative.RelativeVelocityWorld;
             double padding = OrientPaddingSeconds + StabilizeDwellSeconds;
             double slew = AttitudeControl.EstimateSlewTimeSeconds(active, burnDirection, padding);
-            return MathHelpers.Clamp(slew, WarpLeadMinSeconds, WarpLeadMaxSeconds);
+            double halfBurn = HalfBurnSeconds(active, Relative.RelativeVelocityWorld.magnitude);
+            double auto = MathHelpers.Clamp(slew + halfBurn, WarpLeadMinSeconds, WarpLeadMaxSeconds);
+            return Math.Max(floor, auto);
         }
 
         public void StopWarp()
         {
             if (Warping) WarpHelper.Stop();
             Warping = false;
+            _warpingToCa = false;
             _warpTargetUt = 0.0;
         }
 
@@ -283,6 +306,16 @@ namespace Blackbird.Rendezvous
             // Warp-to-CA monitoring: back off the rate as the event nears, stop just short, bail on a burn.
             if (Warping)
             {
+                // Re-target the CA warp to the live (stable) CA UT when we have a fresh estimate, so we stop a
+                // proper lead short of the REAL event rather than a frozen snapshot. A momentary NotFound keeps
+                // the last good target so the warp doesn't bail and force a manual restart. The Hohmann ignition
+                // warp keeps its fixed target.
+                if (_warpingToCa && MathHelpers.IsFinite(LiveTimeToClosestApproachSeconds))
+                {
+                    _warpTargetUt = now + LiveTimeToClosestApproachSeconds;
+                    _warpLeadSeconds = ComputeWarpLeadSeconds();
+                }
+
                 double secondsToWarpTarget = _warpTargetUt - now;
 
                 // Stop on a burn or at the lead; let the warp run through the Hohmann coast-to-ignition
@@ -327,9 +360,12 @@ namespace Blackbird.Rendezvous
             // Past here we step the executor and drive controls; only when we own control.
             if (!owns) return;
 
-            // Feed the close-approach brake its braking-distance inputs: available decel (thrust/mass) and the
-            // slew time to flip retrograde-relative. Throttled, close stage only; a bad reading keeps the last.
-            if (bbState.RendezvousMethod == RendezvousMethod.CloseApproach && now - _lastBrakeParamsUt >= BrakeParamsIntervalSeconds)
+            // Feed the brake its braking-distance inputs: available decel (thrust/mass) and the slew time to flip
+            // retrograde-relative. Both the Final Approach stage and the Match-Velocity-at-distance path run the
+            // brake/close controller, so feed for either. Throttled; a bad reading keeps the last.
+            if ((bbState.RendezvousMethod == RendezvousMethod.FinalApproach
+                 || bbState.RendezvousMethod == RendezvousMethod.MatchVelocity)
+                && now - _lastBrakeParamsUt >= BrakeParamsIntervalSeconds)
             {
                 _lastBrakeParamsUt = now;
                 VesselState vs = VesselState.FromVessel(active);
@@ -342,6 +378,7 @@ namespace Blackbird.Rendezvous
                     _executor.BrakingSlewLeadSeconds =
                         AttitudeControl.EstimateSlewTimeSeconds(active, brakeDir, OrientPaddingSeconds);
             }
+
 
             // Feed the live predicted CA + time-to-CA so the close-approach stage can decide whether to coast
             // (projection reaches the parking band) or keep closing.
@@ -483,6 +520,12 @@ namespace Blackbird.Rendezvous
                 LiveClosestApproachMeters = approach.DistanceMeters;
                 LiveTimeToClosestApproachSeconds = approach.TimeSeconds;
             }
+            else
+            {
+                // No approach within the horizon: clear, don't leave a stale value the panel keeps showing.
+                LiveClosestApproachMeters = double.NaN;
+                LiveTimeToClosestApproachSeconds = double.NaN;
+            }
         }
 
         // Fly-by-wire actuation (from BlackBird.OnFlyByWire): steers along the burn vector and sets throttle
@@ -496,6 +539,15 @@ namespace Blackbird.Rendezvous
 
             if (wantBurn)
             {
+                // Soft-enable RCS so torque-poor craft can actually rotate during the engine-off orient hold;
+                // capture the player's setting once and restore it on handback.
+                if (!_rcsForced)
+                {
+                    _rcsPriorState = vessel.ActionGroups[KSPActionGroup.RCS];
+                    _rcsForced = true;
+                }
+                vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
+
                 // Always steer toward the burn vector; throttle only once the craft is pointed and settled
                 _attitude.DriveInertial(vessel, state, _command.ThrustDirection, 0.0);
 
@@ -545,6 +597,13 @@ namespace Blackbird.Rendezvous
 
                 _burningLastApply = _burnAligned;
                 return;
+            }
+
+            // Not burning: hand control back, restoring the player's RCS setting we soft-enabled.
+            if (_rcsForced)
+            {
+                vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, _rcsPriorState);
+                _rcsForced = false;
             }
 
             Orienting = false;

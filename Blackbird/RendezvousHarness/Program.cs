@@ -33,6 +33,10 @@ namespace Blackbird.RendezvousHarness
             CheckInterceptBurnClosedLoop();
             CheckClosestApproachCountsDown();
             CheckClosestApproachJ2ShiftsResult();
+            CheckClosestApproachStableUnderTimeAdvance();
+            CheckClosestApproachSeparatingNowFindsNext();
+            CheckClosestApproachFastPassMatchesBruteForce();
+            CheckClosestApproachNoApproachReturnsNotFound();
             CheckInterceptLargeCoOrbitalGap();
             CheckInterceptBurnTerminatesUnderWeakThrust();
             CheckMatchVelocityNullsRelativeVelocity();
@@ -42,8 +46,8 @@ namespace Blackbird.RendezvousHarness
             CheckInterceptFiniteBurnAchievesCloseApproach();
             CheckDockingGeometry();
             CheckDockingController();
-            CheckCloseApproachCoastsWhenCaInBand();
-            CheckCloseApproachHoldsThenBurnsAtHaven();
+            CheckMatchVelocityAtDistanceHoldsWhileFinalApproachChases();
+            CheckMatchVelocityAtDistanceBrakesAtTrigger();
             CheckCloseApproachDeadbandRelaxesWithRange();
             CheckMatchVelocityReaimsEachTick();
             CheckThrustEnvelope();
@@ -488,6 +492,163 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("J2 materially shifts CA time (> 20 s)", timeShift > 20.0);
         }
 
+        // The core stability guarantee: a closest approach is a fixed absolute event, so re-solving from a
+        // LATER measured state must return the SAME event — distance unchanged, time counted down 1:1 by the
+        // elapsed time. This is what the old grid-quantized/horizon-capped search failed (the in-game readout
+        // that jumped and never converged to zero). Target 5 km higher and ahead; the lower/faster chaser
+        // closes over a few hours. Advance the start by several amounts and assert the absolute CA UT holds.
+        private static void CheckClosestApproachStableUnderTimeAdvance()
+        {
+            Console.WriteLine("Case 26: closest approach is a stable absolute event (distance fixed, time counts down 1:1)");
+
+            double R = KerbinRadius + 150000.0;
+            double vc = Math.Sqrt(KerbinMu / R);
+            double R2 = R + 5000.0;
+            double vc2 = Math.Sqrt(KerbinMu / R2);
+            double lead = 25.0 * Math.PI / 180.0;
+
+            Vector3d aPos0 = new Vector3d(R, 0.0, 0.0);
+            Vector3d aVel0 = new Vector3d(0.0, vc, 0.0);
+            Vector3d tPos0 = new Vector3d(R2 * Math.Cos(lead), R2 * Math.Sin(lead), 0.0);
+            Vector3d tVel0 = new Vector3d(-vc2 * Math.Sin(lead), vc2 * Math.Cos(lead), 0.0);
+
+            double horizon = 24.0 * 3600.0;
+            ApproachResult baseRes = ClosestApproachSolver.FindNextApproach(aPos0, aVel0, tPos0, tVel0, KerbinMu, horizon, 240);
+            AssertTrue("base approach found", baseRes.Found);
+
+            double[] advances = { 300.0, 900.0, 1800.0, 3600.0 };
+            foreach (double adv in advances)
+            {
+                TwoBody.Propagate(aPos0, aVel0, KerbinMu, adv, out Vector3d aP, out Vector3d aV);
+                TwoBody.Propagate(tPos0, tVel0, KerbinMu, adv, out Vector3d tP, out Vector3d tV);
+                ApproachResult r = ClosestApproachSolver.FindNextApproach(aP, aV, tP, tV, KerbinMu, horizon, 240);
+
+                AssertTrue("approach found after +" + adv.ToString("F0") + "s", r.Found);
+                AssertTrue("absolute CA UT stable (+" + adv.ToString("F0") + "s, <5 s)",
+                    Math.Abs((adv + r.TimeSeconds) - baseRes.TimeSeconds) < 5.0);
+                AssertTrue("CA distance stable (+" + adv.ToString("F0") + "s, <50 m)",
+                    Math.Abs(r.DistanceMeters - baseRes.DistanceMeters) < 50.0);
+                AssertTrue("time-to-CA counted down (+" + adv.ToString("F0") + "s)", r.TimeSeconds < baseRes.TimeSeconds);
+            }
+
+            Console.WriteLine(string.Format(
+                "    CA {0:F0} m at absolute T+{1:F0}s; invariant across advances", baseRes.DistanceMeters, baseRes.TimeSeconds));
+        }
+
+        // Reproduces the "closest approach reads as 'now' while separating" symptom: the pair is in-track
+        // aligned NOW (a local minimum of range) and immediately separating. The solver MUST NOT report that
+        // t=0 point — it returns the NEXT real approach (one synodic period out), not the degenerate "in 0 s".
+        private static void CheckClosestApproachSeparatingNowFindsNext()
+        {
+            Console.WriteLine("Case 27: separating-now is skipped; the NEXT approach is returned (no 'in 0 s')");
+
+            double R = KerbinRadius + 100000.0;
+            double vc = Math.Sqrt(KerbinMu / R);
+            double R2 = R + 80000.0;                 // 80 km higher -> synodic ~ a few hours (within horizon)
+            double vc2 = Math.Sqrt(KerbinMu / R2);
+            double periodA = CircularPeriod(R);
+
+            // Both at angle 0: in-track aligned, so range = radial gap NOW and grows as they de-phase.
+            Vector3d aPos = new Vector3d(R, 0.0, 0.0);
+            Vector3d aVel = new Vector3d(0.0, vc, 0.0);
+            Vector3d tPos = new Vector3d(R2, 0.0, 0.0);
+            Vector3d tVel = new Vector3d(0.0, vc2, 0.0);
+
+            double horizon = 24.0 * 3600.0;
+            ApproachResult res = ClosestApproachSolver.FindNextApproach(aPos, aVel, tPos, tVel, KerbinMu, horizon, 240);
+
+            AssertTrue("approach found", res.Found);
+            AssertTrue("skips the closest-now point (t >> 0, next pass)", res.TimeSeconds > periodA * 0.5);
+            AssertTrue("within horizon", res.TimeSeconds < horizon);
+            AssertTrue("next pass distance ~ radial gap (<2 km)", Math.Abs(res.DistanceMeters - (R2 - R)) < 2000.0);
+
+            Console.WriteLine(string.Format(
+                "    next approach {0:F0} m at T+{1:F0}s (period {2:F0}s)", res.DistanceMeters, res.TimeSeconds, periodA));
+        }
+
+        // Accuracy: a fast, sub-km pass (two near-equal orbits in slightly tilted planes cross near the node at
+        // high relative speed) must be resolved to brute-force precision — not grid-quantized. Compares the
+        // solver's distance/time against a dense uniform sweep over the first orbit (skipping the t~0 node).
+        private static void CheckClosestApproachFastPassMatchesBruteForce()
+        {
+            Console.WriteLine("Case 28: fast sub-km pass resolved to brute-force accuracy");
+
+            double R = KerbinRadius + 200000.0;
+            double vc = Math.Sqrt(KerbinMu / R);
+            double R2 = R + 300.0;
+            double vc2 = Math.Sqrt(KerbinMu / R2);
+            double inc = 3.0 * Math.PI / 180.0;
+            double period = CircularPeriod(R);
+
+            Vector3d aPos = new Vector3d(R, 0.0, 0.0);
+            Vector3d aVel = new Vector3d(0.0, vc, 0.0);
+            Vector3d tPos = new Vector3d(R2, 0.0, 0.0);
+            Vector3d tVel = new Vector3d(0.0, vc2 * Math.Cos(inc), vc2 * Math.Sin(inc));   // tilted plane
+
+            double horizon = 6.0 * 3600.0;
+            ApproachResult res = ClosestApproachSolver.FindNextApproach(aPos, aVel, tPos, tVel, KerbinMu, horizon, 240);
+
+            BruteApproach(aPos, aVel, tPos, tVel, KerbinMu, 0.05 * period, 0.95 * period, 400000,
+                out double bruteDist, out double bruteTime);
+
+            AssertTrue("approach found", res.Found);
+            AssertTrue("distance matches brute force (<5 m)", Math.Abs(res.DistanceMeters - bruteDist) < 5.0);
+            AssertTrue("time matches brute force (<2 s)", Math.Abs(res.TimeSeconds - bruteTime) < 2.0);
+
+            Console.WriteLine(string.Format(
+                "    solver {0:F1} m @ {1:F1}s   brute {2:F1} m @ {3:F1}s", res.DistanceMeters, res.TimeSeconds, bruteDist, bruteTime));
+        }
+
+        // The solver must report NO approach (not a fabricated one) when none exists in the horizon: (a) two
+        // co-orbital craft 180 deg apart hold a constant separation forever; (b) a real approach exists but
+        // lies beyond a deliberately short horizon while the pair is still closing.
+        private static void CheckClosestApproachNoApproachReturnsNotFound()
+        {
+            Console.WriteLine("Case 29: no approach within horizon returns NotFound (no fabricated minimum)");
+
+            double R = KerbinRadius + 200000.0;
+            double vc = Math.Sqrt(KerbinMu / R);
+
+            // (a) Same orbit, 180 deg apart: range is constant (2R), so there is no local minimum at all.
+            Vector3d aPos = new Vector3d(R, 0.0, 0.0);
+            Vector3d aVel = new Vector3d(0.0, vc, 0.0);
+            Vector3d tPos = new Vector3d(-R, 0.0, 0.0);
+            Vector3d tVel = new Vector3d(0.0, -vc, 0.0);
+            ApproachResult flat = ClosestApproachSolver.FindNextApproach(aPos, aVel, tPos, tVel, KerbinMu, 6.0 * 3600.0, 240);
+            AssertTrue("constant-separation co-orbital: not found", !flat.Found);
+
+            // (b) Hours-away approach, but a 600 s horizon: still closing, no minimum reached -> not fabricated.
+            double R2 = R + 5000.0;
+            double vc2 = Math.Sqrt(KerbinMu / R2);
+            double lead = 25.0 * Math.PI / 180.0;
+            Vector3d cPos = new Vector3d(R, 0.0, 0.0);
+            Vector3d cVel = new Vector3d(0.0, vc, 0.0);
+            Vector3d dPos = new Vector3d(R2 * Math.Cos(lead), R2 * Math.Sin(lead), 0.0);
+            Vector3d dVel = new Vector3d(-vc2 * Math.Sin(lead), vc2 * Math.Cos(lead), 0.0);
+            ApproachResult shortHorizon = ClosestApproachSolver.FindNextApproach(cPos, cVel, dPos, dVel, KerbinMu, 600.0, 240);
+            AssertTrue("approach beyond horizon: not fabricated", !shortHorizon.Found);
+
+            Console.WriteLine("    flat co-orbital + short-horizon both correctly NotFound");
+        }
+
+        // Dense uniform-sweep ground truth for the closest approach over [t0, t1]: returns the minimum
+        // separation and the time of it. Independent of the solver (brute force) for accuracy assertions.
+        private static void BruteApproach(
+            Vector3d aPos, Vector3d aVel, Vector3d tPos, Vector3d tVel, double mu,
+            double t0, double t1, int samples, out double minDistance, out double timeAtMin)
+        {
+            minDistance = double.PositiveInfinity;
+            timeAtMin = t0;
+            for (int i = 0; i <= samples; i++)
+            {
+                double t = t0 + (t1 - t0) * i / samples;
+                TwoBody.Propagate(aPos, aVel, mu, t, out Vector3d ra, out _);
+                TwoBody.Propagate(tPos, tVel, mu, t, out Vector3d rt, out _);
+                double d = (ra - rt).magnitude;
+                if (d < minDistance) { minDistance = d; timeAtMin = t; }
+            }
+        }
+
         // DIAGNOSTIC: reproduces the in-game "accurate launch" geometry — target ~20 km radially out on a
         // slightly higher circular orbit, so the pair is at closest approach NOW and sliding past at a low
         // relative speed. Shows what the single-rev intercept solver does in this regime (vs the easy
@@ -735,7 +896,7 @@ namespace Blackbird.RendezvousHarness
             // Park at 100 m for this test (independent of the default), so the standoff-band asserts are meaningful.
             ex.ParkingDistance = 100.0;
 
-            AssertTrue("execute close", ex.ForceExecute(RendezvousMethod.CloseApproach));
+            AssertTrue("execute close", ex.ForceExecute(RendezvousMethod.FinalApproach));
             const double maxAccel = 20.0;
             double dt = 0.05;
             int ticks = 0;
@@ -1067,89 +1228,83 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("Final -> Contact", DockingController.NextLeg(DockingLeg.Final) == DockingLeg.Contact);
         }
 
-        // Case 20: close-approach COAST guard. When the predicted closest approach is already inside the
-        // parking band and we're nearby, the stage must HOLD (zero throttle) and let the trajectory carry in --
-        // even if the CA is far in TIME -- instead of firing a pursuit burn that pushes the real CA out (the
-        // "re-run close approach increases our distance" bug). When the CA is NOT in band it must still close.
-        private static void CheckCloseApproachCoastsWhenCaInBand()
+        // Case 20: the Match-Velocity-vs-Final-Approach split (regression guard for the bug where "Match
+        // velocities at X" ran Final Approach and burned TOWARD the target). MV-at-distance must HOLD
+        // retrograde and never chase; Final Approach on the same geometry must actively command thrust (close).
+        private static void CheckMatchVelocityAtDistanceHoldsWhileFinalApproachChases()
         {
-            Console.WriteLine("Case 20: close approach coasts when CA already in band");
+            Console.WriteLine("Case 20: match-velocity-at-distance holds retrograde; final approach acts/closes");
 
+            // 11 km out, closing straight at the target at 148 m/s (the in-game geometry of the bug).
             StaticWorld world = new StaticWorld
             {
-                Mu = KerbinMu,
-                ReferenceNormal = new Vector3d(0, 0, 1),
-                TargetPosition = new Vector3d(800.0, 0, 0),
-                ActivePosition = new Vector3d(0, 0, 0),        // 800 m apart
-                TargetVelocity = new Vector3d(0, 100.0, 0),
-                ActiveVelocity = new Vector3d(0, 100.0, 0)     // matched (rel speed 0)
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                BodyRadius = KerbinRadius, AtmosphereDepth = 70000.0,
+                TargetPosition = new Vector3d(11000.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(148.0, 100.0, 0)
             };
+            Vector3d bearing = new Vector3d(1, 0, 0);
 
-            // CA already in the parking band (5 m < 10 m) but 600 s away (beyond the old 300 s horizon): coast.
-            TerminalRendezvousExecutor coastExec = NewExecutor(out _);
-            coastExec.ForceExecute(RendezvousMethod.CloseApproach);
-            RendezvousCommand coast = coastExec.Update(world, 5.0, 600.0);
-            AssertTrue("holds heading (has command)", coast.HasBurn);
-            AssertScalar("coast throttle is zero", coast.Throttle, 0.0);
-            AssertTrue("coast did not complete", coast.Phase != InterceptPhase.Complete);
+            // Match Velocity + "at X" checked: far from the brake point -> HOLD retrograde, zero throttle, and
+            // crucially NOT toward the target (CA fed in band; MV must ignore it, not chase).
+            TerminalRendezvousExecutor mv = NewExecutor(out _);
+            mv.UseDistanceForMatchVelocities = true;
+            mv.BrakingDecelMetersPerSecondSquared = 5.0;
+            mv.ForceExecute(RendezvousMethod.MatchVelocity);
+            RendezvousCommand hold = mv.Update(world, 50.0, 60.0);
+            AssertScalar("MV holds (zero throttle) far from brake point", hold.Throttle, 0.0);
+            AssertTrue("MV oriented retrograde, NOT toward target", Vector3d.Dot(hold.ThrustDirection, bearing) < 0.0);
 
-            // CA NOT in band -> must still close (nonzero throttle), proving the closing path still works.
-            TerminalRendezvousExecutor closeExec = NewExecutor(out _);
-            closeExec.ForceExecute(RendezvousMethod.CloseApproach);
-            RendezvousCommand close = closeExec.Update(world, 2000.0, 600.0);
-            AssertTrue("closes when CA out of band", close.Throttle > 0.0);
+            // Final Approach (box unchecked): same geometry must actively control the approach (nonzero throttle).
+            TerminalRendezvousExecutor fa = NewExecutor(out _);
+            fa.UseDistanceForMatchVelocities = false;
+            fa.BrakingDecelMetersPerSecondSquared = 5.0;
+            fa.ForceExecute(RendezvousMethod.FinalApproach);
+            RendezvousCommand chase = fa.Update(world, 50.0, 60.0);
+            AssertTrue("FA acts (nonzero throttle)", chase.Throttle > 0.0);
         }
 
-        // Case 23: the early-burn regression guard. On a terminal trajectory (predicted CA already inside the
-        // parking band) while still CLOSING and far out, the stage must HOLD — orient to the braking attitude
-        // (anti relative-velocity) at zero throttle and ride the trajectory in — NOT fire a full match burn at
-        // range. This is the in-game bug: an 8 m CA at ~500 m on a low-TWR craft (which inflates the brake
-        // point past the current range) used to brake immediately and stop the craft dead, blowing CA out to
-        // 800 m+. Then, once inside the safe haven (range <= parking distance), it MUST burn to match.
-        private static void CheckCloseApproachHoldsThenBurnsAtHaven()
+        // Case 23: Match-Velocity-at-distance fires the kill-velocity burn at the brake point and inside the
+        // band. The brake point comes from the measured closing speed; it self-latches once reached.
+        private static void CheckMatchVelocityAtDistanceBrakesAtTrigger()
         {
-            Console.WriteLine("Case 23: close approach holds on a CA-in-band terminal trajectory, burns at the safe haven");
+            Console.WriteLine("Case 23: match-velocity-at-distance brakes at the brake point and inside the band");
 
-            // Far + closing: 500 m out, closing along +X at 30 m/s, predicted CA = 8 m (inside the 10 m band).
-            StaticWorld far = new StaticWorld
+            // 200 m out, closing 30 m/s, decel 5, slewLead 3 -> brakeTrigger = 100 + 30^2/(2*5)=90 + 30*3=90 = 280 m.
+            // 200 < 280, so after the first (trigger-setting) tick it must fire the brake.
+            StaticWorld near = new StaticWorld
             {
-                Mu = KerbinMu,
-                ReferenceNormal = new Vector3d(0, 0, 1),
-                TargetPosition = new Vector3d(500.0, 0, 0),
-                ActivePosition = Vector3d.zero,             // 500 m apart, target ahead on +X
-                TargetVelocity = new Vector3d(0, 100.0, 0),
-                ActiveVelocity = new Vector3d(30.0, 100.0, 0)  // closing at 30 m/s toward the target
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                BodyRadius = KerbinRadius, AtmosphereDepth = 70000.0,
+                TargetPosition = new Vector3d(200.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(30.0, 100.0, 0)
             };
+            Vector3d bearing = new Vector3d(1, 0, 0);
 
-            TerminalRendezvousExecutor holdExec = NewExecutor(out _);
-            // Low-TWR craft: small decel + long flip lead inflate the brake point past 500 m, the exact
-            // condition that made the old BRAKE-before-COAST ordering fire a full match burn here.
-            holdExec.BrakingDecelMetersPerSecondSquared = 1.0;
-            holdExec.BrakingSlewLeadSeconds = 20.0;
-            holdExec.ForceExecute(RendezvousMethod.CloseApproach);
-            RendezvousCommand hold = holdExec.Update(far, 8.0, 60.0);
+            TerminalRendezvousExecutor mv = NewExecutor(out _);
+            mv.UseDistanceForMatchVelocities = true;
+            mv.ParkingDistance = 100.0;
+            mv.BrakingDecelMetersPerSecondSquared = 5.0;
+            mv.BrakingSlewLeadSeconds = 3.0;
+            mv.ForceExecute(RendezvousMethod.MatchVelocity);
+            mv.Update(near, 50.0, 30.0);                            // tick 1: set the brake point, hold
+            RendezvousCommand brake = mv.Update(near, 50.0, 30.0);  // tick 2: inside the brake point -> fire
+            AssertTrue("brakes at the trigger (nonzero throttle)", brake.Throttle > 0.0);
+            AssertTrue("brake is retrograde", Vector3d.Dot(brake.ThrustDirection, bearing) < 0.0);
 
-            AssertTrue("holds heading (has command)", hold.HasBurn);
-            AssertScalar("hold throttle is zero (no early burn)", hold.Throttle, 0.0);
-            AssertTrue("did not complete", hold.Phase != InterceptPhase.Complete);
-            // Oriented to the braking attitude: opposite the closing relative velocity (-X here).
-            AssertVecRel("oriented retrograde-relative", hold.ThrustDirection, new Vector3d(-1, 0, 0), 1e-6);
-
-            // Inside the safe haven (8 m < 10 m band) and still moving: now it MUST burn to match velocity.
+            // Inside the parking band (8 m): fire immediately.
             StaticWorld haven = new StaticWorld
             {
-                Mu = KerbinMu,
-                ReferenceNormal = new Vector3d(0, 0, 1),
-                TargetPosition = new Vector3d(8.0, 0, 0),
-                ActivePosition = Vector3d.zero,             // 8 m apart, inside the band
-                TargetVelocity = new Vector3d(0, 100.0, 0),
-                ActiveVelocity = new Vector3d(2.0, 100.0, 0)   // still 2 m/s of relative velocity to null
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                BodyRadius = KerbinRadius, AtmosphereDepth = 70000.0,
+                TargetPosition = new Vector3d(8.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(2.0, 100.0, 0)
             };
-
-            TerminalRendezvousExecutor havenExec = NewExecutor(out _);
-            havenExec.ForceExecute(RendezvousMethod.CloseApproach);
-            RendezvousCommand burn = havenExec.Update(haven, 8.0, 60.0);
-            AssertTrue("burns once inside the safe haven", burn.Throttle > 0.0);
+            TerminalRendezvousExecutor hav = NewExecutor(out _);
+            hav.UseDistanceForMatchVelocities = true;
+            hav.ForceExecute(RendezvousMethod.MatchVelocity);
+            RendezvousCommand burn = hav.Update(haven, 8.0, 60.0);
+            AssertTrue("fires inside the parking band", burn.Throttle > 0.0);
         }
 
         // Case 24: ThrustEnvelope bins POSITIVE authority into each of the 6 directions and reads it back.
@@ -1241,7 +1396,7 @@ namespace Blackbird.RendezvousHarness
                 TargetVelocity = targetVel, ActiveVelocity = activeVel
             };
             TerminalRendezvousExecutor farExec = NewExecutor(out _);
-            farExec.ForceExecute(RendezvousMethod.CloseApproach);
+            farExec.ForceExecute(RendezvousMethod.FinalApproach);
             RendezvousCommand farCmd = farExec.Update(far, 2000.0, 600.0);
             AssertScalar("4 km: holds (no micro-burn)", farCmd.Throttle, 0.0);
 
@@ -1252,7 +1407,7 @@ namespace Blackbird.RendezvousHarness
                 TargetVelocity = targetVel, ActiveVelocity = activeVel
             };
             TerminalRendezvousExecutor nearExec = NewExecutor(out _);
-            nearExec.ForceExecute(RendezvousMethod.CloseApproach);
+            nearExec.ForceExecute(RendezvousMethod.FinalApproach);
             RendezvousCommand nearCmd = nearExec.Update(near, 2000.0, 600.0);
             AssertTrue("200 m: still corrects", nearCmd.Throttle > 0.0);
         }
