@@ -5,6 +5,7 @@ using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Psg;
 using Blackbird.Trajectory;
+using Blackbird.Helpers;
 using UnityEngine;
 using Blackbird.Modules;
 
@@ -55,15 +56,11 @@ namespace Blackbird.Rendezvous
         private const double BurnLogIntervalSeconds = 0.25;
         private double _lastBurnLogUt = double.NegativeInfinity;
 
-        // Orient-then-stabilize-then-burn gate: hold throttle until pointed (within AlignStartDeg) AND
-        // rotation has settled (below MaxAngularRate) for StabilizeDwell, else the burn fires mid-slew and
-        // flings off-axis. Once burning, AlignKeepDeg gives hysteresis.
-        private const double AlignStartDeg = 2.0;
-        private const double AlignKeepDeg = 20.0;
-        private const double MaxAngularRateDegPerSec = 1.0;
-        private const double StabilizeDwellSeconds = 1.5;
-        private bool _burnAligned;
-        private double _steadySinceUt = double.NegativeInfinity;
+        // Orient-then-stabilize-then-burn gate (BurnSettleGate): hold throttle until pointed AND rotation has
+        // settled to the craft's control-authority-scaled "still" rate for the dwell, else a burn fired
+        // mid-slew flings off-axis (a heavy/powerful craft coasts through alignment, so a fixed rate bound lets
+        // it ignite while still turning). Threshold is near-zero for heavy craft, the legacy bound for nimble.
+        private BurnSettleTracker _settle;
         private bool _wasExecuting;   // edge-detect entry into a stage burn (for one-shot diagnostics)
 
         // Warp-to-closest-approach: absolute target UT, auto-stopped a lead short so the craft can pre-orient.
@@ -122,8 +119,7 @@ namespace Blackbird.Rendezvous
         // vector so Match Velocity always re-points to the terminal/retrograde direction before firing.
         public bool Execute(RendezvousMethod method) {
             StopWarp();
-            _burnAligned = false;
-            _steadySinceUt = double.NegativeInfinity;
+            _settle.Reset();
             bool executing = _executor.ForceExecute(method);
             bbState.RendezvousEnabled = executing;
             return executing;
@@ -159,8 +155,8 @@ namespace Blackbird.Rendezvous
         // Invalidate the cached plan preview so it recomputes once (planner switched / manual refresh).
         public const double CloseApproachGainDefault = TerminalRendezvousExecutor.RendezDistanceApproachGainDefault;
         public const double CloseApproachMaxSpeedDefault = TerminalRendezvousExecutor.RendezMaxApproachSpeedDefaultMetersPerSecond;
-        public void Abort() { _executor.Abort(); _attitude.Reset(); _burnAligned = false; StopWarp(); bbState.RendezvousEnabled = false; }
-        public void ResetSequence() { _executor.Reset(); _attitude.Reset(); _burnAligned = false; StopWarp(); }
+        public void Abort() { _executor.Abort(); _attitude.Reset(); _settle.Reset(); StopWarp(); bbState.RendezvousEnabled = false; }
+        public void ResetSequence() { _executor.Reset(); _attitude.Reset(); _settle.Reset(); StopWarp(); }
 
         // Stop cleanly after losing the control authority (e.g. Docking Assume Control) mid-stage: drop to
         // idle, release attitude/warp. ActiveModule is already owned by the new module, so it is not touched.
@@ -168,8 +164,7 @@ namespace Blackbird.Rendezvous
         {
             _executor.Reset();
             _attitude.Reset();
-            _burnAligned = false;
-            _steadySinceUt = double.NegativeInfinity;
+            _settle.Reset();
             StopWarp();
             bbState.RendezvousEnabled = false;
         }
@@ -218,7 +213,7 @@ namespace Blackbird.Rendezvous
         {
             Vessel active = FlightGlobals.ActiveVessel;
             if (active == null || !_executor.HasInterceptPlan) return WarpLeadMinSeconds;
-            double padding = OrientPaddingSeconds + StabilizeDwellSeconds;
+            double padding = OrientPaddingSeconds + BurnSettleGate.StabilizeDwellSeconds;
             double slew = AttitudeControl.EstimateSlewTimeSeconds(active, bbState.InterceptSolution.DeltaV, padding);
             double halfBurn = HalfBurnSeconds(active, bbState.InterceptSolution.DeltaVMagnitude);
             double auto = MathHelpers.Clamp(slew + halfBurn, WarpLeadMinSeconds, WarpLeadMaxSeconds);
@@ -263,7 +258,7 @@ namespace Blackbird.Rendezvous
             // Lead = slew to that attitude + half the null-burn duration, so the warp stops with time to orient
             // AND the burn (ignited at CA - halfBurn) straddles the closest approach.
             Vector3d burnDirection = Relative.RelativeVelocityWorld;
-            double padding = OrientPaddingSeconds + StabilizeDwellSeconds;
+            double padding = OrientPaddingSeconds + BurnSettleGate.StabilizeDwellSeconds;
             double slew = AttitudeControl.EstimateSlewTimeSeconds(active, burnDirection, padding);
             double halfBurn = HalfBurnSeconds(active, Relative.RelativeVelocityWorld.magnitude);
             double auto = MathHelpers.Clamp(slew + halfBurn, WarpLeadMinSeconds, WarpLeadMaxSeconds);
@@ -345,7 +340,7 @@ namespace Blackbird.Rendezvous
                 // the frozen plan matches the state the engine fires from; refines over successive previews.
                 if (bbState.RendezvousMethod == RendezvousMethod.Intercept && _executor.HasInterceptPlan)
                 {
-                    double padding = OrientPaddingSeconds + StabilizeDwellSeconds;
+                    double padding = OrientPaddingSeconds + BurnSettleGate.StabilizeDwellSeconds;
                     _executor.IgnitionLeadSeconds = AttitudeControl.EstimateSlewTimeSeconds(
                         active, bbState.InterceptSolution.DeltaV, padding);
 
@@ -548,6 +543,14 @@ namespace Blackbird.Rendezvous
                 }
                 vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
 
+                // let prior burn vector finish before doing a new one
+                if (!_settle.Aligned && BlackbirdHelpers.EngineThrustActive(vessel))
+                {
+                    _attitude.DriveInertial(vessel, state, vessel.ReferenceTransform.up, 0.0); // keep vessel on its current orientation while its engines spool down
+                    state.mainThrottle = 0.0f;
+                    return;
+                }
+
                 // Always steer toward the burn vector; throttle only once the craft is pointed and settled
                 _attitude.DriveInertial(vessel, state, _command.ThrustDirection, 0.0);
 
@@ -557,33 +560,20 @@ namespace Blackbird.Rendezvous
                 // (KSP vessel angular velocity: x=pitch, y=roll, z=yaw.)
                 Vector3d angularVel = vessel.angularVelocityD;
                 double pitchYawRateDegPerSec =
-                    Math.Sqrt(angularVel.x * angularVel.x + angularVel.z * angularVel.z) * (180.0 / Math.PI);
+                    MathHelpers.Rad2Deg(Math.Sqrt(angularVel.x * angularVel.x + angularVel.z * angularVel.z));
                 double now = Planetarium.GetUniversalTime();
                 AlignmentErrorDeg = errorDeg;
 
-                if (!_burnAligned)
-                {
-                    bool steady = errorDeg <= AlignStartDeg && pitchYawRateDegPerSec <= MaxAngularRateDegPerSec;
-                    if (steady)
-                    {
-                        if (double.IsNegativeInfinity(_steadySinceUt)) _steadySinceUt = now;
-                        if (now - _steadySinceUt >= StabilizeDwellSeconds) _burnAligned = true;
-                    }
-                    else
-                    {
-                        _steadySinceUt = double.NegativeInfinity;   // moved/rotating: restart the dwell
-                    }
-                }
-                else if (errorDeg > AlignKeepDeg)
-                {
-                    _burnAligned = false;
-                    _steadySinceUt = double.NegativeInfinity;
-                }
+                // "Still" rate scales with the craft's control authority: heavy/powerful craft must settle to
+                // near zero (else they ignite while coasting through alignment), nimble craft keep the legacy bound.
+                double stillRate = BurnSettleGate.StillRateThresholdDegPerSec(
+                    AttitudeControl.MinControlAngularAccel(vessel), TimeWarp.fixedDeltaTime);
+                bool aligned = _settle.Update(errorDeg, pitchYawRateDegPerSec, stillRate, now);
 
-                Orienting = !_burnAligned;
-                Stabilizing = !_burnAligned && errorDeg <= AlignStartDeg;   // pointed, settling
+                Orienting = !aligned;
+                Stabilizing = !aligned && errorDeg <= BurnSettleGate.AlignStartDeg;   // pointed, settling
 
-                if (_burnAligned)
+                if (aligned)
                 {
                     state.mainThrottle = Mathf.Clamp01((float)_command.Throttle);
                 }
@@ -595,7 +585,7 @@ namespace Blackbird.Rendezvous
                     _executor.HoldBurnBaseline(TrajectoryProvider.GetVelocity(vessel), now);
                 }
 
-                _burningLastApply = _burnAligned;
+                _burningLastApply = aligned;
                 return;
             }
 
@@ -609,8 +599,7 @@ namespace Blackbird.Rendezvous
             Orienting = false;
             Stabilizing = false;
             AlignmentErrorDeg = double.NaN;
-            _burnAligned = false;
-            _steadySinceUt = double.NegativeInfinity;
+            _settle.Reset();
 
             if (_burningLastApply)
             {

@@ -6,6 +6,7 @@ using Blackbird.Modules;
 using Blackbird.Mathematics;
 using Blackbird.Trajectory;
 using UnityEngine;
+using Blackbird.Helpers;
 
 namespace Blackbird.Models
 {
@@ -379,28 +380,29 @@ namespace Blackbird.Models
 
                 foreach (PartModule module in part.Modules)
                 {
-                    if (module == null || !IsEngineModule(module) || !IsUsableEngine(module)) continue;
-
-                    double maxThrust = Math.Max(0.0, GetDouble(module, "maxThrust", 0.0));
-                    double thrustLimiter = MathHelpers.Clamp(GetDouble(module, "thrustPercentage", 100.0), 0.0, 100.0) / 100.0;
-                    double availableThrust = maxThrust * thrustLimiter;
-                    double currentThrust = Math.Max(0.0, GetDouble(module, "finalThrust", 0.0));
-
-                    info.AvailableThrust += availableThrust;
-                    info.CurrentThrust += currentThrust;
-
-                    double vacuumIsp = GetEngineIsp(module, 0.0);
-                    double atmosphericIsp = GetEngineIsp(module, pressureAtm);
-
-                    if (availableThrust > 0.0 && MathHelpers.IsFinite(vacuumIsp))
+                    if (module is ModuleEngines e)
                     {
-                        weightedVacuumIsp += vacuumIsp * availableThrust;
-                        ispWeight += availableThrust;
-                    }
+                        double maxThrust = Math.Max(0.0, e.maxThrust);
+                        double thrustLimiter = MathHelpers.Clamp(e.thrustPercentage, 0.0, 100.0) / 100.0;
+                        double availableThrust = maxThrust * thrustLimiter;
+                        double currentThrust = Math.Max(0.0, e.finalThrust);
 
-                    if (availableThrust > 0.0 && MathHelpers.IsFinite(atmosphericIsp))
-                    {
-                        weightedAtmosphericIsp += atmosphericIsp * availableThrust;
+                        info.AvailableThrust += availableThrust;
+                        info.CurrentThrust += currentThrust;
+
+                        double vacuumIsp = GetEngineIsp(module, 0.0);
+                        double atmosphericIsp = GetEngineIsp(module, pressureAtm);
+
+                        if (availableThrust > 0.0 && MathHelpers.IsFinite(vacuumIsp))
+                        {
+                            weightedVacuumIsp += vacuumIsp * availableThrust;
+                            ispWeight += availableThrust;
+                        }
+
+                        if (availableThrust > 0.0 && MathHelpers.IsFinite(atmosphericIsp))
+                        {
+                            weightedAtmosphericIsp += atmosphericIsp * availableThrust;
+                        }
                     }
                 }
             }
@@ -418,22 +420,6 @@ namespace Blackbird.Models
             }
 
             return info;
-        }
-
-        private static bool IsEngineModule(PartModule module)
-        {
-            Type type = module.GetType();
-            return type.Name == "ModuleEngines" || type.Name == "ModuleEnginesFX";
-        }
-
-        private static bool IsUsableEngine(PartModule module)
-        {
-            if (!module.isEnabled) return false;
-            if (!GetBool(module, "EngineIgnited", true)) return false;
-            if (GetBool(module, "flameout", false)) return false;
-            if (InvokeBool(module, "getFlameoutState", false)) return false;
-
-            return true;
         }
 
         private static double GetEngineIsp(PartModule module, double pressureAtm)

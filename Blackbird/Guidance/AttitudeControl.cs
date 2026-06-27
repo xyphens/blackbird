@@ -420,6 +420,18 @@ namespace Blackbird.Guidance
             return slew + paddingSeconds;
         }
 
+        // Min available angular acceleration (rad/s^2) on the nose-swing axes (worst of pitch/yaw). Drives the
+        // "still enough to ignite" rate threshold: low-authority/heavy craft must settle far stiller than a
+        // nimble one. Returns 0 when torque/MOI are unavailable so callers fall back to a fixed bound.
+        public static double MinControlAngularAccel(Vessel vessel)
+        {
+            if (vessel == null) return 0.0;
+            Vector3d torque = EstimateTorqueAvailable(vessel);
+            Vector3d moi = vessel.MOI;
+            double alpha = Math.Min(SafeAlpha(torque.x, moi.x), SafeAlpha(torque.z, moi.z));
+            return MathHelpers.IsFinite(alpha) && alpha > 0.0 ? alpha : 0.0;
+        }
+
         // Angular acceleration about one axis (|torque| / MOI). Returns +Infinity for a zero-inertia axis
         // (it never limits the slew) so Math.Min picks the genuinely limiting axis.
         private static double SafeAlpha(double torque, double moi)

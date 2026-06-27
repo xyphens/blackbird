@@ -121,6 +121,7 @@
     <Compile Include="PSG\J2Oblateness.cs" />
     <Compile Include="RCS\Balancer.cs" />
     <Compile Include="RCS\Controller.cs" />
+    <Compile Include="Rendezvous\BurnSettleGate.cs" />
     <Compile Include="Rendezvous\LvlhFrame.cs" />
     <Compile Include="Rendezvous\RelativeState.cs" />
     <Compile Include="Rendezvous\InterceptSolver.cs" />

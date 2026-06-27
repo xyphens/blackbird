@@ -75,6 +75,13 @@ namespace Blackbird.Modules
             {
                 GUILayout.Label($"Range: {FormatDistance(_handler.Relative.Range)}   "
                               + $"rel speed: {FormatSpeed(_handler.Relative.RelativeVelocityWorld.magnitude)}");
+                
+            }
+            // fixme: find out if this is pre-calc'd/available elsewhere here
+            if (_handler.Target != null && FlightGlobals.ActiveVessel.orbit.referenceBody.referenceBody == _handler.Target.orbit.referenceBody)
+            {
+                double relInc = OrbitMath.GetRelativeInclination(FlightGlobals.ActiveVessel, _handler.Target);
+                GUILayout.Label($"Rel. Inclination: {relInc}°");
             }
  
             if (MathHelpers.IsFinite(_handler.LiveClosestApproachMeters))

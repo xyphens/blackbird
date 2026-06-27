@@ -55,6 +55,7 @@ namespace Blackbird.RendezvousHarness
             CheckMatchVelocityReaimsEachTick();
             CheckThrustEnvelope();
             CheckDockingSchedule();
+            CheckBurnSettleGate();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -1590,6 +1591,56 @@ namespace Blackbird.RendezvousHarness
         private static double CircularPeriod(double radius)
         {
             return 2.0 * Math.PI * Math.Sqrt(radius * radius * radius / KerbinMu);
+        }
+
+        // The "still before burn" gate: the rate threshold must scale with control authority (a heavy/powerful
+        // craft must settle to near zero or it ignites while coasting through alignment and flings off-axis),
+        // the dwell must reject a transient zero-crossing, and the pointing bound must reject > 1 deg.
+        private static void CheckBurnSettleGate()
+        {
+            Console.WriteLine("Case 36: burn settle gate (still before ignition)");
+
+            const double dt = 0.02;   // physics step
+
+            // Authority scaling: nimble craft keep the legacy 1 deg/s cap, heavy craft drop to near zero.
+            double thNimble = BurnSettleGate.StillRateThresholdDegPerSec(5.0, dt);    // alpha 5 rad/s^2
+            double thHeavy = BurnSettleGate.StillRateThresholdDegPerSec(0.02, dt);   // alpha 0.02 rad/s^2
+            double thZero = BurnSettleGate.StillRateThresholdDegPerSec(0.0, dt);     // no torque data
+            AssertTrue("nimble threshold = legacy cap (1 deg/s)", Math.Abs(thNimble - 1.0) < 1e-9);
+            AssertTrue("zero-authority falls back to cap", Math.Abs(thZero - 1.0) < 1e-9);
+            AssertTrue("heavy threshold near zero (<0.1)", thHeavy > 0.0 && thHeavy < 0.1);
+
+            // The reported bug: a heavy craft drifting at 0.8 deg/s armed under the old flat 1 deg/s bound; it
+            // must now be rejected, while a genuinely still craft (and the nimble craft) are accepted.
+            AssertTrue("heavy rejects 0.8 deg/s (the old bug)", !BurnSettleGate.IsSteady(0.5, 0.8, thHeavy));
+            AssertTrue("heavy accepts truly still (0.03 deg/s)", BurnSettleGate.IsSteady(0.5, 0.03, thHeavy));
+            AssertTrue("nimble still accepts 0.8 deg/s", BurnSettleGate.IsSteady(0.5, 0.8, thNimble));
+            AssertTrue("rejects > 1 deg pointing even at zero rate", !BurnSettleGate.IsSteady(1.5, 0.0, thNimble));
+
+            // Dwell: steady must hold continuously for StabilizeDwellSeconds before it arms.
+            var t = new BurnSettleTracker();
+            bool armedImmediately = t.Update(0.5, 0.03, thHeavy, 100.0);
+            bool armedBeforeDwell = t.Update(0.5, 0.03, thHeavy, 100.0 + BurnSettleGate.StabilizeDwellSeconds - 0.1);
+            bool armedAfterDwell = t.Update(0.5, 0.03, thHeavy, 100.0 + BurnSettleGate.StabilizeDwellSeconds + 0.1);
+            AssertTrue("not armed on first steady frame", !armedImmediately);
+            AssertTrue("not armed before dwell elapses", !armedBeforeDwell);
+            AssertTrue("armed after continuous dwell", armedAfterDwell);
+
+            // Zero-crossing: a single steady frame interrupted by motion can never satisfy the dwell.
+            var tc = new BurnSettleTracker();
+            tc.Update(0.5, 0.03, thHeavy, 200.0);          // momentarily steady (coasting through)
+            tc.Update(0.5, 5.0, thHeavy, 200.02);          // still rotating: dwell resets
+            bool armedFromCrossing = tc.Update(0.5, 0.03, thHeavy, 200.04);   // 0.02s of new steadiness only
+            AssertTrue("zero-crossing during coast does not arm", !armedFromCrossing);
+
+            // Hysteresis: once armed, small drift (< AlignKeepDeg) holds the burn; a large excursion re-orients.
+            var th = new BurnSettleTracker();
+            th.Update(0.5, 0.03, thHeavy, 300.0);
+            th.Update(0.5, 0.03, thHeavy, 302.0);          // armed
+            bool holdsThroughDrift = th.Update(5.0, 0.03, thHeavy, 302.1);    // 5 deg < keep band
+            bool dropsOnExcursion = th.Update(25.0, 0.03, thHeavy, 302.2);    // 25 deg > keep band
+            AssertTrue("armed burn holds through small drift", holdsThroughDrift);
+            AssertTrue("large excursion forces re-orient", !dropsOnExcursion);
         }
 
         private static void AssertTrue(string label, bool condition)
