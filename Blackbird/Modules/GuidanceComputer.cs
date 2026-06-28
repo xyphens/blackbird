@@ -1,7 +1,8 @@
-using System;
 using Blackbird.Guidance;
 using Blackbird.Helpers;
+using Blackbird.Mathematics;
 using Blackbird.Models;
+using System;
 using UnityEngine;
 
 namespace Blackbird.Modules
@@ -61,6 +62,15 @@ namespace Blackbird.Modules
                 DrawGuidanceResult(_launchHandler.GuidanceInfo);
                 GUI.DragWindow();
                 return;
+            }
+
+            Orbit orbit = FlightGlobals.ActiveVessel.orbit;
+
+            if (_launchHandler.TargetVessel != null) {
+                double relInc = OrbitMath.GetRelativeInclination(FlightGlobals.ActiveVessel, _launchHandler.TargetVessel);
+                GUILayout.Label($"Rel. Inclination: {relInc:F2}°");
+                GUILayout.Label($"Inclination: {orbit.inclination:F2}° vs {_launchHandler.TargetVessel.orbit.inclination:F2}°");
+                GUILayout.Label($"RAAN (LAN): {orbit.LAN:F2}° vs {_launchHandler.TargetVessel.orbit.LAN:F2}°");
             }
 
             if (_launchHandler.State != LaunchGuidanceState.GuidingAscent)
@@ -137,7 +147,7 @@ namespace Blackbird.Modules
             GUILayout.Label($"Mode: {gMode}");
 
             GUILayout.Space(8);
-            Orbit orbit = FlightGlobals.ActiveVessel.orbit;
+
             GUILayout.Label($"Time to Apoapsis: {BlackbirdHelpers.FormatDuration(orbit.timeToAp)}");
             GUILayout.Label($"Time to Periapsis: {BlackbirdHelpers.FormatDuration(orbit.timeToPe)}");
             GUILayout.Label($"Orbital period: {BlackbirdHelpers.FormatDuration(orbit.period)}");

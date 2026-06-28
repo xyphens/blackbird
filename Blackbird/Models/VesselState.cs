@@ -7,6 +7,7 @@ using Blackbird.Mathematics;
 using Blackbird.Trajectory;
 using UnityEngine;
 using Blackbird.Helpers;
+using System.Security.Cryptography;
 
 namespace Blackbird.Models
 {
@@ -380,29 +381,30 @@ namespace Blackbird.Models
 
                 foreach (PartModule module in part.Modules)
                 {
-                    if (module is ModuleEngines e)
+                    if (!BlackbirdHelpers.IsUsableEngine(module, false)) continue;
+
+                    ModuleEngines e = (ModuleEngines) module;
+
+                    double maxThrust = Math.Max(0.0, e.maxThrust);
+                    double thrustLimiter = MathHelpers.Clamp(e.thrustPercentage, 0.0, 100.0) / 100.0;
+                    double availableThrust = maxThrust * thrustLimiter;
+                    double currentThrust = Math.Max(0.0, e.finalThrust);
+
+                    info.AvailableThrust += availableThrust;
+                    info.CurrentThrust += currentThrust;
+
+                    double vacuumIsp = GetEngineIsp(module, 0.0);
+                    double atmosphericIsp = GetEngineIsp(module, pressureAtm);
+
+                    if (availableThrust > 0.0 && MathHelpers.IsFinite(vacuumIsp))
                     {
-                        double maxThrust = Math.Max(0.0, e.maxThrust);
-                        double thrustLimiter = MathHelpers.Clamp(e.thrustPercentage, 0.0, 100.0) / 100.0;
-                        double availableThrust = maxThrust * thrustLimiter;
-                        double currentThrust = Math.Max(0.0, e.finalThrust);
+                        weightedVacuumIsp += vacuumIsp * availableThrust;
+                        ispWeight += availableThrust;
+                    }
 
-                        info.AvailableThrust += availableThrust;
-                        info.CurrentThrust += currentThrust;
-
-                        double vacuumIsp = GetEngineIsp(module, 0.0);
-                        double atmosphericIsp = GetEngineIsp(module, pressureAtm);
-
-                        if (availableThrust > 0.0 && MathHelpers.IsFinite(vacuumIsp))
-                        {
-                            weightedVacuumIsp += vacuumIsp * availableThrust;
-                            ispWeight += availableThrust;
-                        }
-
-                        if (availableThrust > 0.0 && MathHelpers.IsFinite(atmosphericIsp))
-                        {
-                            weightedAtmosphericIsp += atmosphericIsp * availableThrust;
-                        }
+                    if (availableThrust > 0.0 && MathHelpers.IsFinite(atmosphericIsp))
+                    {
+                        weightedAtmosphericIsp += atmosphericIsp * availableThrust;
                     }
                 }
             }
@@ -477,37 +479,37 @@ namespace Blackbird.Models
             return ConvertToDouble(GetMember(instance, memberName), fallback);
         }
 
-        private static bool GetBool(object instance, string memberName, bool fallback)
-        {
-            object value = GetMember(instance, memberName);
-            if (value == null) return fallback;
+        //private static bool GetBool(object instance, string memberName, bool fallback)
+        //{
+        //    object value = GetMember(instance, memberName);
+        //    if (value == null) return fallback;
 
-            try
-            {
-                return Convert.ToBoolean(value);
-            }
-            catch
-            {
-                return fallback;
-            }
-        }
+        //    try
+        //    {
+        //        return Convert.ToBoolean(value);
+        //    }
+        //    catch
+        //    {
+        //        return fallback;
+        //    }
+        //}
 
-        private static bool InvokeBool(object instance, string methodName, bool fallback)
-        {
-            if (instance == null) return fallback;
+        //private static bool InvokeBool(object instance, string methodName, bool fallback)
+        //{
+        //    if (instance == null) return fallback;
 
-            var method = instance.GetType().GetMethod(methodName, Type.EmptyTypes);
-            if (method == null) return fallback;
+        //    var method = instance.GetType().GetMethod(methodName, Type.EmptyTypes);
+        //    if (method == null) return fallback;
 
-            try
-            {
-                return Convert.ToBoolean(method.Invoke(instance, null));
-            }
-            catch
-            {
-                return fallback;
-            }
-        }
+        //    try
+        //    {
+        //        return Convert.ToBoolean(method.Invoke(instance, null));
+        //    }
+        //    catch
+        //    {
+        //        return fallback;
+        //    }
+        //}
 
         private static object GetMember(object instance, string memberName)
         {

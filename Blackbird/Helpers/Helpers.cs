@@ -26,7 +26,8 @@ namespace Blackbird.Helpers
             if (module == null) return false;
             if (module is ModuleEngines e)
             {
-                if (!checkIsEngineOnly && (!e.isEnabled || !e.EngineIgnited || e.flameout || e.getFlameoutState)) return false;
+                if (!checkIsEngineOnly && (!e.isEnabled || !e.EngineIgnited || e.flameout)) return false;
+
                 // caller only wants to know if this is an engine (i.e., when calculating figuring out staging)
                 return true;
             }

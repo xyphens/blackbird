@@ -60,11 +60,13 @@ namespace Blackbird.Modules
 
             if (GUI.Button(new Rect(_windowRect.width - 22, 2, 18, 18), " ")) bbState.RendezvousVisible = false;
 
+            if (FlightGlobals.ActiveVessel == null) return;
+
             if (_handler == null || _handler.Target == null || !Universe.IsInSpace(FlightGlobals.ActiveVessel?.altitude ?? 0))
             {
                 string strTarget = _handler?.Target?.name ?? "no target";
 
-                GUILayout.Label($"Rendezvous computer unavailable (target: {strTarget}, altitude: {FlightGlobals.ActiveVessel.altitude} m / {FlightGlobals.currentMainBody.atmosphereDepth} m)");
+                GUILayout.Label($"Rendezvous computer unavailable (target: {strTarget}, altitude: {FormatDistance(FlightGlobals.ActiveVessel.altitude)} m / {FormatDistance(FlightGlobals.currentMainBody.atmosphereDepth)} m)");
                 GUI.DragWindow();
                 return;
             }
@@ -75,13 +77,19 @@ namespace Blackbird.Modules
             {
                 GUILayout.Label($"Range: {FormatDistance(_handler.Relative.Range)}   "
                               + $"rel speed: {FormatSpeed(_handler.Relative.RelativeVelocityWorld.magnitude)}");
-                
             }
-            // fixme: find out if this is pre-calc'd/available elsewhere here
-            if (_handler.Target != null && FlightGlobals.ActiveVessel.orbit.referenceBody.referenceBody == _handler.Target.orbit.referenceBody)
+
+            Orbit v = FlightGlobals.ActiveVessel.orbit, t = _handler.Target.orbit;
+
+            if (v.referenceBody == t.referenceBody)
             {
                 double relInc = OrbitMath.GetRelativeInclination(FlightGlobals.ActiveVessel, _handler.Target);
-                GUILayout.Label($"Rel. Inclination: {relInc}°");
+                GUILayout.Label($"Rel. Inclination: {relInc:F2}°");
+                GUILayout.Label($"Inclination: {v.inclination:F2}° vs {t.inclination:F2}°");
+                GUILayout.Label($"RAAN (LAN): {v.LAN:F2}° vs {t.LAN:F2}°");
+            } else
+            {
+                GUILayout.Label("Target is in different reference body");
             }
  
             if (MathHelpers.IsFinite(_handler.LiveClosestApproachMeters))
