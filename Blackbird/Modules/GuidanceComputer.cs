@@ -94,7 +94,14 @@ namespace Blackbird.Modules
                 GUI.enabled = true;
 
                 DrawSelectGuidanceMethod();
-                if (_launchHandler.GuidanceMode != GuidanceMode.None) _launchHandler.BeginAscent();
+                // Begin the ascent once a flight mode is chosen AND we're at the launch window (countdown within
+                // the warp-stop lead). Gating on the countdown lets the operator pick a mode and then Warp To
+                // Launch: while the countdown is large, BeginAscent holds off (so it can't zero the warp rate
+                // each frame); the warp stops at the window, the countdown drops into the lead, and ascent begins.
+                if (_launchHandler.GuidanceMode != GuidanceMode.None && countdown <= MinSecondsToUseWarp)
+                {
+                    _launchHandler.BeginAscent();
+                }
 
                 GUILayout.BeginHorizontal();
                 _launchHandler.MinVSpeedToPitch = GUILayout.TextField(_launchHandler.MinVSpeedToPitch, GUILayout.Width(50));

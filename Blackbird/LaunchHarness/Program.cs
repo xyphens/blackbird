@@ -34,7 +34,102 @@ namespace Blackbird.LaunchHarness
             // Control: same geometry with J2=0 must close to ~0 km (proves the phasing math; isolates J2 as the
             // sole source of the multi-orbit miss above).
             Scenario("CONTROL J2=0 (Keplerian closure, expect predCA ~0)", 51.6, 0.0, 20.0, 0.0, CapeLatitude);
+
+            CheckLaunchPlaneError();
             return 0;
+        }
+
+        private static readonly Vector3d Pole = new Vector3d(0, 0, 1);
+
+        // Attributes the ~10 deg rel-inc / ~22 deg RAAN launch-plane miss to its real source. The Earth-rotation
+        // azimuth correction is sub-degree for an i~lat tangent launch, so this measures rel-inc vs the two real
+        // suspects — launch-TIMING slip (huge dRAAN/dt at the tangent) and J2 DIFFERENTIAL nodal regression over
+        // the phasing time — plus the azimuth axis as a control. Pure geometry/secular model, no KSP runtime.
+        private static void CheckLaunchPlaneError()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== Launch-plane error attribution (i~lat tangent: inc 28.64, lat 28.6, RSS) ===");
+
+            double mu = EarthMu, R = EarthRadius;
+            double omega = 2.0 * Math.PI / EarthSiderealDay;
+            double phi = 28.6, iT = 28.64;
+            double rIns = R + 200000.0;
+            double v = Math.Sqrt(mu / rIns);
+            double vRot = omega * R * Math.Cos(phi * Math.PI / 180.0);
+
+            double beta0Rad = Math.Asin(Math.Min(1.0, Math.Cos(iT * Math.PI / 180.0) / Math.Cos(phi * Math.PI / 180.0)));
+            double beta0 = beta0Rad * 180.0 / Math.PI;             // uncorrected inertial azimuth, flown as surface hdg
+
+            // Target plane = what a PERFECT, no-rotation launch at the planned heading achieves. Self-consistent
+            // with AchievedNormal by construction, so flying beta0 with vRot=0 gives rel-inc 0 (model self-check)
+            // and any nonzero result is purely the physical effect under study.
+            Vector3d nTarget = AchievedNormal(phi, beta0, 0.0, v, 0.0);
+
+            // Axis A: azimuth. Uncorrected = the planned inertial azimuth flown as a surface heading. Best = the
+            // surface heading that actually hits the target plane (the true Earth-rotation correction), found by
+            // search so the self-check is exact. The gap is the correctable plane error — tangent geometry blows
+            // a sub-degree heading change up into several degrees of rel-inc.
+            double riUncorr = RelIncDeg(AchievedNormal(phi, beta0, 0.0, v, vRot), nTarget);
+            double bestBeta = beta0, bestRi = double.MaxValue;
+            for (double b = beta0 - 10.0; b <= beta0 + 10.0; b += 0.005)
+            {
+                double ri = RelIncDeg(AchievedNormal(phi, b, 0.0, v, vRot), nTarget);
+                if (ri < bestRi) { bestRi = ri; bestBeta = b; }
+            }
+            Console.WriteLine($"  azimuth:  uncorrected hdg {beta0:F2} deg -> rel-inc {riUncorr:F2} deg" +
+                              $"   |   best hdg {bestBeta:F2} deg -> rel-inc {bestRi:F3} deg   (correctable {riUncorr - bestRi:F2} deg)");
+
+            // Axis B: launch-timing slip (fly the planned heading from a pad rotated by omega*dt).
+            Console.WriteLine("  timing slip (fly planned hdg):");
+            foreach (double dt in new[] { -600.0, -300.0, -120.0, -60.0, 0.0, 60.0, 120.0, 300.0, 600.0 })
+            {
+                double lonDeg = omega * dt * 180.0 / Math.PI;
+                Console.WriteLine($"    dt {dt,6:F0} s ({lonDeg,5:F2} deg) -> rel-inc {RelIncDeg(AchievedNormal(phi, beta0, lonDeg, v, vRot), nTarget),6:F2} deg");
+            }
+
+            // Axis C: J2 differential nodal regression (chaser 281 km vs target 310 km) over phasing time.
+            Console.WriteLine("  J2 differential regression (chaser 281km vs target 310km, i=28.6):");
+            double odChaser = NodalRate(mu, R, EarthJ2, R + 281000.0, phi);
+            double odTarget = NodalRate(mu, R, EarthJ2, R + 310000.0, phi);
+            foreach (double hours in new[] { 1.0, 3.0, 6.0, 12.0 })
+            {
+                double dRaan = (odChaser - odTarget) * hours * 3600.0;
+                Console.WriteLine($"    {hours,4:F0} h  dRAAN {dRaan * 180.0 / Math.PI,6:F2} deg -> rel-inc {RelIncFromRaan(iT, dRaan),5:F2} deg");
+            }
+        }
+
+        // Orbital plane normal achieved by flying surface heading betaDeg from a pad at lonDeg, with Earth rotation
+        // added to the inertial velocity (the open-loop launch the guidance actually flies).
+        private static Vector3d AchievedNormal(double latDeg, double betaDeg, double lonDeg, double v, double vRot)
+        {
+            Vector3d r = SiteVector(EarthRadius, latDeg, lonDeg);
+            Vector3d up = r.normalized;
+            Vector3d east = Vector3d.Cross(Pole, up).normalized;
+            Vector3d north = Vector3d.Cross(up, east);
+            double b = betaDeg * Math.PI / 180.0;
+            Vector3d vel = v * (Math.Sin(b) * east + Math.Cos(b) * north) + vRot * east;
+            return Vector3d.Cross(r, vel).normalized;
+        }
+
+        private static double RelIncDeg(Vector3d a, Vector3d b)
+        {
+            double ang = Vector3d.Angle(a, b);
+            return Math.Min(ang, 180.0 - ang);
+        }
+
+        // Secular J2 nodal regression rate (rad/s) for a circular orbit.
+        private static double NodalRate(double mu, double R, double j2, double a, double iDeg)
+        {
+            double n = Math.Sqrt(mu / (a * a * a));
+            return -1.5 * n * j2 * (R / a) * (R / a) * Math.Cos(iDeg * Math.PI / 180.0);
+        }
+
+        // Relative inclination (deg) between two planes of equal inclination iDeg differing by dRaan (rad).
+        private static double RelIncFromRaan(double iDeg, double dRaanRad)
+        {
+            double i = iDeg * Math.PI / 180.0;
+            double c = Math.Cos(i) * Math.Cos(i) + Math.Sin(i) * Math.Sin(i) * Math.Cos(dRaanRad);
+            return Math.Acos(Math.Max(-1.0, Math.Min(1.0, c))) * 180.0 / Math.PI;
         }
 
         private static void Scenario(string title, double inclinationDeg, double lanDeg, double argLatDeg, double j2, double launchLatDeg)

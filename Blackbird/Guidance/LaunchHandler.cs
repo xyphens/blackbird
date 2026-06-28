@@ -57,6 +57,11 @@ namespace Blackbird.Guidance
         public GuidanceMode GuidanceMode { get; set; } = GuidanceMode.None;
         public LaunchGuidanceState State { get; private set; }
         public Vessel TargetVessel { get; private set; }
+
+        // Set the rendezvous target independent of plan construction — the LaunchPlanner.Create path builds the
+        // plan without going through ConstructLaunchPlan, so the committer sets the target here so the GC plane
+        // readout (rel-inc / RAAN vs target) has it.
+        public void SetTargetVessel(Vessel target) => TargetVessel = target;
         private readonly AscentGuidance _ascentGuidance = new AscentGuidance();
 
         public void Init(SharedState s)

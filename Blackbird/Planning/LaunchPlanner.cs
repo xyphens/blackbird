@@ -73,6 +73,12 @@ namespace Blackbird.Planning
             if ((targetOrbit.InclinationDeg < 90.0) != (Vector3d.Dot(targetNormal, pole) > 0.0))
                 targetNormal = -targetNormal;
 
+            // Actual rotation sense for carrying the pad forward (KSP's own angular-velocity vector); falls back to
+            // the geometric pole. NOT the same as Pole: +angle about transform.up sweeps the pad retrograde under
+            // KSP's left-handed cross, putting the launch ~half a turn off the real plane crossing on inclined targets.
+            Vector3d bodyAngularVelocity = body.angularVelocity;
+            Vector3d rotationAxis = bodyAngularVelocity.sqrMagnitude > 0.0 ? bodyAngularVelocity.normalized : pole;
+
             // Nominal ascent at the target altitude, only to get the launch->insertion duration the solver needs.
             double nominalAzimuth = OrbitMath.GetLaunchAzimuth(targetOrbit.InclinationDeg, launchLocation.LatitudeDeg);
             AscentProfile nominalAscent = AscentProfileSolver.Create(
@@ -89,6 +95,7 @@ namespace Blackbird.Planning
                 J2 = ob.J2,
                 J2ReferenceRadius = ob.ReferenceRadiusMeters,
                 Pole = pole,
+                RotationAxis = rotationAxis,
                 CurrentUt = vesselState.UniversalTime,
                 LaunchSitePosition = TrajectoryProvider.GetPosition(active) - body.position,
                 TargetPosition = targetRelPos,

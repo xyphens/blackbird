@@ -23,7 +23,11 @@ namespace Blackbird.Planning
             public double RotationPeriodSeconds;     // sidereal, seconds per body revolution
             public double J2;                        // 0 -> no oblateness (stock)
             public double J2ReferenceRadius;
-            public Vector3d Pole;                    // body spin axis, inertial unit
+            public Vector3d Pole;                    // body spin axis (+north), inertial unit — inclination / asc-desc
+            public Vector3d RotationAxis;            // body angular-velocity direction (SIGNED rotation sense in the
+                                                     // host frame) for carrying the pad forward; falls back to Pole
+                                                     // if zero. Separate from Pole because +angle about transform.up
+                                                     // rotates the WRONG way under KSP's left-handed cross.
 
             public double CurrentUt;
             public Vector3d LaunchSitePosition;      // launch pad, body-centred inertial @ CurrentUt (carried forward by body rotation about Pole)
@@ -148,7 +152,10 @@ namespace Blackbird.Planning
         private static Vector3d SitePositionInertial(Inputs input, double dtFromNow)
         {
             double angle = 2.0 * Math.PI * dtFromNow / input.RotationPeriodSeconds;
-            return RotateAbout(input.LaunchSitePosition, input.Pole.normalized, angle);
+            // Rotate about the body's ACTUAL angular-velocity direction (carries the host frame's rotation sense),
+            // so the pad is carried the right way; Pole alone gives a sign-flipped (retrograde) sweep in KSP.
+            Vector3d axis = input.RotationAxis.sqrMagnitude > 0.0 ? input.RotationAxis.normalized : input.Pole.normalized;
+            return RotateAbout(input.LaunchSitePosition, axis, angle);
         }
 
         private static Candidate BuildCandidate(Inputs input, Vector3d hHat, Vector3d pole, NodeCrossing crossing)

@@ -30,6 +30,7 @@ namespace Blackbird.PsgHarness
             RunCutoffLeakDemo();
             RunJ2CutoffCheck();
             RunRssBootStallReplay();
+            RunBootConvergenceSweep();
             //ReplayLoggedFalconHeavySolve();
 
             Console.WriteLine("Scenario: stock Kerbin, equatorial 81 km insertion");
@@ -289,6 +290,64 @@ namespace Blackbird.PsgHarness
                 ? "  [PASS] previously-bailing geometry now bootstraps to orbit (plane-relaxed retry)"
                 : "  [FAIL] still bails suborbital");
             Console.WriteLine();
+        }
+
+        // Convergence-robustness sweep — the regression guard for the boot-stall class. The bug only bit because
+        // every prior PSG scenario fed a PLANE-MATCHED state; a real launch arrives off the target plane (RAAN
+        // miss). Take the feasible 45 km ascent and rotate the TARGET plane away from the craft's reachable plane
+        // (0..45 deg) across two booster TWRs, and assert the boot reaches orbit at every feasible combo. A stall
+        // fails here in seconds, offline, instead of in a 20-minute live launch.
+        private static void RunBootConvergenceSweep()
+        {
+            Console.WriteLine("PSG boot convergence sweep (plane error x TWR on a feasible RSS ascent):");
+
+            PsgBodyModel body = PsgBodyModel.Create(EarthMu, EarthMeanRadius, new Vector3d(0.0, 7.292115373194e-05, 0.0));
+            Vector3d r = new Vector3d(5304419.33476153, 3072084.97239432, 1896010.65653861);
+            Vector3d v = new Vector3d(560.949892246852, 477.639164070807, 1060.58923208426);
+            Vector3d thrustDir = new Vector3d(0.506295701186978, 0.400220608707339, 0.76386394555936);
+            PsgInitialState initial = PsgInitialState.Create(r, v, 2703361.99331284, 130189266.174328);
+
+            Vector3d currentNormal = Vector3d.Cross(r, v).normalized;   // the plane the craft can actually reach
+            Vector3d tiltAxis = r.normalized;                           // tilt about radial -> relative inclination
+            double[] planeErrorsDeg = { 0.0, 10.0, 20.0, 30.0, 45.0 };
+            double[] twrScales = { 1.0, 0.7 };                          // both keep booster TWR > 1 (feasible)
+
+            int failures = 0, total = 0;
+            foreach (double twr in twrScales)
+            {
+                PsgPhase[] phases = PsgPhase.FromPoweredStages(new[]
+                {
+                    MakeStage(2, 0, 2705.09228515625, 2396.17993164063, 45110.58984375 * twr, 347.0, 0.400000008659275, 58.2568321228027),
+                    MakeStage(1, 1, 1662.83056640625,  131.999877929688, 11767.9794921875,     380.0, 1.0,              484.765045166016),
+                });
+
+                foreach (double deg in planeErrorsDeg)
+                {
+                    Vector3d targetNormal = RotateAbout(currentNormal, tiltAxis, deg * Math.PI / 180.0);
+                    PsgTarget target = PsgTarget.Create(EarthMu, 6579940.52501887, 6579940.52501887, 6579940.52501887,
+                        targetNormal, 28.6, 194.7, true);
+                    PsgProblem problem = PsgProblem.Create(initial, body, target, phases, thrustDir);
+
+                    total++;
+                    PsgOptimizationResult result = problem != null && problem.IsValid ? new PsgOptimizer().Solve(problem, null) : null;
+                    bool ok = result != null && result.Success;
+                    if (!ok) failures++;
+                    Console.WriteLine($"  twr x{twr:F1}  plane {deg,4:F0} deg : {(ok ? "[PASS]" : "[FAIL]")}  iters={result?.Iterations}  viol={result?.ConstraintViolation:E2}");
+                }
+            }
+
+            Console.WriteLine(failures == 0
+                ? $"  SWEEP PASS: boot reached orbit on all {total} feasible cases"
+                : $"  SWEEP FAIL: {failures}/{total} cases bailed (boot did not converge)");
+            Console.WriteLine();
+        }
+
+        // Rodrigues rotation (QuaternionD is Unity-native and crashes offline, so do it by hand).
+        private static Vector3d RotateAbout(Vector3d vec, Vector3d axis, double angleRad)
+        {
+            axis = axis.normalized;
+            double c = Math.Cos(angleRad), s = Math.Sin(angleRad);
+            return vec * c + Vector3d.Cross(axis, vec) * s + axis * (Vector3d.Dot(axis, vec) * (1.0 - c));
         }
 
         private static void TimeSolve(string label, PsgInitialState initial, PsgBodyModel body, PsgPhase[] phases, Vector3d normal, Vector3d thrustDir)

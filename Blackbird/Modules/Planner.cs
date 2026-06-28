@@ -181,6 +181,7 @@ namespace Blackbird.Modules
 
             // will pass a launch plan if exists
             _launchHandler.Init(bbState);
+            _launchHandler.SetTargetVessel(targetVessel);   // plan may already exist (LaunchPlanner.Create path), which skips ConstructLaunchPlan
 
             if (bbState.LaunchPlan == null)
             {
