@@ -42,16 +42,28 @@ namespace Blackbird.Psg
 
         private PsgOptimizationResult RunInitialBootstrapping(PsgProblem problem)
         {
-            PsgOptimizationResult boot = RunPass(
-                problem,
-                null,
-                true,
-                IsFixedBurnTime(problem.Phases) ? ObjectiveType.MaximumEnergy : ObjectiveType.MinimumThrustAcceleration,
-                "PSG boot");
+            ObjectiveType bootObjective = IsFixedBurnTime(problem.Phases)
+                ? ObjectiveType.MaximumEnergy
+                : ObjectiveType.MinimumThrustAcceleration;
 
+            PsgOptimizationResult boot = RunPass(problem, null, true, bootObjective, "PSG boot");
+
+            // Plane-relaxed retry: an off-target-plane (RAAN-missed) ascent can't bend into the target plane within
+            // the burn, so the FPA5 boot stalls @terminal and the runaway backstop bails the craft SUBORBITAL.
+            // Re-boot against the craft's CURRENT (reachable) orbital plane so it still bootstraps to orbit; the
+            // terminal-relaxation pass below then re-applies the REAL terminal warm-started from this feasible seed,
+            // recovering the target plane when it can and settling for the current plane (degraded; operator
+            // plane-changes at a node) when it can't. Guidance must not fail.
             if (boot == null || !boot.Success || boot.Solution == null)
             {
-                return boot ?? Failure("PSG bootstrapping failed.");
+                PsgOptimizationResult planeRelaxed = RunPass(problem, null, true, bootObjective, "PSG boot (plane-relaxed)", useCurrentPlaneTerminal: true);
+                if (planeRelaxed == null || !planeRelaxed.Success || planeRelaxed.Solution == null)
+                {
+                    return boot ?? planeRelaxed ?? Failure("PSG bootstrapping failed.");
+                }
+
+                planeRelaxed.Status = "PSG plane-relaxed " + planeRelaxed.Status;
+                boot = planeRelaxed;
             }
 
             PsgTerminal finalTerminal = PsgTerminal.Create(problem, PsgScale.FromProblem(problem), IsFixedBurnTime(problem.Phases));
@@ -95,9 +107,10 @@ namespace Blackbird.Psg
             PsgSolution warmStart,
             bool forceFlightPathAngleTerminal,
             ObjectiveType objective,
-            string passName)
+            string passName,
+            bool useCurrentPlaneTerminal = false)
         {
-            var context = new SolveContext(problem, warmStart, forceFlightPathAngleTerminal, objective);
+            var context = new SolveContext(problem, warmStart, forceFlightPathAngleTerminal, objective, useCurrentPlaneTerminal);
             double[] x = context.CreateInitialGuess();
             double[] lowerBounds = context.CreateLowerBounds();
             double[] upperBounds = context.CreateUpperBounds();
@@ -186,7 +199,8 @@ namespace Blackbird.Psg
                 PsgProblem problem,
                 PsgSolution warmStart,
                 bool forceFlightPathAngleTerminal,
-                ObjectiveType objective)
+                ObjectiveType objective,
+                bool useCurrentPlaneTerminal = false)
             {
                 _problem = problem;
                 _warmStart = warmStart;
@@ -199,7 +213,10 @@ namespace Blackbird.Psg
                 VariableCount = _layouts.Length == 0 ? 0 : _layouts[_layouts.Length - 1].EndVariableIndex;
                 _fixedBurnTime = IsFixedBurnTime(problem.Phases);
                 PsgTerminal terminal = PsgTerminal.Create(problem, _scale, _fixedBurnTime);
-                _terminal = forceFlightPathAngleTerminal ? terminal.GetFlightPathAngleTerminal() : terminal;
+                Vector3d planeOverride = useCurrentPlaneTerminal
+                    ? Vector3d.Cross(problem.InitialRelativePositionMeters, problem.CurrentRelativeVelocityMetersPerSecond)
+                    : Vector3d.zero;
+                _terminal = forceFlightPathAngleTerminal ? terminal.GetFlightPathAngleTerminal(planeOverride) : terminal;
                 _objective = objective;
                 ConstraintCount = CountConstraints(problem.Phases, _terminal);
             }
@@ -405,6 +422,7 @@ namespace Blackbird.Psg
                 Evaluate(x, f, null);
 
                 var report = new ConstraintViolationReport();
+                int maxIndex = -1;
                 for (int i = 0; i < ConstraintCount; i++)
                 {
                     double value = f[i + 1];
@@ -418,12 +436,31 @@ namespace Blackbird.Psg
                         violation = value - constraintUpper[i];
                     }
 
-                    report.Maximum = Math.Max(report.Maximum, violation);
+                    if (violation > report.Maximum) { report.Maximum = violation; maxIndex = i; }
                     report.PrimalFeasibility += violation * violation;
                 }
 
                 report.PrimalFeasibility = Math.Sqrt(report.PrimalFeasibility);
+                report.MaxFamily = ClassifyConstraint(maxIndex);
                 return report;
+            }
+
+            // Map a constraint index to its family using Evaluate's order: control block, then per-phase
+            // dynamic/staging/continuity ("path"), then the terminal block last. Tells terminal-reach failures
+            // (bad seed) apart from collocation/continuity defects (discretization).
+            private string ClassifyConstraint(int index)
+            {
+                if (index < 0) return "none";
+                int control = 0;
+                for (int p = 0; p < _problem.Phases.Length; p++)
+                {
+                    PsgPhase ph = _problem.Phases[p];
+                    if (ph.IsCoast && !ph.IsUnguided) continue;
+                    control += ph.IsUnguided ? 1 : KnotsPerPhase;
+                }
+                if (index < control) return "control";
+                if (index >= ConstraintCount - _terminal.ConstraintCount) return "terminal";
+                return "path";
             }
 
             public PsgSolution CreateSolution(double[] x, alglib.minnlcreport report, double violation)
@@ -597,6 +634,16 @@ namespace Blackbird.Psg
 
             private Vector3d GuessInitialGuidanceDirection(Vector3d r, Vector3d v)
             {
+                // Seed from the craft's ACTUAL current thrust direction when available and roughly prograde:
+                // mid-ascent it already reflects the near-horizontal flight regime, far closer to feasibility than
+                // a generic 45deg guess (which seeds the SQP far from the solution late in ascent and stalls the
+                // boot). Falls through to the in-plane 45deg construction pre-launch / when it's unusable.
+                Vector3d measured = _problem.InitialThrustDirection;
+                if (measured.sqrMagnitude > 0.0 && Vector3d.Dot(measured.normalized, v) >= 0.0)
+                {
+                    return measured.normalized;
+                }
+
                 Vector3d up = r.sqrMagnitude > 0.0 ? r.normalized : Vector3d.zero;
                 Vector3d normal = _terminal.TargetNormal.sqrMagnitude > 0.0
                     ? _terminal.TargetNormal.normalized
@@ -1202,10 +1249,11 @@ namespace Blackbird.Psg
         {
             public double Maximum { get; set; }
             public double PrimalFeasibility { get; set; }
+            public string MaxFamily { get; set; } = "?";   // which constraint family holds the worst violation
 
             public string ToStatusString()
             {
-                return string.Format("pf={0:E1} max={1:E1}", PrimalFeasibility, Maximum);
+                return string.Format("pf={0:E1} max={1:E1} @{2}", PrimalFeasibility, Maximum, MaxFamily);
             }
         }
 

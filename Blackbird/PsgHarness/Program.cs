@@ -29,6 +29,7 @@ namespace Blackbird.PsgHarness
             RunEarthShapeSweep();
             RunCutoffLeakDemo();
             RunJ2CutoffCheck();
+            RunRssBootStallReplay();
             //ReplayLoggedFalconHeavySolve();
 
             Console.WriteLine("Scenario: stock Kerbin, equatorial 81 km insertion");
@@ -238,6 +239,55 @@ namespace Blackbird.PsgHarness
             TimeSolve("3 phases (chained masses)",       initial, body, chained3, Vector3d.zero, thrustDir);
             TimeSolve("2 phases (stage spans circ)",     initial, body, only2,    Vector3d.zero, thrustDir);
             TimeSolve("1 phase  (active only)",          initial, body, only1,    Vector3d.zero, thrustDir);
+            Console.WriteLine();
+        }
+
+        // Replays the EXACT logged PsgProblem from the 2026-06-27 RSS ascent that bailed (psg-failure-bailout):
+        // a 45 km / 2-phase state (booster 45 MN, TWR 1.76, then upper 11.8 MN) targeting ~209 km circular. In
+        // flight the boot SQP stalled ("PSG boot did not satisfy constraints pf~0.19 @terminal"). This is a
+        // FEASIBLE state (booster TWR>1), so a failure here is the optimizer/seed, not the craft — it lets us
+        // iterate the boot fix offline instead of burning 20-minute live launches.
+        private static void RunRssBootStallReplay()
+        {
+            Console.WriteLine("RSS boot-stall replay (logged 2026-06-27 ascent that bailed, 45 km / 2-phase, feasible):");
+
+            PsgBodyModel body = PsgBodyModel.Create(EarthMu, EarthMeanRadius, new Vector3d(0.0, 7.292115373194e-05, 0.0));
+
+            PsgInitialState initial = PsgInitialState.Create(
+                new Vector3d(5304419.33476153, 3072084.97239432, 1896010.65653861),
+                new Vector3d(560.949892246852, 477.639164070807, 1060.58923208426),
+                2703361.99331284,
+                130189266.174328);
+
+            // Two future powered phases as logged (MakeStage takes tons / kN): booster then upper.
+            PsgPhase[] phases = PsgPhase.FromPoweredStages(new[]
+            {
+                MakeStage(2, 0, 2705.09228515625, 2396.17993164063, 45110.58984375,  347.0, 0.400000008659275, 58.2568321228027),
+                MakeStage(1, 1, 1662.83056640625,  131.999877929688, 11767.9794921875, 380.0, 1.0,              484.765045166016),
+            });
+
+            Vector3d normal = new Vector3d(0.275233953926253, -0.877917033896904, -0.391800908880752);
+            Vector3d thrustDir = new Vector3d(0.506295701186978, 0.400220608707339, 0.76386394555936);
+
+            // As flown: real target normal -> FPA5 boot stalled @terminal in flight and bailed suborbital. With the
+            // plane-relaxed retry it must now bootstrap (current plane) and reach orbit instead of failing.
+            PsgTarget target = PsgTarget.Create(EarthMu, 6579940.52501887, 6579940.52501887, 6579940.52501887,
+                normal, 28.6078919043405, 194.745041994206, true);
+            PsgProblem problem = PsgProblem.Create(initial, body, target, phases, thrustDir);
+            if (problem == null || !problem.IsValid)
+            {
+                Console.WriteLine("  problem invalid: " + (problem != null ? problem.ReasonUnavailable : "null"));
+                Console.WriteLine();
+                return;
+            }
+
+            DateTime t0 = DateTime.UtcNow;
+            PsgOptimizationResult result = new PsgOptimizer().Solve(problem, null);
+            double sec = (DateTime.UtcNow - t0).TotalSeconds;
+            Console.WriteLine($"  success={result.Success} iters={result.Iterations} viol={result.ConstraintViolation:E2} {sec,5:F2}s | {result.Status}");
+            Console.WriteLine(result.Success
+                ? "  [PASS] previously-bailing geometry now bootstraps to orbit (plane-relaxed retry)"
+                : "  [FAIL] still bails suborbital");
             Console.WriteLine();
         }
 

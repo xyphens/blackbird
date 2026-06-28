@@ -182,12 +182,20 @@ namespace Blackbird.Psg
                 eccentricityVector);
         }
 
-        public PsgTerminal GetFlightPathAngleTerminal()
+        // overrideNormal (nonzero) RETARGETS the plane to a reachable one — the craft's CURRENT orbital plane —
+        // keeping |h| but rotating its direction. Used by the plane-relaxed boot retry: an off-target-plane
+        // (RAAN-missed) ascent can't satisfy the real plane terminal and stalls, but it CAN bootstrap to its own
+        // current plane; the relaxation pass then bends toward the real plane (warm-started) or settles degraded.
+        public PsgTerminal GetFlightPathAngleTerminal(Vector3d overrideNormal = default(Vector3d))
         {
-            if (UsesFlightPathAngle) return this;
-            PsgTerminalKind kind = _normal.sqrMagnitude > 0.0
+            bool hasOverride = overrideNormal.sqrMagnitude > 0.0;
+            if (UsesFlightPathAngle && !hasOverride) return this;
+
+            Vector3d normal = hasOverride ? overrideNormal.normalized : _normal;
+            PsgTerminalKind kind = normal.sqrMagnitude > 0.0
                 ? PsgTerminalKind.FlightPathAngle5
                 : PsgTerminalKind.FlightPathAngle4;
+            Vector3d angularMomentum = hasOverride ? normal * _angularMomentum.magnitude : _angularMomentum;
 
             return new PsgTerminal(
                 kind,
@@ -196,8 +204,8 @@ namespace Blackbird.Psg
                 _speed,
                 _eccentricity,
                 _specificEnergy,
-                _normal,
-                _angularMomentum,
+                normal,
+                angularMomentum,
                 _eccentricityVector);
         }
 
