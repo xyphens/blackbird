@@ -88,6 +88,14 @@ namespace Blackbird.Modules
                 double countdown = GetDisplayedLaunchCountdownSeconds(bbState.LaunchPlan);
                 GUILayout.Label(double.IsNaN(countdown) ? "T- -- seconds" : $"T- {countdown:F0} seconds");
 
+                // Armed: warp to the window, then pick a flight mode (which begins the ascent).
+                GUI.enabled = countdown >= MinSecondsToUseWarp;
+                if (GUILayout.Button("Warp To Launch")) _launchHandler.WarpToLaunch();
+                GUI.enabled = true;
+
+                DrawSelectGuidanceMethod();
+                if (_launchHandler.GuidanceMode != GuidanceMode.None) _launchHandler.BeginAscent();
+
                 GUILayout.BeginHorizontal();
                 _launchHandler.MinVSpeedToPitch = GUILayout.TextField(_launchHandler.MinVSpeedToPitch, GUILayout.Width(50));
                 GUILayout.Label("m/s", GUILayout.Width(50));
@@ -109,16 +117,6 @@ namespace Blackbird.Modules
                     GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted
                                   && bbState.CanClaimControl(BlackbirdModule.LaunchGuidance);
                     if (GUILayout.Button("Start Guidance")) _launchHandler.StartGuidance();
-                }
-                else
-                {
-                    // Armed: warp to the window, then pick a flight mode (which begins the ascent).
-                    GUI.enabled = countdown >= MinSecondsToUseWarp;
-                    if (GUILayout.Button("Warp To Launch")) _launchHandler.WarpToLaunch();
-                    GUI.enabled = true;
-
-                    DrawSelectGuidanceMethod();
-                    if (_launchHandler.GuidanceMode != GuidanceMode.None) _launchHandler.BeginAscent();
                 }
 
                 GUI.enabled =

@@ -14,6 +14,8 @@ namespace Blackbird.Rendezvous
         public const double AlignKeepDeg = 20.0;            // hysteresis: re-orient only if error exceeds this mid-burn
         public const double StabilizeDwellSeconds = 1.5;    // steady condition must hold this long before igniting
         private const double LooseRateCapDegPerSec = 1.0;   // legacy bound; a high-authority craft never needs stricter
+        private const double MinStillRateDegPerSec = 0.1;   // achievable settle floor; below this no controller holds
+
         private const double SettleStepFactor = 2.0;        // multiples of one control step's rate granularity (margin)
 
         // Max angular rate (deg/s) treated as "still" for this craft. One control step changes the rate by
@@ -23,7 +25,7 @@ namespace Blackbird.Rendezvous
         {
             if (!(minAngularAccelRadPerS2 > 0.0) || !(physicsDt > 0.0)) return LooseRateCapDegPerSec;
             double floor = MathHelpers.Rad2Deg(SettleStepFactor * minAngularAccelRadPerS2 * physicsDt);
-            return Math.Min(LooseRateCapDegPerSec, floor);
+            return MathHelpers.Clamp(floor, MinStillRateDegPerSec, LooseRateCapDegPerSec);
         }
 
         // Pointed and rotationally settled this instant (pre-dwell).

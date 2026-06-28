@@ -190,8 +190,11 @@ namespace Blackbird.Planning
             // Target propagated (J2) to insertion; phase = signed in-plane angle from us to the target.
             Propagate(input, input.TargetPosition, input.TargetVelocity, c.InsertionUt - input.CurrentUt,
                 RendezvousSampleSeconds, out Vector3d targetAtInsert, out Vector3d targetVelAtInsert);
-            c.PlaneErrorDeg = Vector3d.Angle(Vector3d.Cross(insertionPos, insertionVel),
-                                             Vector3d.Cross(targetAtInsert, targetVelAtInsert));
+            // Insertion normal is built from hHat (+pole-corrected); the target's raw Cross(r,v) follows KSP's
+            // opposite-handed convention, so a direct Angle() reads ~180°. Take the acute angle = true plane separation.
+            double planeAngle = Vector3d.Angle(Vector3d.Cross(insertionPos, insertionVel),
+                                               Vector3d.Cross(targetAtInsert, targetVelAtInsert));
+            c.PlaneErrorDeg = Math.Min(planeAngle, 180.0 - planeAngle);
             c.PhaseErrorDeg = SignedInPlaneAngle(rInsHat, targetAtInsert.normalized, hHat);
 
             // Pick the phasing orbit: below if the target is ahead (we chase), above if behind (we wait).
