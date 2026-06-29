@@ -566,8 +566,7 @@ namespace Blackbird.Rendezvous
 
                 // "Still" rate scales with the craft's control authority: heavy/powerful craft must settle to
                 // near zero (else they ignite while coasting through alignment), nimble craft keep the legacy bound.
-                double stillRate = BurnSettleGate.StillRateThresholdDegPerSec(
-                    AttitudeControl.MinControlAngularAccel(vessel), TimeWarp.fixedDeltaTime);
+                double stillRate = BurnSettleGate.StillRateThresholdDegPerSec(AttitudeControl.MinControlAngularAccel(vessel), TimeWarp.fixedDeltaTime);
                 bool aligned = _settle.Update(errorDeg, pitchYawRateDegPerSec, stillRate, now);
 
                 Orienting = !aligned;

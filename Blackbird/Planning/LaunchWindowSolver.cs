@@ -111,7 +111,7 @@ namespace Blackbird.Planning
             double horizon = Math.Min(MaxLaunchWaitSeconds, input.RotationPeriodSeconds + 1.0);
             int steps = 1440;
             double dt = horizon / steps;
-            double tol = Math.Sin(InPlaneToleranceDeg * Math.PI / 180.0);
+            double tol = Math.Sin(MathHelpers.Deg2Rad(InPlaneToleranceDeg));
 
             for (int i = 1; i < steps && crossings.Count < 2; i++)
             {

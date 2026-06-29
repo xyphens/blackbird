@@ -306,7 +306,7 @@ namespace Blackbird.Modules
                             out double hdg, out double pit);
                         string verb = _handler.Stabilizing ? "Stabilizing" : "Orienting";
                         return $"{verb}: point to {hdg:F0}° / {pit:F0}° "
-                             + $"({_handler.AlignmentErrorDeg:F1}° remaining)...";
+                             + $"({_handler.AlignmentErrorDeg:F3}° remaining)...";
                     }
                     return _handler.HasCommand ? _handler.Command.Status : "Executing...";
 

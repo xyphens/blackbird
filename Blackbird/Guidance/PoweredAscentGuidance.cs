@@ -18,8 +18,8 @@ namespace Blackbird.Guidance
         private const double TerminalSolveIntervalSeconds = 0.5;
         private const double SolutionStaleSeconds = 20.0;
         private const double ExpiredSolutionGraceSeconds = 0.25;
-        private const double TerminalGuidanceLockSeconds = 2.0;
         private const double TerminalOverrunGraceSeconds = 30.0;
+        //private const double TerminalSteeringFreezeRemainingVelocity = 15.0; // hold steering over this remaining m/s dV (prevent PSG doing a weird flip-up thing)
 
         // this effectively asks our guidance computer to go into overdrive calculating a more optimal orbit
         private const double TerminalPeMarginMeters = 30000.0; // begin propagating once osc Pe within 30 km
@@ -39,8 +39,7 @@ namespace Blackbird.Guidance
         private Task<PsgOptimizationResult> _solveTask;
         private PsgProblem _pendingProblem;
         private PsgSolution _solution;
-        private Vector3d _lockedTerminalDirection = Vector3d.zero;
-        private bool _hasLockedTerminalDirection;
+        private TerminalSteeringGate _terminalGate;
         private double _lastSolveRequestUt = double.NegativeInfinity;
         private string _optimizerStatus = "PSG idle";
         private int _optimizerIterations;
@@ -63,8 +62,7 @@ namespace Blackbird.Guidance
             _solveTask = null;
             _pendingProblem = null;
             _solution = null;
-            _lockedTerminalDirection = Vector3d.zero;
-            _hasLockedTerminalDirection = false;
+            _terminalGate.Reset();
             _lastSolveRequestUt = double.NegativeInfinity;
             _optimizerStatus = "PSG idle";
             _optimizerIterations = 0;
@@ -218,19 +216,20 @@ namespace Blackbird.Guidance
                 PsgGuidanceVector guidance = _solution.InertialGuidance(vesselState.UniversalTime);
                 if (guidance != null && guidance.IsValid)
                 {
-                    if (!isExpired)
-                    {
-                        _lockedTerminalDirection = guidance.InertialDirection.normalized;
-                        _hasLockedTerminalDirection = true;
-                    }
-                    else if (_hasLockedTerminalDirection)
-                    {
-                        guidance.InertialDirection = _lockedTerminalDirection;
-                    }
+                    // Hold the last followable steering: reject an ill-conditioned terminal solve that commands a
+                    // turn the craft can't fly (orbit error -> 0 makes the thrust direction singular near cutoff).
+                    double gateMaxRate = _solution.TimeToGo(vesselState.UniversalTime) <= TerminalSolveHorizonSeconds
+                                        ? AttitudeControl.MaxControlRateRadPerSec(vesselState.Vessel)
+                                        : 0.0;
 
-                    double psgPitch;
-                    double psgHeading;
-                    GetPitchHeadingFromInertial(vesselState, guidance.InertialDirection, out psgPitch, out psgHeading);
+                    guidance.InertialDirection = isExpired && _terminalGate.HasHeld
+                        ? _terminalGate.Held
+                        : _terminalGate.Update(
+                            guidance.InertialDirection,
+                            vesselState.UniversalTime,
+                            gateMaxRate);
+
+                    GetPitchHeadingFromInertial(vesselState, guidance.InertialDirection, out double psgPitch, out double psgHeading);
 
                     double commandedThrottle = _solution.TimeToGo(vesselState.UniversalTime) <= 0.0 ? 1.0 : guidance.Throttle;
                     _phase = PoweredGuidancePhase.PoweredGuidance;
@@ -371,11 +370,8 @@ namespace Blackbird.Guidance
                 {
                     _optimizerFailCount = 0;
                     _solution = result.Solution;
-                    if (_solution.TimeToGo(vesselState.UniversalTime) > TerminalGuidanceLockSeconds)
-                    {
-                        _hasLockedTerminalDirection = false;
-                        _lockedTerminalDirection = Vector3d.zero;
-                    }
+                    // No lock reset here: the gate self-limits (it only rejects unflyable commands), so it tracks
+                    // the live direction every frame and needs no terminal-window arming.
                 }
                 else
                 {
@@ -521,9 +517,8 @@ namespace Blackbird.Guidance
             Vector3d north = Vector3d.Exclude(up, vesselState.Body.transform.up).normalized;
             if (north.sqrMagnitude <= 0.0) return up;
             Vector3d east = Vector3d.Cross(up, north).normalized;
-
-            double headingRad = headingDeg * Math.PI / 180.0;
-            double pitchRad = pitchDeg * Math.PI / 180.0;
+            double headingRad = MathHelpers.Deg2Rad(headingDeg);
+            double pitchRad = MathHelpers.Deg2Rad(pitchDeg);
             Vector3d horizontal = north * Math.Cos(headingRad) + east * Math.Sin(headingRad);
 
             return (horizontal * Math.Cos(pitchRad) + up * Math.Sin(pitchRad)).normalized;

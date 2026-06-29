@@ -10,7 +10,7 @@ namespace Blackbird.Guidance
     {
         // todo: move to OrbitMath
         private const double Tau = 2.0 * Math.PI;
-        public const double DegToRad = Math.PI / 180.0;
+        //public const double DegToRad = Math.PI / 180.0;
 
         private QuaternionD _previousRotation;
         public Vector3d TrackedRotation;
@@ -36,9 +36,9 @@ namespace Blackbird.Guidance
 
             Vector3d deltaEuler = OrbitMath.EulerAngles(deltaRotation, Tau);
 
-            double deltaPitch = MathHelpers.ClampPi(deltaEuler.x * DegToRad, Tau);
-            double deltaYaw = -MathHelpers.ClampPi(deltaEuler.y * DegToRad, Tau);
-            double deltaRoll = MathHelpers.ClampPi(deltaEuler.z * DegToRad, Tau);
+            double deltaPitch = MathHelpers.ClampPi(MathHelpers.Deg2Rad(deltaEuler.x), Tau);
+            double deltaYaw = -MathHelpers.ClampPi(MathHelpers.Deg2Rad(deltaEuler.y), Tau);
+            double deltaRoll = MathHelpers.ClampPi(MathHelpers.Deg2Rad(deltaEuler.z), Tau);
 
             TrackedRotation += new Vector3d(deltaPitch, deltaRoll, deltaYaw);
 
@@ -59,9 +59,9 @@ namespace Blackbird.Guidance
 
             Vector3d deltaEuler = OrbitMath.EulerAngles(deltaRotation, Tau);
 
-            double deltaPitch = MathHelpers.ClampPi(deltaEuler.x * DegToRad, Tau);
-            double deltaYaw = -MathHelpers.ClampPi(deltaEuler.y * DegToRad, Tau);
-            double deltaRoll = MathHelpers.ClampPi(deltaEuler.z * DegToRad, Tau);
+            double deltaPitch = MathHelpers.ClampPi(MathHelpers.Deg2Rad(deltaEuler.x), Tau);
+            double deltaYaw = -MathHelpers.ClampPi(MathHelpers.Deg2Rad(deltaEuler.y), Tau);
+            double deltaRoll = MathHelpers.ClampPi(MathHelpers.Deg2Rad(deltaEuler.z), Tau);
 
             error = new Vector3d(deltaPitch, deltaRoll, deltaYaw);
             desired = TrackedRotation + error;

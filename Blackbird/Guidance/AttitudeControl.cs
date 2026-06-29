@@ -22,7 +22,7 @@ namespace Blackbird.Guidance
 
         private const double MaxStoppingTime = 2.0;
         private const double MinFlipTime = 120.0;
-        private const double LockRollErrorPadding = 0.5; // lock roll without constrantly running RCS
+        private const double LockRollErrorPadding = 0.5; // lock roll without constantly running RCS
         private const double SmoothTorque = 0.10;
         private const double Soften = 0.5;
 
@@ -420,9 +420,7 @@ namespace Blackbird.Guidance
             return slew + paddingSeconds;
         }
 
-        // Min available angular acceleration (rad/s^2) on the nose-swing axes (worst of pitch/yaw). Drives the
-        // "still enough to ignite" rate threshold: low-authority/heavy craft must settle far stiller than a
-        // nimble one. Returns 0 when torque/MOI are unavailable so callers fall back to a fixed bound.
+        // Min available angular acceleration (rad/s^2) on the nose-swing axes
         public static double MinControlAngularAccel(Vessel vessel)
         {
             if (vessel == null) return 0.0;
@@ -430,6 +428,12 @@ namespace Blackbird.Guidance
             Vector3d moi = vessel.MOI;
             double alpha = Math.Min(SafeAlpha(torque.x, moi.x), SafeAlpha(torque.z, moi.z));
             return MathHelpers.IsFinite(alpha) && alpha > 0.0 ? alpha : 0.0;
+        }
+
+        public static double MaxControlRateRadPerSec(Vessel vessel)
+        {
+            double a = MinControlAngularAccel(vessel);
+            return a > 0.0 ? a * MaxStoppingTime * Soften : 0.0;
         }
 
         // Angular acceleration about one axis (|torque| / MOI). Returns +Infinity for a zero-inertia axis
@@ -450,9 +454,10 @@ namespace Blackbird.Guidance
 
         private static QuaternionD Euler(double xDeg, double yDeg, double zDeg)
         {
-            double x = xDeg * Math.PI / 180.0;
-            double y = yDeg * Math.PI / 180.0;
-            double z = zDeg * Math.PI / 180.0;
+
+            double x = MathHelpers.Deg2Rad(xDeg);
+            double y = MathHelpers.Deg2Rad(yDeg);
+            double z = MathHelpers.Deg2Rad(zDeg);
 
             double cx = Math.Cos(x * 0.5);
             double sx = Math.Sin(x * 0.5);

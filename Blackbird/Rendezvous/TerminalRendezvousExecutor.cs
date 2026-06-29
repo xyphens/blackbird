@@ -488,12 +488,14 @@ namespace Blackbird.Rendezvous
                 return FinishInterceptBurn(world, delivered, "intercept: burn complete", out stageComplete);
 
             double stallArmThreshold = Math.Min(BurnProgressThreshold, 0.4 * _plannedDvMagnitude);
-            if (_maxDeliveredDv > stallArmThreshold && world.UniversalTime - _lastProgressUt > BurnStallSeconds)
+            bool fallbackArmed = _maxDeliveredDv > stallArmThreshold;
+
+            if (fallbackArmed && _maxDeliveredDv > stallArmThreshold && world.UniversalTime - _lastProgressUt > BurnStallSeconds)
                 return FinishInterceptBurn(world, delivered, string.Format(
                     "intercept: cutoff (delivered stalled at {0:F1}/{1:F1} m/s)",
                     _maxDeliveredDv, _plannedDvMagnitude), out stageComplete);
 
-            if (delivered < _maxDeliveredDv - PeakDropMetersPerSecond)
+            if (fallbackArmed && delivered < _maxDeliveredDv - PeakDropMetersPerSecond)
                 return FinishInterceptBurn(world, delivered, string.Format(
                     "intercept: cutoff (delivered peaked at {0:F1} m/s)", _maxDeliveredDv), out stageComplete);
 

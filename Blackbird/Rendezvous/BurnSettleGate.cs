@@ -4,28 +4,23 @@ using Blackbird.Mathematics;
 namespace Blackbird.Rendezvous
 {
     // Decides when a craft is pointed and rotationally STILL enough to begin a burn. Firing mid-swing flings
-    // the delivered dV off-axis, ruining the maneuver; a powerful engine amplifies any residual rotation. The
-    // "still" rate threshold scales with control authority so it holds for every craft: a heavy/low-authority
-    // vessel must settle to near zero (it coasts through alignment, so a fixed bound lets it fire while still
-    // turning), while a nimble one keeps the looser legacy bound and isn't slowed. Pure + harness-tested.
+    // the delivered dV off-axis, ruining the maneuver
     public static class BurnSettleGate
     {
         public const double AlignStartDeg = 1.0;            // pointing tolerance to begin settling
         public const double AlignKeepDeg = 20.0;            // hysteresis: re-orient only if error exceeds this mid-burn
         public const double StabilizeDwellSeconds = 1.5;    // steady condition must hold this long before igniting
-        private const double LooseRateCapDegPerSec = 1.0;   // legacy bound; a high-authority craft never needs stricter
+        private const double MaxStillRateDegPerSec = 1.0;   // legacy bound; a high-authority craft never needs stricter
         private const double MinStillRateDegPerSec = 0.1;   // achievable settle floor; below this no controller holds
 
         private const double SettleStepFactor = 2.0;        // multiples of one control step's rate granularity (margin)
 
-        // Max angular rate (deg/s) treated as "still" for this craft. One control step changes the rate by
-        // alpha*dt, the tightest the controller can reliably hold, so require a small multiple of that, capped
-        // at the legacy bound. Heavy/low-alpha craft -> near zero; nimble high-alpha craft -> the cap.
+        // Max angular rate (deg/s) treated as "still" for this craft
         public static double StillRateThresholdDegPerSec(double minAngularAccelRadPerS2, double physicsDt)
         {
-            if (!(minAngularAccelRadPerS2 > 0.0) || !(physicsDt > 0.0)) return LooseRateCapDegPerSec;
+            if (!(minAngularAccelRadPerS2 > 0.0) || !(physicsDt > 0.0)) return MaxStillRateDegPerSec;
             double floor = MathHelpers.Rad2Deg(SettleStepFactor * minAngularAccelRadPerS2 * physicsDt);
-            return MathHelpers.Clamp(floor, MinStillRateDegPerSec, LooseRateCapDegPerSec);
+            return MathHelpers.Clamp(floor, MinStillRateDegPerSec, MaxStillRateDegPerSec);
         }
 
         // Pointed and rotationally settled this instant (pre-dwell).
@@ -35,9 +30,7 @@ namespace Blackbird.Rendezvous
         }
     }
 
-    // Tracks the orient -> settle -> armed transition across frames. Arms only after the steady condition holds
-    // CONTINUOUSLY for the dwell (so a transient zero-crossing during a coast-through can't arm it); disarms and
-    // forces a re-orient if pointing drifts past the keep band. Value type: the default state equals Reset().
+    // Tracks the orient -> settle -> armed transition across frames
     public struct BurnSettleTracker
     {
         private bool _hasSteady;

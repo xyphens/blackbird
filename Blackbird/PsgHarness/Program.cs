@@ -1,4 +1,5 @@
 using System;
+using Blackbird.Guidance;
 using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Psg;
@@ -31,6 +32,7 @@ namespace Blackbird.PsgHarness
             RunJ2CutoffCheck();
             RunRssBootStallReplay();
             RunBootConvergenceSweep();
+            RunTerminalSteeringGateReplay();
             //ReplayLoggedFalconHeavySolve();
 
             Console.WriteLine("Scenario: stock Kerbin, equatorial 81 km insertion");
@@ -289,6 +291,97 @@ namespace Blackbird.PsgHarness
             Console.WriteLine(result.Success
                 ? "  [PASS] previously-bailing geometry now bootstraps to orbit (plane-relaxed retry)"
                 : "  [FAIL] still bails suborbital");
+            Console.WriteLine();
+        }
+
+        // Terminal-steering-gate replay — the regression guard for the end-of-burn pitch spike. Replays the
+        // logged 2026-06-28 18:36:53 circularization: clean steering glides <= 0.11 deg/s, then in the last ~1 s
+        // the orbit error -> 0 makes the terminal thrust direction ill-conditioned and successive solves command
+        // ~39 deg/s swings (the +25 deg pitch-up). The gate must reject those (unflyable) and hold the last clean
+        // vector, WITHOUT wrongly holding any of the clean glide. Asserts both, plus the hold/leak boundary.
+        private struct Sample
+        {
+            public double T; public Vector3d Dir;
+            public Sample(double t, double x, double y, double z) { T = t; Dir = new Vector3d(x, y, z).normalized; }
+        }
+
+        private static void RunTerminalSteeringGateReplay()
+        {
+            Console.WriteLine("Terminal steering gate replay (logged 2026-06-28 18:36:53 circ; +25 deg pitch spike in last ~1 s):");
+
+            // First-point steering of each logged solve (UniversalTime - t0, InertialThrustDirection). The first 6
+            // are the clean glide; index 6 (t=304.60) is the last clean solve; 7.. are the degenerate terminal swings.
+            Sample[] s =
+            {
+                new Sample(155.1000, 0.998135414, 0.045678263, 0.040486926),
+                new Sample(160.1400, 0.997988188, 0.040995160, 0.048362930),
+                new Sample(165.1800, 0.997763614, 0.036395139, 0.056063933),
+                new Sample(170.2200, 0.997453218, 0.031731583, 0.063876323),
+                new Sample(195.2400, 0.994584553, 0.007918362, 0.103628499),
+                new Sample(256.2600, 0.977798014, -0.052317655, 0.202913545),
+                new Sample(304.6015, 0.953837646, -0.101506549, 0.282648484),  // last clean
+                new Sample(305.1215, 0.995753173, -0.062458335, -0.067635605),  // spike onset
+                new Sample(305.6415, 0.997016683, -0.047891720, -0.060531953),
+                new Sample(306.1615, 0.996303652, -0.073387445, -0.044646576),
+                new Sample(306.6815, 0.993296730, 0.017522518, 0.114256582),
+                new Sample(307.2015, 0.892176674, -0.116349010, 0.436444374),
+                new Sample(307.7215, 0.860051051, 0.072408243, 0.505043795),
+            };
+            const int lastClean = 6;
+            Vector3d cleanRef = s[lastClean].Dir;
+
+            // Worst clean glide rate (deg/s) over the clean run — the gate cap must stay above this.
+            double maxCleanRate = 0.0;
+            for (int i = 1; i <= lastClean; i++)
+                maxCleanRate = Math.Max(maxCleanRate, Vector3d.Angle(s[i - 1].Dir, s[i].Dir) / (s[i].T - s[i - 1].T));
+
+            // Raw (no gate): how far the terminal swings stray from the last clean vector.
+            double rawMax = 0.0;
+            for (int i = lastClean + 1; i < s.Length; i++)
+                rawMax = Math.Max(rawMax, Vector3d.Angle(cleanRef, s[i].Dir));
+
+            // Representative heavy-upper-stage slew cap (deg/s): well above the 0.11 clean glide, well below the
+            // ~39 spike. Derived as the midpoint in log-space of those two — not eyeballed to a round number.
+            double capDegPerSec = Math.Sqrt(maxCleanRate * (rawMax / (s[lastClean + 1].T - s[lastClean].T)));
+            double capRad = MathHelpers.Deg2Rad(capDegPerSec);
+
+            // Run the gate over the full sequence.
+            TerminalSteeringGate gate = new TerminalSteeringGate();
+            bool allCleanAccepted = true;
+            double gatedMaxSpike = 0.0;   // max excursion from clean over the spike window
+            for (int i = 0; i < s.Length; i++)
+            {
+                Vector3d flown = gate.Update(s[i].Dir, s[i].T, capRad);
+                bool accepted = (flown - s[i].Dir).sqrMagnitude < 1e-12;
+                if (i <= lastClean && !accepted) allCleanAccepted = false;
+                if (i > lastClean) gatedMaxSpike = Math.Max(gatedMaxSpike, Vector3d.Angle(cleanRef, flown));
+            }
+
+            Console.WriteLine($"  clean glide max rate = {maxCleanRate:F2} deg/s | terminal spike ~{rawMax / (s[lastClean + 1].T - s[lastClean].T):F0} deg/s | cap = {capDegPerSec:F2} deg/s");
+            Console.WriteLine($"  raw (no gate) max steering excursion from last clean = {rawMax:F1} deg");
+            Console.WriteLine($"  gated         max steering excursion from last clean = {gatedMaxSpike:F1} deg");
+            Console.WriteLine(allCleanAccepted
+                ? "  [PASS] every clean solve accepted (gate never starves legitimate slow steering)"
+                : "  [FAIL] a clean solve was wrongly held");
+            Console.WriteLine(gatedMaxSpike < 1.0
+                ? "  [PASS] terminal spike rejected; flown steering held at last clean vector (< 1 deg)"
+                : $"  [FAIL] terminal spike leaked through ({gatedMaxSpike:F1} deg excursion)");
+
+            // Hold/leak boundary: sweep the cap and report max spike excursion. Holds (~0) until the cap exceeds
+            // the spike rate, then leaks to the raw excursion. Confirms the gate keys on physical followability.
+            Console.Write("  cap sweep (deg/s -> excursion deg): ");
+            foreach (double cap in new[] { 1.0, 3.0, 8.0, 20.0, 40.0, 60.0 })
+            {
+                TerminalSteeringGate g = new TerminalSteeringGate();
+                double mx = 0.0;
+                for (int i = 0; i < s.Length; i++)
+                {
+                    Vector3d flown = g.Update(s[i].Dir, s[i].T, MathHelpers.Deg2Rad(cap));
+                    if (i > lastClean) mx = Math.Max(mx, Vector3d.Angle(cleanRef, flown));
+                }
+                Console.Write($"{cap:F0}->{mx:F1}  ");
+            }
+            Console.WriteLine();
             Console.WriteLine();
         }
 

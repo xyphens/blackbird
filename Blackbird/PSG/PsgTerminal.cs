@@ -272,12 +272,10 @@ namespace Blackbird.Psg
             if (eccentricity <= 0.0 || normal.sqrMagnitude <= 0.0) return Vector3d.zero;
             Vector3d yAxis = new Vector3d(0.0, 1.0, 0.0);
             Vector3d xAxis = new Vector3d(1.0, 0.0, 0.0);
-            Vector3d reference = Math.Abs(Vector3d.Dot(normal.normalized, yAxis)) < 0.95
-                ? yAxis
-                : xAxis;
+            Vector3d reference = Math.Abs(Vector3d.Dot(normal.normalized, yAxis)) < 0.95 ? yAxis : xAxis;
             Vector3d periapsisBase = Vector3d.Cross(normal, reference).normalized;
             Vector3d periapsisSide = Vector3d.Cross(normal, periapsisBase).normalized;
-            double argp = argpDeg * Math.PI / 180.0;
+            double argp = MathHelpers.Deg2Rad(argpDeg);
             return (periapsisBase * Math.Cos(argp) + periapsisSide * Math.Sin(argp)).normalized * eccentricity;
         }
 

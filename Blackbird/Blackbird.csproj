@@ -86,6 +86,7 @@
     <Compile Include="Guidance\WarpHelper.cs" />
     <Compile Include="Guidance\PIDTranslation.cs" />
     <Compile Include="Guidance\PoweredAscentGuidance.cs" />
+    <Compile Include="Guidance\TerminalSteeringGate.cs" />
     <Compile Include="Helpers\Dropdown.cs" />
     <Compile Include="Helpers\Helpers.cs" />
     <Compile Include="Logging\Log.cs" />

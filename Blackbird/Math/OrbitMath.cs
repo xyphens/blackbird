@@ -226,8 +226,8 @@ namespace Blackbird.Mathematics
         // find the Azimuth (plane) in degrees we want to launch into
         public static double GetLaunchAzimuth(double targetInclination, double activeVesselLatitude)
         {
-            double incRad = targetInclination * Math.PI / 180.0;
-            double latRad = activeVesselLatitude * Math.PI / 180.0;
+            double incRad = MathHelpers.Deg2Rad(targetInclination);
+            double latRad = MathHelpers.Deg2Rad(activeVesselLatitude);
 
             double cosLatitude = Math.Cos(latRad);
 
