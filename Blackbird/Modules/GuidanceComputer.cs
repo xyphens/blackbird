@@ -98,7 +98,9 @@ namespace Blackbird.Modules
                 // the warp-stop lead). Gating on the countdown lets the operator pick a mode and then Warp To
                 // Launch: while the countdown is large, BeginAscent holds off (so it can't zero the warp rate
                 // each frame); the warp stops at the window, the countdown drops into the lead, and ascent begins.
-                if (_launchHandler.GuidanceMode != GuidanceMode.None && countdown <= MinSecondsToUseWarp)
+                // !(>) not (<=) so a manual-input plan (no launch window -> NaN countdown) reads as ready-to-fly
+                // and begins immediately, instead of NaN failing the <= test and never releasing.
+                if (_launchHandler.GuidanceMode != GuidanceMode.None && !(countdown > MinSecondsToUseWarp))
                 {
                     _launchHandler.BeginAscent();
                 }

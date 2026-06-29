@@ -75,6 +75,14 @@ namespace Blackbird.Docking
             _autopilot.Disengage();
         }
 
+        public void StopDockingGuidance()
+        {
+            bbState.ActiveModule = BlackbirdModule.None;
+            bbState.DockingMode = DockingControlMode.Off;
+            bbState.DockingEnabled = false;
+            _autopilot.Disengage();
+        }
+
         // One-shot orientation reset: point at the port (if targeted) and roll to "real up" so the craft's
         // local translation axes become predictable. Latched; auto-clears when aligned. Click again to cancel.
         public void ResetOrientation() { _resetOrientation = !_resetOrientation; }

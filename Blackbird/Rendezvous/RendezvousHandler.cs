@@ -370,8 +370,11 @@ namespace Blackbird.Rendezvous
 
                 Vector3d brakeDir = TrajectoryProvider.GetVelocity(target) - TrajectoryProvider.GetVelocity(active);
                 if (brakeDir.sqrMagnitude > 0.0)
+                    // Lead reflects only the ACTUAL flip-to-retrograde time (~0 when already holding it): the brake
+                    // path pre-orients retrograde, so adding the settle padding here over-budgets the coast and
+                    // brakes far too early. EstimateSlewTimeSeconds already gates on the current nose angle.
                     _executor.BrakingSlewLeadSeconds =
-                        AttitudeControl.EstimateSlewTimeSeconds(active, brakeDir, OrientPaddingSeconds);
+                        AttitudeControl.EstimateSlewTimeSeconds(active, brakeDir, 0.0);
             }
 
 

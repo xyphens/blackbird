@@ -80,6 +80,7 @@ namespace Blackbird.Modules
             GUI.enabled = canRun;
             if (GUILayout.Button("Run Docking Guidance", GUILayout.Height(30))) _handler.RunDockingGuidance();
             GUI.enabled = assumeEnabled;
+            if (GUILayout.Button("Stop Docking Guidance", GUILayout.Height(30))) _handler.StopDockingGuidance();
             if (GUILayout.Button("Assume Control", GUILayout.Height(30))) _handler.AssumeControl();
             GUI.enabled = true;
             GUILayout.EndHorizontal();
