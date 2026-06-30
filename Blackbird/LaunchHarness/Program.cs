@@ -36,7 +36,72 @@ namespace Blackbird.LaunchHarness
             Scenario("CONTROL J2=0 (Keplerian closure, expect predCA ~0)", 51.6, 0.0, 20.0, 0.0, CapeLatitude);
 
             CheckLaunchPlaneError();
+            CheckPrecessionAwareWindow();
             return 0;
+        }
+
+        // The crossing search must meet the target plane AS IT WILL BE at the launch UT, not the frozen now-plane.
+        // Two invariants, both adversarial: (1) at the chosen launch UT the pad lies in the candidate's returned
+        // AT-LAUNCH plane (out-of-plane ~0) — the whole point; (2) that normal has rotated vs the now-normal by the
+        // analytic J2 secular amount sin(i)*|Omega_dot|*wait. Control J2=0 must show ZERO rotation (no regression in
+        // the stock case, and proves the propagation adds no spurious precession).
+        private static void CheckPrecessionAwareWindow()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== Precession-aware launch window (pad in AT-LAUNCH plane; normal tracks J2 node) ===");
+            RunPrecessionCase("J2 on (RSS)", 51.6, EarthJ2);
+            RunPrecessionCase("J2 off control", 51.6, 0.0);
+        }
+
+        private static void RunPrecessionCase(string label, double inclinationDeg, double j2)
+        {
+            double r = EarthRadius + 400000.0;
+            StateFromElements(r, inclinationDeg, 0.0, 200.0, EarthMu, out Vector3d tPos, out Vector3d tVel);
+            Vector3d nowNormal = Vector3d.Cross(tPos, tVel).normalized;
+
+            LaunchWindowSolver.Inputs input = new LaunchWindowSolver.Inputs
+            {
+                Mu = EarthMu, BodyRadius = EarthRadius, AtmosphereDepth = EarthAtmosphere,
+                RotationPeriodSeconds = EarthSiderealDay, J2 = j2, J2ReferenceRadius = EarthRadius, Pole = Pole,
+                CurrentUt = 0.0, LaunchSitePosition = SiteVector(EarthRadius, CapeLatitude, CapeLongitude),
+                TargetPosition = tPos, TargetVelocity = tVel,
+                TargetOrbitNormal = nowNormal,
+                AscentDurationSeconds = 500.0, RemainingDeltaV = 9500.0
+            };
+
+            double inc = inclinationDeg * Math.PI / 180.0;
+            double n = Math.Sqrt(EarthMu / (r * r * r));
+            double raanRate = -1.5 * n * j2 * (EarthRadius / r) * (EarthRadius / r) * Math.Cos(inc); // rad/s, secular
+
+            foreach (LaunchWindowSolver.Candidate c in LaunchWindowSolver.Solve(input))
+            {
+                if (!c.IsValid) continue;
+                Vector3d padAtLaunch = RotateAbout(input.LaunchSitePosition, Pole,
+                    2.0 * Math.PI * c.SecondsUntilLaunch / EarthSiderealDay).normalized;
+                double padOutOfPlaneDeg = Math.Asin(Clamp01(Math.Abs(
+                    Vector3d.Dot(padAtLaunch, c.LaunchUtOrbitNormal)))) * 180.0 / Math.PI;
+                double measuredDeg = Math.Acos(Math.Max(-1.0, Math.Min(1.0,
+                    Vector3d.Dot(nowNormal, c.LaunchUtOrbitNormal)))) * 180.0 / Math.PI;
+                double dRaan = Math.Abs(raanRate) * c.SecondsUntilLaunch;
+                double expectedDeg = 2.0 * Math.Asin(Clamp01(Math.Sin(inc) * Math.Sin(dRaan / 2.0))) * 180.0 / Math.PI;
+
+                bool inPlane = padOutOfPlaneDeg < 0.2;
+                bool precessionOk = j2 == 0.0 ? measuredDeg < 0.05
+                                              : Math.Abs(measuredDeg - expectedDeg) < Math.Max(0.3, 0.5 * expectedDeg);
+                string verdict = inPlane && precessionOk ? "PASS" : "FAIL";
+                Console.WriteLine(string.Format(
+                    "  [{0,-15}] {1,-11} wait {2,5:F0} min  pad-out-of-plane {3:F3}  precessed {4:F3} (expect {5:F3})  -> {6}",
+                    label, c.NodeName, c.SecondsUntilLaunch / 60.0, padOutOfPlaneDeg, measuredDeg, expectedDeg, verdict));
+            }
+        }
+
+        private static double Clamp01(double x) => x < 0.0 ? 0.0 : (x > 1.0 ? 1.0 : x);
+
+        private static Vector3d RotateAbout(Vector3d v, Vector3d axis, double angleRad)
+        {
+            axis = axis.normalized;
+            double c = Math.Cos(angleRad), s = Math.Sin(angleRad);
+            return v * c + Vector3d.Cross(axis, v) * s + axis * (Vector3d.Dot(axis, v) * (1.0 - c));
         }
 
         private static readonly Vector3d Pole = new Vector3d(0, 0, 1);

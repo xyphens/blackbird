@@ -35,7 +35,8 @@ namespace Blackbird.Modules
         public InterceptStatus Status;
 
         public Vector3d DeltaV;                       // world-frame burn applied at IgnitionUt
-        public double DeltaVMagnitude;                // |DeltaV| (m/s)
+        public double DeltaVMagnitude;                // |DeltaV| (m/s) — DEPARTURE burn dv1 (what the executor delivers)
+        public double TotalDeltaVMagnitude;           // full transfer cost dv1 + dv2 (arrival incl. plane change) — UI only
         public double IgnitionUt;                     // when the burn is applied (= "now")
         public double ArrivalUt;                      // when the transfer reaches the target point
         public double TimeOfFlight;                   // ArrivalUt - IgnitionUt (s)

@@ -13,7 +13,18 @@ namespace Blackbird.Models
         public Vessel TargetVessel { get; set; }
         public OrbitInfo ActiveOrbit { get; set; }
         public OrbitInfo TargetOrbit { get; set; }
-        public Vector3d TargetOrbitNormal { get; set; }
+        private Vector3d _targetOrbitNormal;
+        // The plane the ascent must hit. Prefer the selected candidate's normal AT its launch UT (tracks J2 node
+        // precession across the warp); fall back to the plan-build snapshot if no candidate carries one.
+        public Vector3d TargetOrbitNormal
+        {
+            get
+            {
+                LaunchCandidate sc = SelectedCandidate;
+                return (sc != null && sc.LaunchOrbitNormal.sqrMagnitude > 0.0) ? sc.LaunchOrbitNormal : _targetOrbitNormal;
+            }
+            set { _targetOrbitNormal = value; }
+        }
         // expose launch window stats (valid window, time away, etc)
         public LaunchWindowInfo LaunchWindow { get; set; }
 

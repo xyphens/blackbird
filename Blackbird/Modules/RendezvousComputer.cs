@@ -276,8 +276,11 @@ namespace Blackbird.Modules
             {
                 InterceptSolution c = candidates[i];
                 GUILayout.BeginHorizontal();
+                // Show the FULL transfer cost (dv1 + dv2), not just the departure burn — the arrival burn carries
+                // any plane change, so a window can depart cheap (dv1) but cost far more total when off-plane.
+                double shownDv = c.TotalDeltaVMagnitude > 0.0 ? c.TotalDeltaVMagnitude : c.DeltaVMagnitude;
                 GUILayout.Label(FormatTime(c.IgnitionUt - now), GUILayout.Width(90));
-                GUILayout.Label($"{c.DeltaVMagnitude:F1} m/s", GUILayout.Width(75));
+                GUILayout.Label($"{shownDv:F1} m/s", GUILayout.Width(75));
                 GUILayout.Label(FormatTime(c.TimeOfFlight), GUILayout.Width(90));
 
                 bool isSelected = bbState.SelectedInterceptCandidateIndex == i;

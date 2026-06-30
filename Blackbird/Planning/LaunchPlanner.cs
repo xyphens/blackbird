@@ -139,6 +139,7 @@ namespace Blackbird.Planning
                 InsertionApoapsisAlt = c.PhasingApoapsisAlt,
                 InsertionPeriapsisAlt = c.PhasingPeriapsisAlt,
                 LaunchHeadingDeg = c.AzimuthDeg,
+                LaunchOrbitNormal = c.LaunchUtOrbitNormal,
                 EstimatedInsertionTimeSeconds = ascent.IsValid ? ascent.EstimatedTimeToInsertionSeconds : double.NaN,
                 EstimatedOrbitsToRendezvous = c.OrbitsToRendezvous,
                 EstimatedDeltaVUsed = c.EstimatedDeltaVUsed,

@@ -286,6 +286,7 @@ namespace Blackbird.Rendezvous
                     Status = sane ? InterceptStatus.Ok : InterceptStatus.NoFeasibleSolution,
                     DeltaV = dv1,
                     DeltaVMagnitude = dvMag,
+                    TotalDeltaVMagnitude = dvMag + dv2.magnitude,   // dv1 + dv2 (arrival incl. plane change)
                     IgnitionUt = ut1,
                     ArrivalUt = ut2,
                     TimeOfFlight = ut2 - ut1,
@@ -327,6 +328,7 @@ namespace Blackbird.Rendezvous
                         Status = InterceptStatus.Ok,
                         DeltaV = dv1,
                         DeltaVMagnitude = dvMag,
+                        TotalDeltaVMagnitude = dvMag + dv2.magnitude,   // dv1 + dv2 (arrival incl. plane change)
                         IgnitionUt = ut1,
                         ArrivalUt = ut2,
                         TimeOfFlight = ut2 - ut1,

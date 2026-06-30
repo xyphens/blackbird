@@ -1,4 +1,5 @@
 using Blackbird.Guidance;
+using UnityEngine;
 
 namespace Blackbird.Models
 {
@@ -13,6 +14,7 @@ namespace Blackbird.Models
         public double InsertionApoapsisAlt { get; set; }
         public double InsertionPeriapsisAlt { get; set; }
         public double LaunchHeadingDeg { get; set; }
+        public Vector3d LaunchOrbitNormal { get; set; }   // target orbit normal (raw cross(r,v)) at this candidate's launch UT
 
         public double EstimatedInsertionTimeSeconds { get; set; }
         public double EstimatedOrbitsToRendezvous { get; set; }
