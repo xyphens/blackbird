@@ -1416,27 +1416,45 @@ namespace Blackbird.RendezvousHarness
         // band. The brake point comes from the measured closing speed; it self-latches once reached.
         private static void CheckMatchVelocityAtDistanceBrakesAtTrigger()
         {
-            Console.WriteLine("Case 23: match-velocity-at-distance brakes at the brake point and inside the band");
+            Console.WriteLine("Case 23: match-velocity-at-distance holds until the physical brake point (no early fire)");
 
-            // 200 m out, closing 30 m/s, decel 5, slewLead 3 -> brakeTrigger = 100 + 30^2/(2*5)=90 + 30*3=90 = 280 m.
-            // 200 < 280, so after the first (trigger-setting) tick it must fire the brake.
+            // decel 5, closing 30 -> stoppingDistance = 30^2/(2*5) = 90; brake point = ParkingDistance(100)+90 = 190 m.
+            // The brake point is physics-only (D + v^2/2a) with NO flip-DISTANCE budget; the flip-to-retro happens
+            // for free during the pre-oriented hold. So FAR OUT (1000 m) it must HOLD (throttle 0), not fire early
+            // (the old D + v^2/2a + v*slewLead froze a cold 180-degree slew estimate in and braked minutes early).
+            Vector3d bearing = new Vector3d(1, 0, 0);
+            StaticWorld far = new StaticWorld
+            {
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                BodyRadius = KerbinRadius, AtmosphereDepth = 70000.0,
+                TargetPosition = new Vector3d(1000.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(30.0, 100.0, 0)
+            };
+            TerminalRendezvousExecutor hold = NewExecutor(out _);
+            hold.UseDistanceForMatchVelocities = true;
+            hold.ParkingDistance = 100.0;
+            hold.BrakingDecelMetersPerSecondSquared = 5.0;
+            hold.ForceExecute(RendezvousMethod.MatchVelocity);
+            hold.Update(far, 900.0, 30.0);                               // tick 1: set the brake point
+            RendezvousCommand held = hold.Update(far, 900.0, 30.0);      // tick 2: 1000 m > 190 m brake point
+            AssertTrue("holds far out (no early brake)", held.Throttle == 0.0);
+            AssertTrue("holds retrograde while waiting", Vector3d.Dot(held.ThrustDirection, bearing) < 0.0);
+
+            // At the brake point (180 m <= 190 m): fire retrograde.
             StaticWorld near = new StaticWorld
             {
                 Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
                 BodyRadius = KerbinRadius, AtmosphereDepth = 70000.0,
-                TargetPosition = new Vector3d(200.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetPosition = new Vector3d(180.0, 0, 0), ActivePosition = Vector3d.zero,
                 TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(30.0, 100.0, 0)
             };
-            Vector3d bearing = new Vector3d(1, 0, 0);
-
             TerminalRendezvousExecutor mv = NewExecutor(out _);
             mv.UseDistanceForMatchVelocities = true;
             mv.ParkingDistance = 100.0;
             mv.BrakingDecelMetersPerSecondSquared = 5.0;
-            mv.BrakingSlewLeadSeconds = 3.0;
             mv.ForceExecute(RendezvousMethod.MatchVelocity);
-            mv.Update(near, 50.0, 30.0);                            // tick 1: set the brake point, hold
-            RendezvousCommand brake = mv.Update(near, 50.0, 30.0);  // tick 2: inside the brake point -> fire
+            mv.Update(near, 80.0, 6.0);                            // tick 1: set the brake point, hold
+            RendezvousCommand brake = mv.Update(near, 80.0, 6.0);  // tick 2: inside the brake point -> fire
             AssertTrue("brakes at the trigger (nonzero throttle)", brake.Throttle > 0.0);
             AssertTrue("brake is retrograde", Vector3d.Dot(brake.ThrustDirection, bearing) < 0.0);
 

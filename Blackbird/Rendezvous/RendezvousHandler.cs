@@ -355,9 +355,10 @@ namespace Blackbird.Rendezvous
             // Past here we step the executor and drive controls; only when we own control.
             if (!owns) return;
 
-            // Feed the brake its braking-distance inputs: available decel (thrust/mass) and the slew time to flip
-            // retrograde-relative. Both the Final Approach stage and the Match-Velocity-at-distance path run the
-            // brake/close controller, so feed for either. Throttled; a bad reading keeps the last.
+            // Feed the brake its braking-distance input: available decel (thrust/mass). Both the Final Approach
+            // stage and the Match-Velocity-at-distance path run the brake/close controller, so feed for either.
+            // Throttled; a bad reading keeps the last. (Flip lead is no longer budgeted as distance — the brake
+            // pre-orients retrograde during its hold and the actuation gates thrust until aligned.)
             if ((bbState.RendezvousMethod == RendezvousMethod.FinalApproach
                  || bbState.RendezvousMethod == RendezvousMethod.MatchVelocity)
                 && now - _lastBrakeParamsUt >= BrakeParamsIntervalSeconds)
@@ -367,14 +368,6 @@ namespace Blackbird.Rendezvous
                 if (vs != null && MathHelpers.IsFinite(vs.AvailableThrust) && vs.AvailableThrust > 0.0
                     && MathHelpers.IsFinite(vs.TotalMass) && vs.TotalMass > 0.0)
                     _executor.BrakingDecelMetersPerSecondSquared = vs.AvailableThrust / vs.TotalMass;
-
-                Vector3d brakeDir = TrajectoryProvider.GetVelocity(target) - TrajectoryProvider.GetVelocity(active);
-                if (brakeDir.sqrMagnitude > 0.0)
-                    // Lead reflects only the ACTUAL flip-to-retrograde time (~0 when already holding it): the brake
-                    // path pre-orients retrograde, so adding the settle padding here over-budgets the coast and
-                    // brakes far too early. EstimateSlewTimeSeconds already gates on the current nose angle.
-                    _executor.BrakingSlewLeadSeconds =
-                        AttitudeControl.EstimateSlewTimeSeconds(active, brakeDir, 0.0);
             }
 
 

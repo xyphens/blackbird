@@ -60,10 +60,9 @@ namespace Blackbird.Rendezvous
         private const double RendezBurnDeadbandPerMeter = 0.0005;
         private const double RendezBurnDeadbandMaxMetersPerSecond = 2.0;
         private const double RendezThrottleTaperMetersPerSecond = 3.0;
-        // Brake point = ParkingDistance + (flip-to-retro coast) + (decel-to-stop) = D + v*slewLead + v²/2a.
-        // Both inputs are vessel-specific (TWR, slew time); the handler sets them each tick.
+        // Brake point = ParkingDistance + decel-to-stop = D + v²/2a. Decel is vessel-specific (thrust/mass); the
+        // handler sets it each tick. The flip-to-retro is absorbed by the pre-oriented hold, not a distance budget.
         public double BrakingDecelMetersPerSecondSquared = 5.0;
-        public double BrakingSlewLeadSeconds = 3.0;
 
         // Latest plan: a live preview while idle/coast, or the frozen plan while executing.
         public bool HasInterceptPlan { get; private set; }
@@ -585,9 +584,13 @@ namespace Blackbird.Rendezvous
                 return StepMatchVelocity(world, out stageComplete);
 
             // Not yet at the brake point: track it from the measured closing speed and HOLD retrograde. No chase.
+            // Brake point is the PHYSICAL stop distance only (D + v^2/2a). The flip-to-retro happens for free during
+            // this hold (we already point retrograde here) and the actuation gates thrust until aligned, so budgeting
+            // a flip DISTANCE on top double-charges the flip and — because the point self-latches — froze a cold
+            // 180-degree slew estimate into the trigger, firing the brake minutes early.
             double closingSpeed = Math.Max(0.0, Vector3d.Dot(relVel, bearing));
             double stoppingDistance = closingSpeed * closingSpeed / (2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared));
-            burnCaWhenMeters = ParkingDistance + stoppingDistance + closingSpeed * BrakingSlewLeadSeconds;
+            burnCaWhenMeters = ParkingDistance + stoppingDistance;
 
             Vector3d holdDir = relVel.sqrMagnitude > 1e-12 ? (-relVel).normalized : bearing;
             return Burn(holdDir, 0.0, string.Format(
