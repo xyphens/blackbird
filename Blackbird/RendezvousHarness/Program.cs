@@ -51,8 +51,9 @@ namespace Blackbird.RendezvousHarness
             CheckDockingController();
             CheckMatchVelocityAtDistanceHoldsWhileFinalApproachChases();
             CheckMatchVelocityAtDistanceBrakesAtTrigger();
-            CheckFinalApproachIsTwoDiscreteBurnsNoPulsing();
-            CheckMatchVelocitySingleBurnFixedAxisNoSecondBurn();
+            CheckCloseApproachDeadbandRelaxesWithRange();
+            CheckMatchVelocityReaimsEachTick();
+            CheckMatchVelocityStopsOnOvershootNoSecondBurn();
             CheckThrustEnvelope();
             CheckDockingSchedule();
             CheckBurnSettleGate();
@@ -907,11 +908,8 @@ namespace Blackbird.RendezvousHarness
 
             AssertTrue("match completed -> coast",
                 state.InterceptPhase == InterceptPhase.Coast && state.RendezvousMethod == RendezvousMethod.MatchVelocity);
-            // ONE fixed-axis burn (no re-aim): it cancels the captured relVel almost entirely, but the perpendicular
-            // velocity gravity rotates in over the finite burn is NOT nulled (a bounded residual, ~1 m/s on a 30 m/s
-            // null). Sub-0.3 precision only the removed re-aim gave; a re-click / the docking autopilot trims it.
-            AssertTrue("match nulls >=90% of relative speed", relAfter < relBefore * 0.1);
-            AssertTrue("residual bounded (<2 m/s, frozen-axis)", relAfter < 2.0);
+            AssertTrue("relative velocity nulled (<0.3 m/s)", relAfter < 0.3);
+            AssertTrue("match reduced relative speed", relAfter < relBefore);
 
             Console.WriteLine(string.Format(
                 "    relSpeed before={0:F2} after={1:F3} m/s  ticks={2}", relBefore, relAfter, ticks));
@@ -1057,10 +1055,7 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("close completed (rendezvous done)", state.InterceptPhase == InterceptPhase.Complete);
             AssertTrue("parked near standoff (<=150 m)", rangeAfter <= 150.0);
             AssertTrue("parked not collided (>=50 m)", rangeAfter >= 50.0);
-            // Two discrete burns (close, then kill), no per-tick regulation: the fixed-axis kill leaves the same
-            // bounded gravity/divergence residual as an immediate match (~1 m/s), not the sub-0.6 the removed
-            // continuous re-aim held. It's parked and nearly stopped; a re-click / docking autopilot trims it.
-            AssertTrue("matched at standoff (<1.5 m/s)", relAfter < 1.5);
+            AssertTrue("matched at standoff (<0.6 m/s)", relAfter < 0.6);
             AssertTrue("range reduced", rangeAfter < rangeBefore);
 
             Console.WriteLine(string.Format(
@@ -1549,70 +1544,47 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("docking aligns to the port", plan.Align);
         }
 
-        // Case 21: Final Approach is a discrete TWO-burn sequence (close, then kill) — not a per-tick regulator.
-        // The old controller toggled the throttle in and out of a range-scaled deadband every frame, so it read
-        // "holding" while the engine kept pulsing. Here we count burn EPISODES (contiguous throttle>0 runs) over
-        // a full run and require exactly two, with a genuine zero-throttle coast between them, ending parked.
-        private static void CheckFinalApproachIsTwoDiscreteBurnsNoPulsing()
+        // Case 21: the close-approach velocity deadband relaxes with range. The SAME small closing-velocity
+        // error (0.4 m/s off the commanded 5 m/s) must be tolerated (hold, no burn) when 4 km out, but still
+        // corrected when 200 m out — so we stop micro-burning to hold an exact velocity at km distance.
+        private static void CheckCloseApproachDeadbandRelaxesWithRange()
         {
-            Console.WriteLine("Case 21: final approach = two discrete burns (close, kill), zero-throttle hold between");
+            Console.WriteLine("Case 21: close-approach deadband relaxes with range");
 
-            // Straight-line relative sim (gravity-free; valid at this range) integrated by the test: chaser 500 m
-            // behind the target on +X, initially co-moving (relVel 0). Park at 50 m; ample thrust and decel.
-            StaticWorld world = new StaticWorld
+            // Closing along +X at 4.6 m/s vs a commanded 5.0 m/s cap => a 0.4 m/s gap (under the 4 km deadband
+            // ~2.0, over the 200 m deadband ~0.1). CA fed out of band so the closing controller is the one used.
+            Vector3d targetVel = new Vector3d(0, 100.0, 0);
+            Vector3d activeVel = new Vector3d(4.6, 100.0, 0);
+
+            StaticWorld far = new StaticWorld
             {
                 Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
-                TargetPosition = new Vector3d(500.0, 0, 0), ActivePosition = Vector3d.zero,
-                TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(0, 100.0, 0)
+                TargetPosition = new Vector3d(4000.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = targetVel, ActiveVelocity = activeVel
             };
+            TerminalRendezvousExecutor farExec = NewExecutor(out _);
+            farExec.ForceExecute(RendezvousMethod.FinalApproach);
+            RendezvousCommand farCmd = farExec.Update(far, 2000.0, 600.0);
+            AssertScalar("4 km: holds (no micro-burn)", farCmd.Throttle, 0.0);
 
-            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
-            ex.UseDistanceForMatchVelocities = true;   // box checked -> auto-park with the kill burn
-            ex.ParkingDistance = 50.0;
-            ex.RendezMaxApproachSpeedMetersPerSecond = 5.0;
-            ex.BrakingDecelMetersPerSecondSquared = 5.0;
-            ex.ForceExecute(RendezvousMethod.FinalApproach);
-
-            const double maxAccel = 10.0;
-            const double dt = 0.05;
-            int episodes = 0;
-            bool burningPrev = false;
-            int ticks = 0;
-            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 1000000)
+            StaticWorld near = new StaticWorld
             {
-                RendezvousCommand cmd = ex.Update(world);
-                if (state.InterceptPhase != InterceptPhase.Executing) break;
-
-                bool burningNow = cmd.HasBurn && cmd.Throttle > 0.0;
-                if (burningNow && !burningPrev) episodes++;
-                burningPrev = burningNow;
-
-                if (burningNow)
-                    world.ActiveVelocity += cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt);
-
-                world.ActivePosition += world.ActiveVelocity * dt;   // integrate straight-line relative motion
-                world.TargetPosition += world.TargetVelocity * dt;
-            }
-
-            double rangeAfter = (world.TargetPosition - world.ActivePosition).magnitude;
-            double relAfter = (world.ActiveVelocity - world.TargetVelocity).magnitude;
-
-            AssertTrue("final approach completes", state.InterceptPhase == InterceptPhase.Complete);
-            AssertTrue("exactly two burn episodes (close + kill, no pulsing)", episodes == 2);
-            AssertTrue("parked near the standoff (45-70 m)", rangeAfter >= 45.0 && rangeAfter <= 70.0);
-            AssertTrue("matched at standoff (<0.6 m/s)", relAfter < 0.6);
-
-            Console.WriteLine(string.Format(
-                "    episodes={0}  range->{1:F1} m  relSpeed->{2:F3} m/s  ticks={3}", episodes, rangeAfter, relAfter, ticks));
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                TargetPosition = new Vector3d(200.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = targetVel, ActiveVelocity = activeVel
+            };
+            TerminalRendezvousExecutor nearExec = NewExecutor(out _);
+            nearExec.ForceExecute(RendezvousMethod.FinalApproach);
+            RendezvousCommand nearCmd = nearExec.Update(near, 2000.0, 600.0);
+            AssertTrue("200 m: still corrects", nearCmd.Throttle > 0.0);
         }
 
-        // Case 22: match velocity is ONE burn on a FIXED axis captured at ignition — it does NOT re-aim when the
-        // relative velocity later rotates (the old re-aim swung the axis near convergence, flipped ~180 degrees,
-        // and fired a second burn that ADDED speed). After completion the stage drops to Coast and issues no
-        // further burn even with a large residual: exactly one burn per Execute, output accepted as-is.
-        private static void CheckMatchVelocitySingleBurnFixedAxisNoSecondBurn()
+        // Case 22: immediate match velocity (distance gating off) steers opposite the CURRENT relative velocity
+        // every tick, so the commanded thrust direction tracks relVel as it changes. (The earlier direction-LOCK
+        // when slow was removed; StepMatchVelocity re-aims each tick now.)
+        private static void CheckMatchVelocityReaimsEachTick()
         {
-            Console.WriteLine("Case 22: match velocity fires one fixed-axis burn, never re-aims or re-fires");
+            Console.WriteLine("Case 22: match velocity re-aims opposite relative velocity each tick");
 
             StaticWorld world = new StaticWorld
             {
@@ -1621,33 +1593,49 @@ namespace Blackbird.RendezvousHarness
                 TargetVelocity = Vector3d.zero, ActiveVelocity = new Vector3d(0, 2.0, 0)   // relVel (0,2,0): 2 m/s
             };
 
-            TerminalRendezvousExecutor exec = NewExecutor(out SharedState state);
+            TerminalRendezvousExecutor exec = NewExecutor(out _);
             exec.UseDistanceForMatchVelocities = false;   // immediate null, not distance-gated braking
             exec.ForceExecute(RendezvousMethod.MatchVelocity);
 
-            // Ignition captures the axis opposite the CURRENT relVel: (0,2,0) -> (0,-1,0). Magnitude 2 m/s.
-            RendezvousCommand armed = exec.Update(world);
-            AssertVec("captures axis opposite relVel", armed.ThrustDirection, new Vector3d(0, -1, 0));
+            // Thrust opposes relVel: (0,2,0) -> (0,-1,0).
+            RendezvousCommand fast = exec.Update(world);
+            AssertVec("aims opposite relVel (fast)", fast.ThrustDirection, new Vector3d(0, -1, 0));
 
-            // Rotate relVel mid-burn WITHOUT delivering any ΔV along the frozen axis (add a pure +X component,
-            // which is orthogonal to the (0,-1,0) axis, so delivered stays ~0). The command must NOT re-aim.
-            world.ActiveVelocity = new Vector3d(3.0, 2.0, 0);   // relVel now (3,2,0); projection on axis unchanged
-            RendezvousCommand held = exec.Update(world);
-            AssertVec("axis stays frozen (no re-aim)", held.ThrustDirection, new Vector3d(0, -1, 0));
-            AssertTrue("still executing (burn not complete)", state.InterceptPhase == InterceptPhase.Executing);
+            // relVel now points a different way: thrust re-aims to oppose it, (0.3,0,0) -> (-1,0,0).
+            world.ActiveVelocity = new Vector3d(0.3, 0, 0);   // relVel (0.3,0,0): 0.3 m/s
+            RendezvousCommand slow = exec.Update(world);
+            AssertVec("re-aims opposite relVel (slow)", slow.ThrustDirection, new Vector3d(-1, 0, 0));
+        }
 
-            // Deliver the captured 2 m/s along the frozen axis (null the y-component) -> burn completes -> Coast.
-            // The injected +X residual is deliberately left un-nulled to prove no second burn chases it.
-            world.ActiveVelocity = new Vector3d(3.0, 0.0, 0);   // 2 m/s delivered along (0,-1,0); x residual = 3
-            RendezvousCommand done = exec.Update(world);
-            AssertTrue("burn completes -> Coast", state.InterceptPhase == InterceptPhase.Coast);
-            AssertTrue("no burn on the completing tick", !done.HasBurn);
+        // Case 22b: the ONLY MV change — once near the null, if the burn OVERSHOOTS (relVel reverses so the null
+        // direction would flip past 90°), the stage completes instead of turning around and firing a second burn
+        // back the other way (which added speed). Re-aiming for smaller corrections is unchanged (Case 22).
+        private static void CheckMatchVelocityStopsOnOvershootNoSecondBurn()
+        {
+            Console.WriteLine("Case 22b: match velocity stops on overshoot (no 180 flip / second burn)");
 
-            // Large residual relVel remains; MV must NOT fire a second burn (stage is Coast until a fresh Execute).
-            world.ActiveVelocity = new Vector3d(10.0, 0, 0);
+            StaticWorld world = new StaticWorld
+            {
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                TargetPosition = new Vector3d(1000, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = Vector3d.zero, ActiveVelocity = new Vector3d(0, 0.5, 0)   // near null (0.5 m/s)
+            };
+
+            TerminalRendezvousExecutor exec = NewExecutor(out SharedState state);
+            exec.UseDistanceForMatchVelocities = false;
+            exec.ForceExecute(RendezvousMethod.MatchVelocity);
+
+            // Ignition captures the null axis (0,-1,0) and burns (0.5 m/s > the 0.15 completion tolerance).
+            RendezvousCommand fire = exec.Update(world);
+            AssertVec("burns to null (captures axis)", fire.ThrustDirection, new Vector3d(0, -1, 0));
+            AssertTrue("still executing before overshoot", state.InterceptPhase == InterceptPhase.Executing);
+
+            // Overshoot: the burn pushed relVel past zero so it now points the OTHER way. The re-aim would flip
+            // ~180° — instead the stage must COMPLETE (drop to Coast) and issue no burn, not chase it back.
+            world.ActiveVelocity = new Vector3d(0, -0.4, 0);   // relVel reversed (0.4 m/s the other way)
             RendezvousCommand after = exec.Update(world);
-            AssertTrue("no second burn after completion", !after.HasBurn);
-            AssertTrue("stays Coast", state.InterceptPhase == InterceptPhase.Coast);
+            AssertTrue("completes on overshoot (-> Coast)", state.InterceptPhase == InterceptPhase.Coast);
+            AssertTrue("no second (flipped) burn", !after.HasBurn);
         }
 
         private static double CircularPeriod(double radius)
@@ -1655,54 +1643,90 @@ namespace Blackbird.RendezvousHarness
             return 2.0 * Math.PI * Math.Sqrt(radius * radius * radius / KerbinMu);
         }
 
-        // The "still before burn" gate: the rate threshold must scale with control authority (a heavy/powerful
-        // craft must settle to near zero or it ignites while coasting through alignment and flings off-axis),
-        // the dwell must reject a transient zero-crossing, and the pointing bound must reject > 1 deg.
+        // The "still before burn" gate now waits for the rotation rate to PLATEAU (stop dropping) while pointed,
+        // rather than clearing a fixed rate floor. This self-calibrates to each craft's real limit-cycle floor:
+        // the weak craft that used to hang in "Stabilizing" forever (its jitter never cleared the 0.1 floor) now
+        // arms, while nothing ignites mid-swing (above the loose ceiling) or while still slewing to the vector.
         private static void CheckBurnSettleGate()
         {
-            Console.WriteLine("Case 36: burn settle gate (still before ignition)");
+            Console.WriteLine("Case 36: burn settle gate (rate-plateau ignition)");
 
             const double dt = 0.02;   // physics step
 
-            // Authority scaling: nimble craft keep the legacy 1 deg/s cap, heavy craft drop to near zero.
-            double thNimble = BurnSettleGate.StillRateThresholdDegPerSec(5.0, dt);    // alpha 5 rad/s^2
-            double thHeavy = BurnSettleGate.StillRateThresholdDegPerSec(0.02, dt);   // alpha 0.02 rad/s^2
-            double thZero = BurnSettleGate.StillRateThresholdDegPerSec(0.0, dt);     // no torque data
-            AssertTrue("nimble threshold = legacy cap (1 deg/s)", Math.Abs(thNimble - 1.0) < 1e-9);
-            AssertTrue("zero-authority falls back to cap", Math.Abs(thZero - 1.0) < 1e-9);
-            AssertTrue("heavy threshold near zero (<0.1)", thHeavy > 0.0 && thHeavy < 0.1);
+            // The "improvement" deadband scales with control authority (finer for a weak craft) and falls back to
+            // the default noise floor when torque authority is unknown.
+            double dbNimble = BurnSettleGate.RateImproveDeadbandDegPerSec(5.0, dt);    // alpha 5 rad/s^2
+            double dbWeak = BurnSettleGate.RateImproveDeadbandDegPerSec(0.02, dt);     // alpha 0.02 rad/s^2
+            double dbUnknown = BurnSettleGate.RateImproveDeadbandDegPerSec(0.0, dt);   // no torque data
+            AssertTrue("weak-craft deadband finer than nimble", dbWeak < dbNimble);
+            AssertScalar("unknown-authority deadband = default noise floor", dbUnknown, BurnSettleGate.DefaultRateImproveDeadbandDegPerSec);
 
-            // The reported bug: a heavy craft drifting at 0.8 deg/s armed under the old flat 1 deg/s bound; it
-            // must now be rejected, while a genuinely still craft (and the nimble craft) are accepted.
-            AssertTrue("heavy rejects 0.8 deg/s (the old bug)", !BurnSettleGate.IsSteady(0.5, 0.8, thHeavy));
-            AssertTrue("heavy accepts truly still (0.03 deg/s)", BurnSettleGate.IsSteady(0.5, 0.03, thHeavy));
-            AssertTrue("nimble still accepts 0.8 deg/s", BurnSettleGate.IsSteady(0.5, 0.8, thNimble));
-            AssertTrue("rejects > 1 deg pointing even at zero rate", !BurnSettleGate.IsSteady(1.5, 0.0, thNimble));
+            // THE BUG FIX: a weak craft limit-cycling at ~0.2 deg/s (which the old 0.1 floor rejected forever) must
+            // now arm, because ignition waits for the rate to plateau, not to clear a floor it can never reach.
+            {
+                var t = new BurnSettleTracker();
+                bool armed = false;
+                double rate = 0.20;
+                for (double now = 0.0; now <= 3.0 && !armed; now += dt)
+                {
+                    rate = rate >= 0.205 ? 0.20 : 0.21;   // limit-cycle jitter around 0.2 deg/s, no net improvement
+                    armed = t.Update(0.5, rate, dbWeak, now);
+                }
+                AssertTrue("weak craft (~0.2 deg/s jitter) eventually arms", armed);
+            }
 
-            // Dwell: steady must hold continuously for StabilizeDwellSeconds before it arms.
-            var t = new BurnSettleTracker();
-            bool armedImmediately = t.Update(0.5, 0.03, thHeavy, 100.0);
-            bool armedBeforeDwell = t.Update(0.5, 0.03, thHeavy, 100.0 + BurnSettleGate.StabilizeDwellSeconds - 0.1);
-            bool armedAfterDwell = t.Update(0.5, 0.03, thHeavy, 100.0 + BurnSettleGate.StabilizeDwellSeconds + 0.1);
-            AssertTrue("not armed on first steady frame", !armedImmediately);
-            AssertTrue("not armed before dwell elapses", !armedBeforeDwell);
-            AssertTrue("armed after continuous dwell", armedAfterDwell);
+            // Never arms while still slewing to the burn vector (pointing error above AlignStartDeg), however
+            // steady the rotation looks — the plateau only counts once we are ON the target.
+            {
+                var t = new BurnSettleTracker();
+                bool armed = false;
+                for (double now = 0.0; now <= 3.0; now += dt)
+                    armed = t.Update(5.0, 0.01, dbWeak, now);   // 5 deg off axis, near-zero rate
+                AssertTrue("does not arm while slewing (error > 1 deg)", !armed);
+            }
 
-            // Zero-crossing: a single steady frame interrupted by motion can never satisfy the dwell.
-            var tc = new BurnSettleTracker();
-            tc.Update(0.5, 0.03, thHeavy, 200.0);          // momentarily steady (coasting through)
-            tc.Update(0.5, 5.0, thHeavy, 200.02);          // still rotating: dwell resets
-            bool armedFromCrossing = tc.Update(0.5, 0.03, thHeavy, 200.04);   // 0.02s of new steadiness only
-            AssertTrue("zero-crossing during coast does not arm", !armedFromCrossing);
+            // Dwell: a freshly-plateaued craft must hold the plateau for StabilizeDwellSeconds before it arms.
+            {
+                var t = new BurnSettleTracker();
+                bool early = false, late = false;
+                for (double now = 0.0; now < BurnSettleGate.StabilizeDwellSeconds - 0.1; now += dt)
+                    early = t.Update(0.5, 0.03, dbWeak, now);
+                for (double now = BurnSettleGate.StabilizeDwellSeconds - 0.1; now <= BurnSettleGate.StabilizeDwellSeconds + 0.2; now += dt)
+                    late = late || t.Update(0.5, 0.03, dbWeak, now);
+                AssertTrue("not armed before the dwell elapses", !early);
+                AssertTrue("arms after a continuous plateau dwell", late);
+            }
+
+            // Never fires mid-swing: even a perfectly steady (plateaued) rate above the ceiling must NOT arm.
+            {
+                var t = new BurnSettleTracker();
+                bool armed = false;
+                for (double now = 0.0; now <= 3.0; now += dt)
+                    armed = armed || t.Update(0.5, 3.0, dbWeak, now);   // constant 3 deg/s: plateaus, but > 1 deg/s ceiling
+                AssertTrue("does not arm above the mid-swing ceiling", !armed);
+            }
+
+            // A transient rotation spike does not prematurely arm inside the dwell window.
+            {
+                var t = new BurnSettleTracker();
+                t.Update(0.5, 0.03, dbWeak, 0.0);       // pointed and momentarily steady
+                t.Update(0.5, 5.0, dbWeak, 0.02);       // brief spike (still pointed)
+                bool armedSoon = t.Update(0.5, 0.03, dbWeak, 0.04);
+                AssertTrue("transient spike does not arm within the dwell", !armedSoon);
+            }
 
             // Hysteresis: once armed, small drift (< AlignKeepDeg) holds the burn; a large excursion re-orients.
-            var th = new BurnSettleTracker();
-            th.Update(0.5, 0.03, thHeavy, 300.0);
-            th.Update(0.5, 0.03, thHeavy, 302.0);          // armed
-            bool holdsThroughDrift = th.Update(5.0, 0.03, thHeavy, 302.1);    // 5 deg < keep band
-            bool dropsOnExcursion = th.Update(25.0, 0.03, thHeavy, 302.2);    // 25 deg > keep band
-            AssertTrue("armed burn holds through small drift", holdsThroughDrift);
-            AssertTrue("large excursion forces re-orient", !dropsOnExcursion);
+            {
+                var t = new BurnSettleTracker();
+                bool armed = false;
+                for (double now = 0.0; now <= 2.0 && !armed; now += dt)
+                    armed = t.Update(0.5, 0.03, dbWeak, now);
+                AssertTrue("armed after plateau", armed);
+                bool holdsThroughDrift = t.Update(5.0, 0.03, dbWeak, 2.1);    // 5 deg < keep band
+                bool dropsOnExcursion = t.Update(25.0, 0.03, dbWeak, 2.2);    // 25 deg > keep band
+                AssertTrue("armed burn holds through small drift", holdsThroughDrift);
+                AssertTrue("large excursion forces re-orient", !dropsOnExcursion);
+            }
         }
 
         private static void AssertTrue(string label, bool condition)

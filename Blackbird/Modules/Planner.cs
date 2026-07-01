@@ -13,9 +13,26 @@ namespace Blackbird.Modules
         private static readonly int WindowId = "Blackbird.Planner".GetHashCode();
         private Rect _windowRect = new Rect(560, 200, 500, 500);
 
-        private string _insertionApText = "";
-        private string _insertionPeText = "";
-        private string _insertionHdgText = "";
+        private double _insertionAp = 0.0;
+        public string InsertionAp
+        {
+            get { return _insertionAp.ToString("F0"); }
+            set { if (double.TryParse(value, out double v)) _insertionAp = v; }
+        }
+
+        private double _insertionPe = 0.0;
+        public string InsertionPe
+        {
+            get { return _insertionPe.ToString("F0"); }
+            set { if (double.TryParse(value, out double v)) _insertionPe = v; }
+        }
+
+        private double _insertionHdg = 0.0;
+        public string InsertionHdg
+        {
+            get { return _insertionHdg.ToString("F1"); }
+            set { if (double.TryParse(value, out double v)) _insertionHdg = v; }
+        }
 
         private LaunchHandler _launchHandler;
 
@@ -34,7 +51,6 @@ namespace Blackbird.Modules
 
         private void DrawContents(int _)
         {
-
             Vessel vessel = FlightGlobals.ActiveVessel;
             if (vessel == null || !bbState.PlannerVisible) { GUI.DragWindow(); return; }
 
@@ -73,19 +89,19 @@ namespace Blackbird.Modules
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("Apoapsis:", GUILayout.Width(70));
-            _insertionApText = GUILayout.TextField(_insertionApText, GUILayout.Width(100));
-            GUILayout.Label("m");
+            InsertionAp = GUILayout.TextField(InsertionAp, GUILayout.Width(50));
+            GUILayout.Label("km");
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("Periapsis:", GUILayout.Width(70));
-            _insertionPeText = GUILayout.TextField(_insertionPeText, GUILayout.Width(100));
-            GUILayout.Label("m");
+            InsertionPe = GUILayout.TextField(InsertionPe, GUILayout.Width(50));
+            GUILayout.Label("km");
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("Heading:", GUILayout.Width(70));
-            _insertionHdgText = GUILayout.TextField(_insertionHdgText, GUILayout.Width(100));
+            InsertionHdg = GUILayout.TextField(InsertionHdg, GUILayout.Width(100));
             GUILayout.Label("°");
             GUILayout.EndHorizontal();
 
@@ -170,9 +186,10 @@ namespace Blackbird.Modules
             bbState.SelectedLaunchCandidate = launchPlan.Candidates[index];
 
             LaunchCandidate c = launchPlan.Candidates[index];
-            _insertionApText = c.InsertionApoapsisAlt.ToString("F0");
-            _insertionPeText = c.InsertionPeriapsisAlt.ToString("F0");
-            _insertionHdgText = c.LaunchHeadingDeg.ToString("F1");
+
+            InsertionAp = (c.InsertionApoapsisAlt / 1000).ToString("F2");
+            InsertionPe = (c.InsertionPeriapsisAlt / 1000).ToString("F2");
+            InsertionHdg = c.LaunchHeadingDeg.ToString("F1");
         }
 
         private void CommitPlanInputs(Vessel vessel, Vessel targetVessel)
@@ -207,13 +224,11 @@ namespace Blackbird.Modules
 
         private InsertionTarget CreateInsertionTargetFromUi()
         {
-            double.TryParse(_insertionApText, out double ap);
-            double.TryParse(_insertionPeText, out double pe);
-            double.TryParse(_insertionHdgText, out double hdg);
+            //double.TryParse(InsertionAp, out double ap);
+            //double.TryParse(InsertionPe, out double pe);
+            //double.TryParse(InsertionHdg, out double hdg);
 
-            if (pe > ap) { double t = ap; ap = pe; pe = t; }
-
-            return new InsertionTarget { ApoapsisAlt = ap, PeriapsisAlt = pe, Heading = hdg };
+            return new InsertionTarget { ApoapsisAlt = _insertionAp, PeriapsisAlt = _insertionPe, Heading = _insertionHdg };
         }
 
         private static string FormatKm(double meters) =>

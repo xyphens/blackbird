@@ -9,63 +9,82 @@ namespace Blackbird.Rendezvous
     {
         public const double AlignStartDeg = 1.0;            // pointing tolerance to begin settling
         public const double AlignKeepDeg = 20.0;            // hysteresis: re-orient only if error exceeds this mid-burn
-        public const double StabilizeDwellSeconds = 1.5;    // steady condition must hold this long before igniting
-        private const double MaxStillRateDegPerSec = 1.0;   // legacy bound; a high-authority craft never needs stricter
-        private const double MinStillRateDegPerSec = 0.1;   // achievable settle floor; below this no controller holds
+        public const double StabilizeDwellSeconds = 1.5;    // the rotation rate must be plateaued this long before igniting
+        public const double MaxStillRateDegPerSec = 1.0;    // loose ceiling: never ignite above this (mid-swing guard)
 
-        private const double SettleStepFactor = 2.0;        // multiples of one control step's rate granularity (margin)
+        // Rate improvement smaller than this is noise, not settling. Derived from the craft's per-step rate
+        // granularity (one control step changes the rate by ~alpha*dt) so there is no hand-tuned floor to clear —
+        // a weak craft that limit-cycles at 0.2 deg/s plateaus and arms, instead of chasing an unreachable floor.
+        public const double DefaultRateImproveDeadbandDegPerSec = 0.05;   // fallback when torque authority is unknown
 
-        // Max angular rate (deg/s) treated as "still" for this craft
-        public static double StillRateThresholdDegPerSec(double minAngularAccelRadPerS2, double physicsDt)
+        public static double RateImproveDeadbandDegPerSec(double minAngularAccelRadPerS2, double physicsDt)
         {
-            if (!(minAngularAccelRadPerS2 > 0.0) || !(physicsDt > 0.0)) return MaxStillRateDegPerSec;
-            double floor = MathHelpers.Rad2Deg(SettleStepFactor * minAngularAccelRadPerS2 * physicsDt);
-            return MathHelpers.Clamp(floor, MinStillRateDegPerSec, MaxStillRateDegPerSec);
-        }
-
-        // Pointed and rotationally settled this instant (pre-dwell).
-        public static bool IsSteady(double errorDeg, double rateDegPerSec, double stillRateThresholdDegPerSec)
-        {
-            return errorDeg <= AlignStartDeg && rateDegPerSec <= stillRateThresholdDegPerSec;
+            if (!(minAngularAccelRadPerS2 > 0.0) || !(physicsDt > 0.0)) return DefaultRateImproveDeadbandDegPerSec;
+            return MathHelpers.Rad2Deg(minAngularAccelRadPerS2 * physicsDt);
         }
     }
 
-    // Tracks the orient -> settle -> armed transition across frames
+    // Tracks the orient -> settle -> armed transition across frames. Ignition waits for the rotation rate to stop
+    // dropping (plateau) while pointed, rather than clearing a fixed rate floor: it self-calibrates to whatever
+    // limit-cycle floor the craft actually holds.
     public struct BurnSettleTracker
     {
-        private bool _hasSteady;
-        private double _steadySinceUt;
+        private bool _tracking;         // pointed and tracking the rate plateau (false while still slewing)
+        private double _minRate;        // smallest pitch/yaw rate seen since we started pointing
+        private double _lastImproveUt;  // last time _minRate dropped by more than the deadband
         private bool _aligned;
 
         public bool Aligned => _aligned;
 
         public void Reset()
         {
-            _hasSteady = false;
-            _steadySinceUt = 0.0;
+            _tracking = false;
+            _minRate = 0.0;
+            _lastImproveUt = 0.0;
             _aligned = false;
         }
 
         // Advance one frame. now = monotonic seconds. Returns whether the burn may fire this frame.
-        public bool Update(double errorDeg, double rateDegPerSec, double stillRateThresholdDegPerSec, double now)
+        public bool Update(double errorDeg, double rateDegPerSec, double rateImproveDeadbandDegPerSec, double now)
         {
-            if (!_aligned)
+            if (_aligned)
             {
-                if (BurnSettleGate.IsSteady(errorDeg, rateDegPerSec, stillRateThresholdDegPerSec))
+                if (errorDeg > BurnSettleGate.AlignKeepDeg)   // knocked far off axis mid-burn: re-orient
                 {
-                    if (!_hasSteady) { _hasSteady = true; _steadySinceUt = now; }
-                    if (now - _steadySinceUt >= BurnSettleGate.StabilizeDwellSeconds) _aligned = true;
+                    _aligned = false;
+                    _tracking = false;
                 }
-                else
-                {
-                    _hasSteady = false;   // moving / off-target: restart the dwell
-                }
+                return _aligned;
             }
-            else if (errorDeg > BurnSettleGate.AlignKeepDeg)
+
+            // The rate plateau only means "settled" once we are pointed; while still slewing to the burn vector,
+            // keep resetting so the dwell measures steadiness ON the target, not on the way to it.
+            if (errorDeg > BurnSettleGate.AlignStartDeg)
             {
-                _aligned = false;
-                _hasSteady = false;
+                _tracking = false;
+                return false;
             }
+
+            if (!_tracking)
+            {
+                _tracking = true;
+                _minRate = rateDegPerSec;
+                _lastImproveUt = now;
+            }
+            else if (rateDegPerSec < _minRate - rateImproveDeadbandDegPerSec)
+            {
+                _minRate = rateDegPerSec;      // rate still meaningfully dropping: not plateaued yet
+                _lastImproveUt = now;
+            }
+            else if (rateDegPerSec < _minRate)
+            {
+                _minRate = rateDegPerSec;      // track the true minimum without resetting the plateau clock
+            }
+
+            bool plateaued = now - _lastImproveUt >= BurnSettleGate.StabilizeDwellSeconds;
+            if (plateaued && rateDegPerSec <= BurnSettleGate.MaxStillRateDegPerSec)
+                _aligned = true;
+
             return _aligned;
         }
     }

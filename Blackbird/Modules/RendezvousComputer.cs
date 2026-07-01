@@ -35,6 +35,9 @@ namespace Blackbird.Modules
 
         private InterceptMethod _lastAlgorithm;
 
+        // Lazily-built red label style for warnings (e.g. a burn that can't settle to ignite).
+        private GUIStyle _warnStyle;
+
         public void Init(RendezvousHandler handler, SharedState s)
         {
             _handler = handler;
@@ -158,6 +161,14 @@ namespace Blackbird.Modules
             if (bbState.InterceptPhase == InterceptPhase.Executing)
             {
                 GUILayout.Label($"Executing: {StageName(bbState.RendezvousMethod)}...");
+
+                // Burn can't ignite because the craft won't hold the vector: warn in red (no force-fire).
+                if (_handler.SettleStalled)
+                {
+                    if (_warnStyle == null)
+                        _warnStyle = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.red }, wordWrap = true };
+                    GUILayout.Label($"Error: Burn stalled — {_handler.SettleStallReason}", _warnStyle);
+                }
             }
 
             GUI.enabled = canExecute;

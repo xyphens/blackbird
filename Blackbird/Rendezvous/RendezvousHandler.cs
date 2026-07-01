@@ -101,6 +101,14 @@ namespace Blackbird.Rendezvous
         public bool Stabilizing { get; private set; }
         public double AlignmentErrorDeg { get; private set; } = double.NaN;
 
+        // Settle-stall warning: a burn that has been trying to orient/settle this long without igniting almost
+        // always means the craft can't hold the burn vector (too little control authority, or a thrusting/moving
+        // target). We surface it (red) rather than force-fire — igniting off-axis is worse than waiting.
+        public bool SettleStalled { get; private set; }
+        public string SettleStallReason { get; private set; }
+        private double _orientStartUt = double.NaN;   // when the current orient/settle attempt began (NaN = not trying)
+        private const double SettleStallWarnSeconds = 10.0;
+
         public void ToggleEngage(bool status)
         {
             _engaged = status;
@@ -155,8 +163,9 @@ namespace Blackbird.Rendezvous
         // Invalidate the cached plan preview so it recomputes once (planner switched / manual refresh).
         public const double CloseApproachGainDefault = TerminalRendezvousExecutor.RendezDistanceApproachGainDefault;
         public const double CloseApproachMaxSpeedDefault = TerminalRendezvousExecutor.RendezMaxApproachSpeedDefaultMetersPerSecond;
-        public void Abort() { _executor.Abort(); _attitude.Reset(); _settle.Reset(); StopWarp(); bbState.RendezvousEnabled = false; }
-        public void ResetSequence() { _executor.Reset(); _attitude.Reset(); _settle.Reset(); StopWarp(); }
+        public void Abort() { _executor.Abort(); _attitude.Reset(); _settle.Reset(); ClearSettleStall(); StopWarp(); bbState.RendezvousEnabled = false; }
+        public void ResetSequence() { _executor.Reset(); _attitude.Reset(); _settle.Reset(); ClearSettleStall(); StopWarp(); }
+        private void ClearSettleStall() { _orientStartUt = double.NaN; SettleStalled = false; SettleStallReason = null; }
 
         // Stop cleanly after losing the control authority (e.g. Docking Assume Control) mid-stage: drop to
         // idle, release attitude/warp. ActiveModule is already owned by the new module, so it is not touched.
@@ -560,13 +569,38 @@ namespace Blackbird.Rendezvous
                 double now = Planetarium.GetUniversalTime();
                 AlignmentErrorDeg = errorDeg;
 
-                // "Still" rate scales with the craft's control authority: heavy/powerful craft must settle to
-                // near zero (else they ignite while coasting through alignment), nimble craft keep the legacy bound.
-                double stillRate = BurnSettleGate.StillRateThresholdDegPerSec(AttitudeControl.MinControlAngularAccel(vessel), TimeWarp.fixedDeltaTime);
-                bool aligned = _settle.Update(errorDeg, pitchYawRateDegPerSec, stillRate, now);
+                // Ignition waits for the rotation rate to PLATEAU (stop dropping), not clear a fixed floor. The
+                // deadband — what counts as the rate still improving — scales with control authority so the gate
+                // self-calibrates: a weak craft arms at its real limit-cycle floor instead of hanging forever.
+                double rateImproveDeadband = BurnSettleGate.RateImproveDeadbandDegPerSec(AttitudeControl.MinControlAngularAccel(vessel), TimeWarp.fixedDeltaTime);
+                bool aligned = _settle.Update(errorDeg, pitchYawRateDegPerSec, rateImproveDeadband, now);
 
                 Orienting = !aligned;
                 Stabilizing = !aligned && errorDeg <= BurnSettleGate.AlignStartDeg;   // pointed, settling
+
+                // Warn (don't force-fire) if we've been unable to ignite for too long: name the blocking bound so
+                // the user knows it's a craft-authority / thrusting-target problem, not a hang.
+                if (aligned)
+                {
+                    _orientStartUt = double.NaN;
+                    SettleStalled = false;
+                    SettleStallReason = null;
+                }
+                else
+                {
+                    if (double.IsNaN(_orientStartUt)) _orientStartUt = now;
+                    else if (now - _orientStartUt >= SettleStallWarnSeconds)
+                    {
+                        SettleStalled = true;
+                        SettleStallReason = errorDeg > BurnSettleGate.AlignStartDeg
+                            ? string.Format("can't point at burn vector: {0:F1}° off (need <{1:F0}°)",
+                                errorDeg, BurnSettleGate.AlignStartDeg)
+                            : pitchYawRateDegPerSec > BurnSettleGate.MaxStillRateDegPerSec
+                                ? string.Format("can't stabilize: {0:F1}°/s rotation (need <{1:F0}°/s)",
+                                    pitchYawRateDegPerSec, BurnSettleGate.MaxStillRateDegPerSec)
+                                : string.Format("still settling: {0:F2}°/s", pitchYawRateDegPerSec);
+                    }
+                }
 
                 if (aligned)
                 {
@@ -594,6 +628,9 @@ namespace Blackbird.Rendezvous
             Orienting = false;
             Stabilizing = false;
             AlignmentErrorDeg = double.NaN;
+            _orientStartUt = double.NaN;
+            SettleStalled = false;
+            SettleStallReason = null;
             _settle.Reset();
 
             if (_burningLastApply)
