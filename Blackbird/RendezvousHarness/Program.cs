@@ -51,8 +51,8 @@ namespace Blackbird.RendezvousHarness
             CheckDockingController();
             CheckMatchVelocityAtDistanceHoldsWhileFinalApproachChases();
             CheckMatchVelocityAtDistanceBrakesAtTrigger();
-            CheckCloseApproachDeadbandRelaxesWithRange();
-            CheckMatchVelocityReaimsEachTick();
+            CheckFinalApproachIsTwoDiscreteBurnsNoPulsing();
+            CheckMatchVelocitySingleBurnFixedAxisNoSecondBurn();
             CheckThrustEnvelope();
             CheckDockingSchedule();
             CheckBurnSettleGate();
@@ -907,8 +907,11 @@ namespace Blackbird.RendezvousHarness
 
             AssertTrue("match completed -> coast",
                 state.InterceptPhase == InterceptPhase.Coast && state.RendezvousMethod == RendezvousMethod.MatchVelocity);
-            AssertTrue("relative velocity nulled (<0.3 m/s)", relAfter < 0.3);
-            AssertTrue("match reduced relative speed", relAfter < relBefore);
+            // ONE fixed-axis burn (no re-aim): it cancels the captured relVel almost entirely, but the perpendicular
+            // velocity gravity rotates in over the finite burn is NOT nulled (a bounded residual, ~1 m/s on a 30 m/s
+            // null). Sub-0.3 precision only the removed re-aim gave; a re-click / the docking autopilot trims it.
+            AssertTrue("match nulls >=90% of relative speed", relAfter < relBefore * 0.1);
+            AssertTrue("residual bounded (<2 m/s, frozen-axis)", relAfter < 2.0);
 
             Console.WriteLine(string.Format(
                 "    relSpeed before={0:F2} after={1:F3} m/s  ticks={2}", relBefore, relAfter, ticks));
@@ -1054,7 +1057,10 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("close completed (rendezvous done)", state.InterceptPhase == InterceptPhase.Complete);
             AssertTrue("parked near standoff (<=150 m)", rangeAfter <= 150.0);
             AssertTrue("parked not collided (>=50 m)", rangeAfter >= 50.0);
-            AssertTrue("matched at standoff (<0.6 m/s)", relAfter < 0.6);
+            // Two discrete burns (close, then kill), no per-tick regulation: the fixed-axis kill leaves the same
+            // bounded gravity/divergence residual as an immediate match (~1 m/s), not the sub-0.6 the removed
+            // continuous re-aim held. It's parked and nearly stopped; a re-click / docking autopilot trims it.
+            AssertTrue("matched at standoff (<1.5 m/s)", relAfter < 1.5);
             AssertTrue("range reduced", rangeAfter < rangeBefore);
 
             Console.WriteLine(string.Format(
@@ -1543,47 +1549,70 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("docking aligns to the port", plan.Align);
         }
 
-        // Case 21: the close-approach velocity deadband relaxes with range. The SAME small closing-velocity
-        // error (0.4 m/s off the commanded 5 m/s) must be tolerated (hold, no burn) when 4 km out, but still
-        // corrected when 200 m out — so we stop micro-burning to hold an exact velocity at km distance.
-        private static void CheckCloseApproachDeadbandRelaxesWithRange()
+        // Case 21: Final Approach is a discrete TWO-burn sequence (close, then kill) — not a per-tick regulator.
+        // The old controller toggled the throttle in and out of a range-scaled deadband every frame, so it read
+        // "holding" while the engine kept pulsing. Here we count burn EPISODES (contiguous throttle>0 runs) over
+        // a full run and require exactly two, with a genuine zero-throttle coast between them, ending parked.
+        private static void CheckFinalApproachIsTwoDiscreteBurnsNoPulsing()
         {
-            Console.WriteLine("Case 21: close-approach deadband relaxes with range");
+            Console.WriteLine("Case 21: final approach = two discrete burns (close, kill), zero-throttle hold between");
 
-            // Closing along +X at 4.6 m/s vs a commanded 5.0 m/s cap => a 0.4 m/s gap (under the 4 km deadband
-            // ~2.0, over the 200 m deadband ~0.1). CA fed out of band so the closing controller is the one used.
-            Vector3d targetVel = new Vector3d(0, 100.0, 0);
-            Vector3d activeVel = new Vector3d(4.6, 100.0, 0);
-
-            StaticWorld far = new StaticWorld
+            // Straight-line relative sim (gravity-free; valid at this range) integrated by the test: chaser 500 m
+            // behind the target on +X, initially co-moving (relVel 0). Park at 50 m; ample thrust and decel.
+            StaticWorld world = new StaticWorld
             {
                 Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
-                TargetPosition = new Vector3d(4000.0, 0, 0), ActivePosition = Vector3d.zero,
-                TargetVelocity = targetVel, ActiveVelocity = activeVel
+                TargetPosition = new Vector3d(500.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(0, 100.0, 0)
             };
-            TerminalRendezvousExecutor farExec = NewExecutor(out _);
-            farExec.ForceExecute(RendezvousMethod.FinalApproach);
-            RendezvousCommand farCmd = farExec.Update(far, 2000.0, 600.0);
-            AssertScalar("4 km: holds (no micro-burn)", farCmd.Throttle, 0.0);
 
-            StaticWorld near = new StaticWorld
+            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
+            ex.UseDistanceForMatchVelocities = true;   // box checked -> auto-park with the kill burn
+            ex.ParkingDistance = 50.0;
+            ex.RendezMaxApproachSpeedMetersPerSecond = 5.0;
+            ex.BrakingDecelMetersPerSecondSquared = 5.0;
+            ex.ForceExecute(RendezvousMethod.FinalApproach);
+
+            const double maxAccel = 10.0;
+            const double dt = 0.05;
+            int episodes = 0;
+            bool burningPrev = false;
+            int ticks = 0;
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 1000000)
             {
-                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
-                TargetPosition = new Vector3d(200.0, 0, 0), ActivePosition = Vector3d.zero,
-                TargetVelocity = targetVel, ActiveVelocity = activeVel
-            };
-            TerminalRendezvousExecutor nearExec = NewExecutor(out _);
-            nearExec.ForceExecute(RendezvousMethod.FinalApproach);
-            RendezvousCommand nearCmd = nearExec.Update(near, 2000.0, 600.0);
-            AssertTrue("200 m: still corrects", nearCmd.Throttle > 0.0);
+                RendezvousCommand cmd = ex.Update(world);
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
+
+                bool burningNow = cmd.HasBurn && cmd.Throttle > 0.0;
+                if (burningNow && !burningPrev) episodes++;
+                burningPrev = burningNow;
+
+                if (burningNow)
+                    world.ActiveVelocity += cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt);
+
+                world.ActivePosition += world.ActiveVelocity * dt;   // integrate straight-line relative motion
+                world.TargetPosition += world.TargetVelocity * dt;
+            }
+
+            double rangeAfter = (world.TargetPosition - world.ActivePosition).magnitude;
+            double relAfter = (world.ActiveVelocity - world.TargetVelocity).magnitude;
+
+            AssertTrue("final approach completes", state.InterceptPhase == InterceptPhase.Complete);
+            AssertTrue("exactly two burn episodes (close + kill, no pulsing)", episodes == 2);
+            AssertTrue("parked near the standoff (45-70 m)", rangeAfter >= 45.0 && rangeAfter <= 70.0);
+            AssertTrue("matched at standoff (<0.6 m/s)", relAfter < 0.6);
+
+            Console.WriteLine(string.Format(
+                "    episodes={0}  range->{1:F1} m  relSpeed->{2:F3} m/s  ticks={3}", episodes, rangeAfter, relAfter, ticks));
         }
 
-        // Case 22: immediate match velocity (distance gating off) steers opposite the CURRENT relative velocity
-        // every tick, so the commanded thrust direction tracks relVel as it changes. (The earlier direction-LOCK
-        // when slow was removed; StepMatchVelocity re-aims each tick now.)
-        private static void CheckMatchVelocityReaimsEachTick()
+        // Case 22: match velocity is ONE burn on a FIXED axis captured at ignition — it does NOT re-aim when the
+        // relative velocity later rotates (the old re-aim swung the axis near convergence, flipped ~180 degrees,
+        // and fired a second burn that ADDED speed). After completion the stage drops to Coast and issues no
+        // further burn even with a large residual: exactly one burn per Execute, output accepted as-is.
+        private static void CheckMatchVelocitySingleBurnFixedAxisNoSecondBurn()
         {
-            Console.WriteLine("Case 22: match velocity re-aims opposite relative velocity each tick");
+            Console.WriteLine("Case 22: match velocity fires one fixed-axis burn, never re-aims or re-fires");
 
             StaticWorld world = new StaticWorld
             {
@@ -1592,18 +1621,33 @@ namespace Blackbird.RendezvousHarness
                 TargetVelocity = Vector3d.zero, ActiveVelocity = new Vector3d(0, 2.0, 0)   // relVel (0,2,0): 2 m/s
             };
 
-            TerminalRendezvousExecutor exec = NewExecutor(out _);
+            TerminalRendezvousExecutor exec = NewExecutor(out SharedState state);
             exec.UseDistanceForMatchVelocities = false;   // immediate null, not distance-gated braking
             exec.ForceExecute(RendezvousMethod.MatchVelocity);
 
-            // Thrust opposes relVel: (0,2,0) -> (0,-1,0).
-            RendezvousCommand fast = exec.Update(world);
-            AssertVec("aims opposite relVel (fast)", fast.ThrustDirection, new Vector3d(0, -1, 0));
+            // Ignition captures the axis opposite the CURRENT relVel: (0,2,0) -> (0,-1,0). Magnitude 2 m/s.
+            RendezvousCommand armed = exec.Update(world);
+            AssertVec("captures axis opposite relVel", armed.ThrustDirection, new Vector3d(0, -1, 0));
 
-            // relVel now points a different way: thrust re-aims to oppose it, (0.3,0,0) -> (-1,0,0).
-            world.ActiveVelocity = new Vector3d(0.3, 0, 0);   // relVel (0.3,0,0): 0.3 m/s
-            RendezvousCommand slow = exec.Update(world);
-            AssertVec("re-aims opposite relVel (slow)", slow.ThrustDirection, new Vector3d(-1, 0, 0));
+            // Rotate relVel mid-burn WITHOUT delivering any ΔV along the frozen axis (add a pure +X component,
+            // which is orthogonal to the (0,-1,0) axis, so delivered stays ~0). The command must NOT re-aim.
+            world.ActiveVelocity = new Vector3d(3.0, 2.0, 0);   // relVel now (3,2,0); projection on axis unchanged
+            RendezvousCommand held = exec.Update(world);
+            AssertVec("axis stays frozen (no re-aim)", held.ThrustDirection, new Vector3d(0, -1, 0));
+            AssertTrue("still executing (burn not complete)", state.InterceptPhase == InterceptPhase.Executing);
+
+            // Deliver the captured 2 m/s along the frozen axis (null the y-component) -> burn completes -> Coast.
+            // The injected +X residual is deliberately left un-nulled to prove no second burn chases it.
+            world.ActiveVelocity = new Vector3d(3.0, 0.0, 0);   // 2 m/s delivered along (0,-1,0); x residual = 3
+            RendezvousCommand done = exec.Update(world);
+            AssertTrue("burn completes -> Coast", state.InterceptPhase == InterceptPhase.Coast);
+            AssertTrue("no burn on the completing tick", !done.HasBurn);
+
+            // Large residual relVel remains; MV must NOT fire a second burn (stage is Coast until a fresh Execute).
+            world.ActiveVelocity = new Vector3d(10.0, 0, 0);
+            RendezvousCommand after = exec.Update(world);
+            AssertTrue("no second burn after completion", !after.HasBurn);
+            AssertTrue("stays Coast", state.InterceptPhase == InterceptPhase.Coast);
         }
 
         private static double CircularPeriod(double radius)
