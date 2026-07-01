@@ -48,18 +48,13 @@ namespace Blackbird.Rendezvous
         public bool UseDistanceForMatchVelocities = true;
         private double burnCaWhenMeters = 0.0;
         private const double ParkingDistanceBuffer = 5.0;          // slack added to the parking distance for the "in band" test
-        //private const double RendezParkedSpeedMetersPerSecond = 0.5;
-        // Commanded closing speed = clamp(range * gain, 0, maxSpeed); both user-settable (UI).
+        // Final-approach closing speed = min(brake-to-rest to the parking distance, Max Closing Speed). The gain
+        // is retained for the UI/handler but no longer shapes the profile (one burn, not a per-tick crawl).
         public const double RendezDistanceApproachGainDefault = 0.2;
         public double RendezDistanceApproachGain = RendezDistanceApproachGainDefault;
         public const double RendezMaxApproachSpeedDefaultMetersPerSecond = 5.0;
         public double RendezMaxApproachSpeedMetersPerSecond = RendezMaxApproachSpeedDefaultMetersPerSecond;
-        // Velocity-error deadband, relaxed with range (holding 0.1 m/s at km distance just burns RCS fighting
-        // orbital drift), tightening back to the base value close in.
-        private const double RendezBurnDeadbandMetersPerSecond = 0.1;
-        private const double RendezBurnDeadbandPerMeter = 0.0005;
-        private const double RendezBurnDeadbandMaxMetersPerSecond = 2.0;
-        private const double RendezThrottleTaperMetersPerSecond = 3.0;
+        private const double RendezThrottleTaperMetersPerSecond = 3.0;   // closing-burn throttle taper band
         // Brake point = ParkingDistance + decel-to-stop = D + v²/2a. Decel is vessel-specific (thrust/mass); the
         // handler sets it each tick. The flip-to-retro is absorbed by the pre-oriented hold, not a distance budget.
         public double BrakingDecelMetersPerSecondSquared = 5.0;
@@ -103,6 +98,10 @@ namespace Blackbird.Rendezvous
         private double _matchLastProgressUt;
         private Vector3d _matchNullDir0;           // null direction at ignition; used to detect an overshoot flip
 
+        // Final Approach: the single closing burn has reached the commanded closing speed, so we now "become the
+        // match-velocity" (hold retrograde and, box checked, kill at the brake point). No more closing regulation.
+        private bool _faClosingDone;
+
         // in range to start matching velocities
         //private bool _closeBraking;
 
@@ -123,6 +122,7 @@ namespace Blackbird.Rendezvous
             HasInterceptPlan = false;
             _burnArmed = false;
             _matchArmed = false;
+            _faClosingDone = false;
             burnCaWhenMeters = 0.0;
             HaveHohmannTransfer = false;
             bbState.InterceptSolution = default(InterceptSolution);
@@ -139,6 +139,7 @@ namespace Blackbird.Rendezvous
             burnCaWhenMeters = 0.0;
             _burnArmed = false;
             _matchArmed = false;
+            _faClosingDone = false;
             HasLastInterceptBurnReport = false;
             return true;
         }
@@ -153,6 +154,7 @@ namespace Blackbird.Rendezvous
 
             _burnArmed = false;
             _matchArmed = false;
+            _faClosingDone = false;
             burnCaWhenMeters = 0.0;
             HasLastInterceptBurnReport = false;
             return true;
@@ -606,9 +608,11 @@ namespace Blackbird.Rendezvous
                 burnCaWhenMeters, distanceToTarget, closingSpeed));
         }
 
-        // Final Approach: actively CLOSE the gap (StepClose, tapered + brake-to-rest capped) until inside the
-        // parking-band soft buffer. autoPark (box checked) then nulls to rest at the band; otherwise hand back
-        // WITHOUT nulling so the user finishes with Match Velocity (no hidden auto-brake).
+        // Final Approach = ONE closing burn, then "become the match-velocity". Phase 1 builds a closing speed
+        // (capped by Max Closing Speed and by brake-to-rest to the parking distance), cutting on the MEASURED
+        // closing speed (relative frame -> gravity-robust; never a delivered-ΔV integral). Phase 2 hands off to
+        // the proven brake path: box checked -> hold retrograde and kill at the brake point; box unchecked ->
+        // hand back after the closing burn so the user brakes with Match Velocity. No per-tick regulation.
         private RendezvousCommand StepFinalApproach(IRendezvousWorld world, out bool stageComplete, bool autoPark)
         {
             stageComplete = false;
@@ -616,57 +620,41 @@ namespace Blackbird.Rendezvous
             Vector3d relPos = world.TargetPosition - world.ActivePosition;
             double distanceToTarget = relPos.magnitude;
             Vector3d relVel = world.ActiveVelocity - world.TargetVelocity;
-            double relSpeed = relVel.magnitude;
             Vector3d bearing = distanceToTarget > 1e-6 ? relPos / distanceToTarget : Vector3d.zero;
 
-            double parkedBand = ParkingDistance + ParkingDistanceBuffer;
-            if (distanceToTarget <= parkedBand)
+            // Phase 1: the single closing burn. Re-aims to also null lateral drift; stops once the measured
+            // closing speed reaches the commanded value, then latches — no deadband hold, so no pulsing.
+            if (!_faClosingDone)
             {
-                if (autoPark)
-                    return StepMatchVelocity(world, out stageComplete);   // box checked: null to rest at the band
+                double remainingDistance = Math.Max(0.0, distanceToTarget - ParkingDistance);
+                double brakeToRestSpeed = Math.Sqrt(
+                    2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared) * remainingDistance);
+                double commandedClosingSpeed = Math.Min(brakeToRestSpeed, RendezMaxApproachSpeedMetersPerSecond);
+                double closingSpeed = Vector3d.Dot(relVel, bearing);   // measured closing speed toward the target
 
-                stageComplete = true;
-                return Idle(string.Format(
-                    "final approach: reached {0:F0} m soft buffer ({1:F2} m/s) - handing back; use Match Velocity to brake",
-                    distanceToTarget, relSpeed));
+                // Burn until the measured closing speed matches the command — accelerating if too slow, braking
+                // if already closing faster than the cap. The gap also nulls lateral drift. One continuous burn.
+                if (Math.Abs(closingSpeed - commandedClosingSpeed) > MatchVelocityToleranceMetersPerSecond)
+                {
+                    Vector3d commandedVelocityGap = bearing * commandedClosingSpeed - relVel;
+                    double throttle = MathHelpers.Clamp(
+                        commandedVelocityGap.magnitude / RendezThrottleTaperMetersPerSecond, BurnMinThrottle, 1.0);
+                    return Burn(commandedVelocityGap, throttle, string.Format(
+                        "final approach: closing {0:F2}/{1:F2} m/s at {2:F0} m",
+                        closingSpeed, commandedClosingSpeed, distanceToTarget));
+                }
+
+                _faClosingDone = true;   // reached the closing speed: become the match-velocity from here
             }
 
-            return StepClose(out stageComplete, distanceToTarget, relVel, bearing);
-        }
+            // Phase 2: box checked -> hold retrograde and fire the kill burn at the brake point (proven path);
+            // box unchecked -> hand back after the closing burn.
+            if (autoPark)
+                return BrakeAtTerminalDistance(world, out stageComplete);
 
-        // Closing controller: command a closing speed toward the target (tapered to the parking distance and
-        // capped by the brake-to-rest limit v = sqrt(2·a·d) so it can always still stop), then burn to null the
-        // gap to the actual relative velocity (which also kills lateral drift). Shared by the brake and
-        // close-only paths; never completes on its own — the caller owns the "done" decision.
-        private RendezvousCommand StepClose(out bool stageComplete,
-            double distanceToTarget, Vector3d relVel, Vector3d bearing)
-        {
-            stageComplete = false;
-
-            double relSpeed = relVel.magnitude;
-            double remainingDistance = Math.Max(0.0, distanceToTarget - ParkingDistance);
-            double brakeToRestSpeed = Math.Sqrt(
-                2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared) * remainingDistance);
-            double commandedClosingSpeed = MathHelpers.Clamp(
-                Math.Min(remainingDistance * RendezDistanceApproachGain, brakeToRestSpeed),
-                0.0, RendezMaxApproachSpeedMetersPerSecond);
-
-            Vector3d desiredRelVel = bearing * commandedClosingSpeed;
-            Vector3d commandedVelocityGap = desiredRelVel - relVel;
-            double closingSpeedVelocityGap = commandedVelocityGap.magnitude;
-
-            // Within the deadband: hold heading at zero throttle, NOT Idle — Idle releases the actuation orient
-            // gate so the next correction re-orients (stop-start micro-burn). Deadband relaxes with range.
-            double velocityDeadband = MathHelpers.Clamp(distanceToTarget * RendezBurnDeadbandPerMeter,
-                RendezBurnDeadbandMetersPerSecond, RendezBurnDeadbandMaxMetersPerSecond);
-            if (closingSpeedVelocityGap <= velocityDeadband)
-                return Burn(bearing, 0.0,
-                    string.Format("final approach: holding at {0:F0} m ({1:F2} m/s)", distanceToTarget, relSpeed));
-
-            double throttle = MathHelpers.Clamp(closingSpeedVelocityGap / RendezThrottleTaperMetersPerSecond, BurnMinThrottle, 1.0);
-            double actualClosingSpeed = Math.Max(0.0, Vector3d.Dot(relVel, bearing));
-            return Burn(commandedVelocityGap, throttle, string.Format(
-                "final approach: {0:F0} m, closing {1:F2}/{2:F2} m/s", distanceToTarget, actualClosingSpeed, commandedClosingSpeed));
+            stageComplete = true;
+            return Idle(string.Format(
+                "final approach: closing burn done ({0:F2} m/s) - use Match Velocity to brake", relVel.magnitude));
         }
 
         // Conic intercept from the current measured state, with the target two-body-propagated. The arrival
@@ -775,6 +763,7 @@ namespace Blackbird.Rendezvous
             _matchMinRelSpeed = 0.0;
             _matchLastProgressUt = 0.0;
             _matchNullDir0 = Vector3d.zero;
+            _faClosingDone = false;
 
             burnCaWhenMeters = 0.0;
         }

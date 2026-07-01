@@ -16,15 +16,15 @@ namespace Blackbird.Modules
         private double _insertionAp = 0.0;
         public string InsertionAp
         {
-            get { return _insertionAp.ToString("F0"); }
-            set { if (double.TryParse(value, out double v)) _insertionAp = v; }
+            get { return (_insertionAp / 1000).ToString("F0"); }
+            set { if (double.TryParse(value, out double v)) _insertionAp = v * 1000; }
         }
 
         private double _insertionPe = 0.0;
         public string InsertionPe
         {
-            get { return _insertionPe.ToString("F0"); }
-            set { if (double.TryParse(value, out double v)) _insertionPe = v; }
+            get { return (_insertionPe / 1000).ToString("F0"); }
+            set { if (double.TryParse(value, out double v)) _insertionPe = v * 1000; }
         }
 
         private double _insertionHdg = 0.0;
@@ -187,8 +187,10 @@ namespace Blackbird.Modules
 
             LaunchCandidate c = launchPlan.Candidates[index];
 
-            InsertionAp = (c.InsertionApoapsisAlt / 1000).ToString("F2");
-            InsertionPe = (c.InsertionPeriapsisAlt / 1000).ToString("F2");
+            // plan gives it to us in meters, but input wants kilometers (which will then convert it back to km)
+            // redundant but
+            InsertionAp = (c.InsertionApoapsisAlt / 1000).ToString();
+            InsertionPe = (c.InsertionPeriapsisAlt / 1000).ToString();
             InsertionHdg = c.LaunchHeadingDeg.ToString("F1");
         }
 
