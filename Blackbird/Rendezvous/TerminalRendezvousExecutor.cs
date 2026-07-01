@@ -45,7 +45,7 @@ namespace Blackbird.Rendezvous
         // --- close-approach tuning ---
         public const double ParkingDistanceDefaultMeters = 10.0;
         public double ParkingDistance = ParkingDistanceDefaultMeters;   // "match velocities at X m" (UI)
-        public bool UseDistanceForMatchVelocities = true;
+        public bool UseDistanceForMatchVelocities = false;
         private double burnCaWhenMeters = 0.0;
         private const double ParkingDistanceBuffer = 5.0;          // slack added to the parking distance for the "in band" test
         // Final-approach closing speed = min(brake-to-rest to the parking distance, Max Closing Speed). The gain
@@ -740,7 +740,7 @@ namespace Blackbird.Rendezvous
             ClearBurnState();
             bbState.InterceptPhase = bbState.RendezvousMethod == RendezvousMethod.FinalApproach
                 ? InterceptPhase.Complete
-                : InterceptPhase.Coast;
+                : InterceptPhase.Idle;
             if (bbState.InterceptPhase == InterceptPhase.Complete) ReleaseModule();
         }
 
