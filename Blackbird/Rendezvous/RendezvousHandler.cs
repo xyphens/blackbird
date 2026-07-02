@@ -102,8 +102,6 @@ namespace Blackbird.Rendezvous
         // target). We surface it (red) rather than force-fire — igniting off-axis is worse than waiting.
         public bool SettleStalled { get; private set; }
         public string SettleStallReason { get; private set; }
-        private double _orientStartUt = double.NaN;   // when the current orient/settle attempt began (NaN = not trying)
-        private const double SettleStallWarnSeconds = 10.0;
 
         public void ToggleEngage(bool status)
         {
@@ -146,12 +144,6 @@ namespace Blackbird.Rendezvous
         **/
         public double WarpLeadInputSeconds { get; set; } = 30.0;
 
-        public double CloseApproachMaxSpeedMetersPerSecond
-        {
-            get { return _executor.FinalApproachSpeedLimitMetersPerSecond; }
-            set { _executor.FinalApproachSpeedLimitMetersPerSecond = value; }
-        }
-
         public bool KeepFaAxesLocked
         {
             get { return _executor.KeepFaAxesFrozen; }
@@ -160,7 +152,6 @@ namespace Blackbird.Rendezvous
 
         public void Abort() { _executor.Abort(); _attitude.Reset(); _settle.Reset(); ClearSettleStall(); StopWarp(); bbState.RendezvousEnabled = false; }
         public void ResetSequence() {
-            CloseApproachMaxSpeedMetersPerSecond = 0.0;
             ParkingDistanceEnabled = false;
             ParkingDistanceMeters = 0.0;
             _executor.Reset(); 
@@ -169,7 +160,7 @@ namespace Blackbird.Rendezvous
             ClearSettleStall(); 
             StopWarp();
         }
-        private void ClearSettleStall() { _orientStartUt = double.NaN; SettleStalled = false; SettleStallReason = null; }
+        private void ClearSettleStall() { SettleStalled = false; SettleStallReason = null; }
 
         // Stop cleanly after losing the control authority (e.g. Docking Assume Control) mid-stage: drop to
         // idle, release attitude/warp. ActiveModule is already owned by the new module, so it is not touched.
@@ -338,8 +329,7 @@ namespace Blackbird.Rendezvous
             // ActiveModule is the control authority: step + actuate only while we own it. Losing it mid-stage
             // (e.g. Docking Assume Control) stops us cleanly.
             bool owns = bbState.ActiveModule == BlackbirdModule.Rendezvous;
-            if (!owns && (bbState.InterceptPhase == InterceptPhase.Executing || bbState.InterceptPhase == InterceptPhase.Coast))
-                ReleaseControl();
+            if (!owns && bbState.InterceptPhase == InterceptPhase.Executing) ReleaseControl();
 
             // Preview needs a world too; build it when the panel is engaged (planning) or we own control.
             if (!_engaged && !owns) return;
@@ -381,6 +371,11 @@ namespace Blackbird.Rendezvous
                 if (vs != null && MathHelpers.IsFinite(vs.AvailableThrust) && vs.AvailableThrust > 0.0
                     && MathHelpers.IsFinite(vs.TotalMass) && vs.TotalMass > 0.0)
                     _executor.BrakingDecelMetersPerSecondSquared = vs.AvailableThrust / vs.TotalMass;
+
+                // worst-case time to flip vessel 180°
+                if (active?.ReferenceTransform != null)
+                    _executor.FlipSlewTimeSeconds = AttitudeControl.EstimateSlewTimeSeconds(
+                        active, -(Vector3d)active.ReferenceTransform.up, 0.0);
             }
 
 
@@ -586,28 +581,8 @@ namespace Blackbird.Rendezvous
                 // the user knows it's a craft-authority / thrusting-target problem, not a hang.
                 if (aligned)
                 {
-                    _orientStartUt = double.NaN;
                     SettleStalled = false;
                     SettleStallReason = null;
-                }
-                else
-                {
-                    if (double.IsNaN(_orientStartUt)) _orientStartUt = now;
-                    else if (now - _orientStartUt >= SettleStallWarnSeconds)
-                    {
-                        SettleStalled = true;
-                        SettleStallReason = errorDeg > BurnSettleGate.AlignStartDeg
-                            ? string.Format("can't point at burn vector: {0:F1}° off (need <{1:F0}°)",
-                                errorDeg, BurnSettleGate.AlignStartDeg)
-                            : pitchYawRateDegPerSec > BurnSettleGate.MaxStillRateDegPerSec
-                                ? string.Format("can't stabilize: {0:F1}°/s rotation (need <{1:F0}°/s)",
-                                    pitchYawRateDegPerSec, BurnSettleGate.MaxStillRateDegPerSec)
-                                : string.Format("still settling: {0:F2}°/s", pitchYawRateDegPerSec);
-                    }
-                }
-
-                if (aligned)
-                {
                     state.mainThrottle = Mathf.Clamp01((float)_command.Throttle);
                 }
                 else
@@ -616,6 +591,20 @@ namespace Blackbird.Rendezvous
                     // so orient-phase gravity isn't counted as delivered ΔV.
                     state.mainThrottle = 0.0f;
                     _executor.HoldBurnBaseline(TrajectoryProvider.GetVelocity(vessel), now);
+
+                    // Only a genuine can't-stabilize (pointed + plateaued but rate stuck above the ceiling) is a stall.
+                    // Slewing/settling are normal progress the gate resolves itself. Throttle-0 holds/coasts don't count.
+                    if (_command.Throttle > 0.0 && _settle.StalledPointed(now))
+                    {
+                        SettleStalled = true;
+                        SettleStallReason = string.Format("can't stabilize: {0:F1}°/s rotation (need <{1:F0}°/s)",
+                            pitchYawRateDegPerSec, BurnSettleGate.MaxStillRateDegPerSec);
+                    }
+                    else
+                    {
+                        SettleStalled = false;
+                        SettleStallReason = null;
+                    }
                 }
 
                 _burningLastApply = aligned;
@@ -632,7 +621,6 @@ namespace Blackbird.Rendezvous
             Orienting = false;
             Stabilizing = false;
             AlignmentErrorDeg = double.NaN;
-            _orientStartUt = double.NaN;
             SettleStalled = false;
             SettleStallReason = null;
             _settle.Reset();

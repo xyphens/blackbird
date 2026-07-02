@@ -44,7 +44,11 @@ namespace Blackbird.Rendezvous
             _aligned = false;
         }
 
-        // Advance one frame. now = monotonic seconds. Returns whether the burn may fire this frame.
+        // Pointed and the rate has plateaued, yet still can't arm
+        public bool StalledPointed(double now) => 
+            _tracking && !_aligned && now - _lastImproveUt >= BurnSettleGate.StabilizeDwellSeconds;
+
+        // Advance one frame. now = monotonic seconds. Returns whether the burn may fire this frame
         public bool Update(double errorDeg, double rateDegPerSec, double rateImproveDeadbandDegPerSec, double now)
         {
             if (_aligned)

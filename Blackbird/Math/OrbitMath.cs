@@ -777,6 +777,12 @@ namespace Blackbird.Mathematics
             return result;
         }
 
+        public bool IsBurnSafe(Vessel vessel, Vector3d burn)
+        {
+            // david todo: implement
+            return false;
+        }
+
         public static (double ap, double pe) GetTrueOrbit(Vessel vessel)
         {
             if (vessel == null || vessel.mainBody == null) return (double.NaN, double.NaN);

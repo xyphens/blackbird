@@ -349,7 +349,7 @@ namespace Blackbird.RendezvousHarness
             }
 
             AssertTrue("plan captured", planCaptured);
-            AssertTrue("burn completed -> coast", state.InterceptPhase == InterceptPhase.Coast);
+            AssertTrue("burn completed -> idle", state.InterceptPhase == InterceptPhase.Idle);
             AssertTrue("applied ΔV ~ planned", Math.Abs(appliedAlongPlan - plan.DeltaVMagnitude) < 2.0);
 
             // Closest approach from the post-burn state to the planned arrival.
@@ -361,9 +361,9 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("burn collapses CA vs coast", postCA < coastCA * 0.05);
             AssertTrue("post-burn CA small (<3 km)", postCA < 3000.0);
 
-            // Methods are independent now: intercept finishing drops to Coast with the method unchanged
+            // Methods are independent now: intercept finishing drops to Idle with the method unchanged
             // (no auto-advance). The user picks the next method explicitly (exercised in Case 13).
-            AssertTrue("intercept done -> coast", state.InterceptPhase == InterceptPhase.Coast);
+            AssertTrue("intercept done -> idle", state.InterceptPhase == InterceptPhase.Idle);
             AssertTrue("method stays intercept (no auto-advance)", state.RendezvousMethod == RendezvousMethod.Intercept);
 
             Console.WriteLine(string.Format(
@@ -853,7 +853,7 @@ namespace Blackbird.RendezvousHarness
                 sim.Advance(dt);
             }
 
-            AssertTrue("weak-thrust burn terminates", state.InterceptPhase == InterceptPhase.Coast);
+            AssertTrue("weak-thrust burn terminates", state.InterceptPhase == InterceptPhase.Idle);
             AssertTrue("terminated within tick budget", ticks < 500000);
             Console.WriteLine(string.Format("    terminated after {0} ticks ({1:F0}s sim)", ticks, ticks * dt));
         }
@@ -888,7 +888,7 @@ namespace Blackbird.RendezvousHarness
                 sim.Advance(dt);
             }
             AssertTrue("plan captured", planCaptured);
-            AssertTrue("intercept done -> coast", state.InterceptPhase == InterceptPhase.Coast);
+            AssertTrue("intercept done -> idle", state.InterceptPhase == InterceptPhase.Idle);
 
             // --- coast to the closest approach the intercept aimed at ---
             while (sim.UniversalTime < plan.ArrivalUt - dt) sim.Advance(dt);
@@ -907,8 +907,8 @@ namespace Blackbird.RendezvousHarness
             }
             double relAfter = (sim.ActiveVelocity - sim.TargetVelocity).magnitude;
 
-            AssertTrue("match completed -> coast",
-                state.InterceptPhase == InterceptPhase.Coast && state.RendezvousMethod == RendezvousMethod.MatchVelocity);
+            AssertTrue("match completed -> idle",
+                state.InterceptPhase == InterceptPhase.Idle && state.RendezvousMethod == RendezvousMethod.MatchVelocity);
             AssertTrue("relative velocity nulled (<0.3 m/s)", relAfter < 0.3);
             AssertTrue("match reduced relative speed", relAfter < relBefore);
 
@@ -952,7 +952,7 @@ namespace Blackbird.RendezvousHarness
             }
 
             AssertTrue("plan captured", captured);
-            AssertTrue("burn completed -> coast", state.InterceptPhase == InterceptPhase.Coast);
+            AssertTrue("burn completed -> idle", state.InterceptPhase == InterceptPhase.Idle);
 
             double remaining = Math.Max(plan.ArrivalUt - sim.UniversalTime, 1.0);
             double postCA = MinSeparation(
@@ -1023,7 +1023,7 @@ namespace Blackbird.RendezvousHarness
             Console.WriteLine("Case 15: close-approach parks at standoff and matches (stepping sim)");
 
             TerminalRendezvousExecutor ex = AdvanceToCloseStage(out SharedState state);
-            AssertTrue("ready after match (coast)", state.InterceptPhase == InterceptPhase.Coast);
+            AssertTrue("ready after match (idle)", state.InterceptPhase == InterceptPhase.Idle);
 
             double R = KerbinRadius + 200000.0;
             double vc = Math.Sqrt(KerbinMu / R);
@@ -1163,7 +1163,7 @@ namespace Blackbird.RendezvousHarness
             }
 
             double finalDelivered = Vector3d.Dot(w.ActiveVelocity - baseline, dvUnit);
-            AssertTrue("creep burn terminates", state.InterceptPhase == InterceptPhase.Coast);
+            AssertTrue("creep burn terminates", state.InterceptPhase == InterceptPhase.Idle);
             AssertTrue("terminated promptly (<2000 ticks)", ticks < 2000);
             AssertTrue("stalled below planned (not 'reached')", finalDelivered < planned - CutoffMargin);
 
@@ -1729,10 +1729,10 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("still executing before overshoot", state.InterceptPhase == InterceptPhase.Executing);
 
             // Overshoot: the burn pushed relVel past zero so it now points the OTHER way. The re-aim would flip
-            // ~180° — instead the stage must COMPLETE (drop to Coast) and issue no burn, not chase it back.
+            // ~180° — instead the stage must COMPLETE (drop to Idle) and issue no burn, not chase it back.
             world.ActiveVelocity = new Vector3d(0, -0.4, 0);   // relVel reversed (0.4 m/s the other way)
             RendezvousCommand after = exec.Update(world);
-            AssertTrue("completes on overshoot (-> Coast)", state.InterceptPhase == InterceptPhase.Coast);
+            AssertTrue("completes on overshoot (-> Idle)", state.InterceptPhase == InterceptPhase.Idle);
             AssertTrue("no second (flipped) burn", !after.HasBurn);
         }
 

@@ -13,6 +13,13 @@ namespace Blackbird.Modules
     public sealed class RendezvousComputer
     {
         private SharedState bbState;
+        private RendezvousHandler _handler;
+        private InterceptMethod _lastAlgorithm;
+
+        // Lazily-built red label style for warnings (e.g. a burn that can't settle to ignite).
+        private GUIStyle _warnStyle = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.yellow }, wordWrap = true };
+        private GUIStyle _errorStyle = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.red }, wordWrap = true };
+
         private static readonly int WindowId = "Blackbird.RendezvousComputer".GetHashCode();
         private Rect _windowRect = new Rect(950, 200, 360, 380);
 
@@ -20,19 +27,9 @@ namespace Blackbird.Modules
         // todo: remove - pointless warning (user can read dV)
         private const double HighDeltaVWarnMetersPerSecond = 300.0;
 
-        private RendezvousHandler _handler;
+        private string _faError;
 
         public bool _approachParamsSet = false;
-        
-        // Final Approach - speed limit
-        public bool SpeedLimitEnabled = false;
-        private double _maxVelocityMs = 0.0;
-        private string MaxVelocity
-        {
-            get { return _maxVelocityMs.ToString("F1"); }
-            set { if (double.TryParse(value, out double v)) _maxVelocityMs = v; }
-        }
-
 
         // Final Approach - lock axes
         public bool LockedAxes = false;
@@ -44,20 +41,15 @@ namespace Blackbird.Modules
             set { if (double.TryParse(value, out double v)) _warpLead = v; }
         }
 
-        // Close-approach "match velocities at X m" option (see ApplyCloseStandoff).
+        // tells executor if it should auto-MV when finished
         private bool ParkingDistanceEnabled;
-        private double _parkingDistance = 10.0;
-        private double DefaultParkingDistance = 10.0;
+        private double _parkingDistance = 100.0;
+        private double DefaultParkingDistance = 100.0;
         private string ParkingDistance
         {
             get { return _parkingDistance.ToString("F0"); }
             set { if (double.TryParse(value, out double v)) _parkingDistance = v; }
         }
-
-        private InterceptMethod _lastAlgorithm;
-
-        // Lazily-built red label style for warnings (e.g. a burn that can't settle to ignite).
-        private GUIStyle _warnStyle;
 
         public void Init(RendezvousHandler handler, SharedState s)
         {
@@ -137,8 +129,7 @@ namespace Blackbird.Modules
             }
 
             // Intercept plan preview (computed whenever idle/coast, before any method is chosen).
-            if (_handler.HasInterceptPlan
-                && (bbState.InterceptPhase == InterceptPhase.Idle || bbState.InterceptPhase == InterceptPhase.Coast))
+            if (_handler.HasInterceptPlan && bbState.InterceptPhase == InterceptPhase.Idle)
             {
                 
                 GUILayout.Label($"Plan: ΔV {bbState.InterceptSolution.DeltaVMagnitude:F1} m/s for {bbState.InterceptSolution.PredictedClosestApproach:F0} m encounter (arriving in {FormatTime(bbState.InterceptSolution.TimeOfFlight)})");
@@ -185,11 +176,17 @@ namespace Blackbird.Modules
                 // Burn can't ignite because the craft won't hold the vector: warn in red (no force-fire).
                 if (_handler.SettleStalled)
                 {
-                    if (_warnStyle == null)
-                        _warnStyle = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.red }, wordWrap = true };
                     GUILayout.Label($"Error: Burn stalled — {_handler.SettleStallReason}", _warnStyle);
                 }
             }
+
+            GUI.enabled = true;
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Warp lead (0=auto):", GUILayout.Width(160));
+            WarpLead = GUILayout.TextField(WarpLead, GUILayout.Width(60));
+            GUILayout.Label("s");
+            GUILayout.EndHorizontal();
 
             GUI.enabled = canExecute;
             if (GUILayout.Button("Execute: Intercept"))
@@ -249,33 +246,31 @@ namespace Blackbird.Modules
             // Close-approach park distance: when checked, close in to (and velocity-match at) the input
             // distance instead of the default ~100 m. Always editable so it can be set before executing.
             GUILayout.BeginHorizontal();
-            ParkingDistanceEnabled = GUILayout.Toggle(ParkingDistanceEnabled, " Park at distance:", GUILayout.Width(160));
+            GUILayout.Label("Park at distance:", GUILayout.Width(160));
             ParkingDistance = GUILayout.TextField(ParkingDistance, GUILayout.Width(60));
             GUILayout.Label("m");
-            GUILayout.EndHorizontal();
-
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Warp lead (0=auto):", GUILayout.Width(160));
-            WarpLead = GUILayout.TextField(WarpLead, GUILayout.Width(60));
-            GUILayout.Label("s");
             GUILayout.EndHorizontal();
 
             if (bbState.RendezvousMethod == RendezvousMethod.FinalApproach)
             {
                 // speed limit FA is allowed to use.  higher = farther it can reach
                 GUILayout.BeginHorizontal();
-                SpeedLimitEnabled = GUILayout.Toggle(SpeedLimitEnabled, " Max closing speed:", GUILayout.Width(160));
-                MaxVelocity = GUILayout.TextField(MaxVelocity, GUILayout.Width(60));
-                GUILayout.Label("m/s");
-                GUILayout.EndHorizontal();
-
+                ParkingDistanceEnabled = GUILayout.Toggle(ParkingDistanceEnabled, " Match velocities at CA", GUILayout.Width(200));
                 LockedAxes = GUILayout.Toggle(LockedAxes, " Keep axes frozen", GUILayout.Width(160));
+
+                if (_faError != null) GUILayout.Label(_faError, _errorStyle);   // reuse the red style at line 38
 
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button("Apply")) ApplyCloseApproachParams();
 
                 GUI.enabled = _approachParamsSet;
-                if (GUILayout.Button("Execute")) _handler.Execute();
+                if (GUILayout.Button("Execute"))
+                {
+                    if (MathHelpers.IsFinite(_handler.LiveClosestApproachMeters)
+                        && _handler.LiveClosestApproachMeters < _parkingDistance)
+                        _faError = "Closest approach is already inside the park distance — lower it or use Match Velocity.";
+                    else { _faError = null; _handler.Execute(); }
+                }
                 GUILayout.EndHorizontal();
             }
 
@@ -357,16 +352,6 @@ namespace Blackbird.Modules
                              + $"({_handler.AlignmentErrorDeg:F3}° remaining)...";
                     }
                     return _handler.HasCommand ? _handler.Command.Status : "Executing...";
-
-                case InterceptPhase.Coast:
-                    if (bbState.RendezvousMethod == RendezvousMethod.MatchVelocity)
-                        return "Intercept done. Coasting toward closest approach "
-                             + $"in {FormatTime(_handler.LiveTimeToClosestApproachSeconds)}. "
-                             + "Execute Match Velocity as you near it.";
-                    if (bbState.RendezvousMethod == RendezvousMethod.FinalApproach)
-                        return "Velocities matched.";
-                    return $"Stage done";
-
                 case InterceptPhase.Complete: return "completed";
                 case InterceptPhase.Aborted: return "aborted";
                 default: return string.Empty;
@@ -377,10 +362,6 @@ namespace Blackbird.Modules
         // good value. Raising the max speed turns a long-range crawl into a few large burns + coast + brake.
         private void ApplyCloseApproachParams()
         {
-            _handler.CloseApproachMaxSpeedMetersPerSecond = SpeedLimitEnabled && !double.IsNaN(_maxVelocityMs) && _maxVelocityMs > 0.0 // impossible to FA if _maxVelocityMs = 0
-                                                            ? _maxVelocityMs
-                                                            : 0.0;
-            
             _handler.WarpLeadInputSeconds = !double.IsNaN(_warpLead) && _warpLead >= 0.0 ? _warpLead : 0.0;
             _handler.KeepFaAxesLocked = LockedAxes;
             SetParkingDistance();
@@ -390,7 +371,7 @@ namespace Blackbird.Modules
         private void SetParkingDistance()
         {
             _handler.ParkingDistanceEnabled = ParkingDistanceEnabled;
-            _handler.ParkingDistanceMeters = ParkingDistanceEnabled && !double.IsNaN(_parkingDistance) && _parkingDistance >= 0.0
+            _handler.ParkingDistanceMeters = !double.IsNaN(_parkingDistance) && _parkingDistance >= 0.0
                                 ? _parkingDistance
                                 : DefaultParkingDistance;
         }

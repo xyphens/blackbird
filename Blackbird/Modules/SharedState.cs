@@ -49,7 +49,7 @@ namespace Blackbird.Modules
 
     // status
     // important: was RendezvousPhase
-    public enum InterceptPhase { Idle, Executing, Coast, Complete, Aborted };
+    public enum InterceptPhase { Idle, Executing, Complete, Aborted };
     // DOCKING
     public enum DockingMethod { Automatic, Manual };
     public enum DockingControlMode { Off, Manual, Guidance }

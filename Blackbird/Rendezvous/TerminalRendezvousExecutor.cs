@@ -43,15 +43,15 @@ namespace Blackbird.Rendezvous
         private const double MatchStallSpeedFloor = 1.0;                   // ...and is already near nulled
 
         // --- final approach tuning ---
-        public double ParkingDistanceMeters = 10.0; // we will ALWAYS stop by at least this distance if MV is used
+        public double ParkingDistanceMeters = 100.0; // we will ALWAYS stop by at least this distance if MV is used
         public bool ParkingDistanceEnabled = false; // used to determine a) if E: MV should wait or b) if E: FA should flip + MV;  NOTE: does not determine if we use ParkingDistanceMeters or not, just whether we flip
         private double burnMvAtDistance = 0.0;
         // Final-approach closing speed = min(brake-to-rest to the parking distance, Max Closing Speed)
         //public const double RendezDistanceApproachGainDefault = 0.2;
-        public double FinalApproachSpeedLimitMetersPerSecond = 0.0; // FA burn dV is limited to achieve this R. Vel. if value is > 0
         private const double RendezThrottleTaperMetersPerSecond = 3.0;   // closing-burn throttle taper band
         // Brake point = ParkingDistance + decel-to-stop = D + v²/2a. Decel is vessel-specific (thrust/mass); updated every tick of the burn
         public double BrakingDecelMetersPerSecondSquared = 5.0;
+        public double FlipSlewTimeSeconds = 0.0; // 180° flip time (retrograde reorientation), fed each tick by the handler like the decel
         public bool KeepFaAxesFrozen = false; // false = track target while burning, true = pick one estimated axis and hold it over burn
 
         // frozen-axis final approach
@@ -144,7 +144,7 @@ namespace Blackbird.Rendezvous
         // Start the current stage's loop. Valid from Idle (first stage) or Coast (the queued next stage).
         public bool Execute()
         {
-            if (bbState.InterceptPhase != InterceptPhase.Idle && bbState.InterceptPhase != InterceptPhase.Coast) return false;
+            if (bbState.InterceptPhase != InterceptPhase.Idle) return false;
             bbState.InterceptPhase = InterceptPhase.Executing;
             bbState.ActiveModule = BlackbirdModule.Rendezvous;
             burnMvAtDistance = 0.0;
@@ -371,9 +371,6 @@ namespace Blackbird.Rendezvous
                     cmd.Phase = bbState.InterceptPhase;
                     cmd.Method = bbState.RendezvousMethod;
                     return cmd;
-
-                case InterceptPhase.Coast:
-                    return Idle("coasting — Execute " + bbState.RendezvousMethod);   // still owns control between stages
                 case InterceptPhase.Complete:
                     ReleaseModule();
                     return Idle("rendezvous complete — control handed back");
@@ -615,6 +612,14 @@ namespace Blackbird.Rendezvous
                 burnMvAtDistance, relPos.magnitude, closingSpeed));
         }
 
+        private double SafeClosingSpeed(double distanceToTarget)
+        {
+            double a = Math.Max(0.01, BrakingDecelMetersPerSecondSquared);
+            double gap = Math.Max(0.0, distanceToTarget - ParkingDistanceMeters);
+            double tSlew = Math.Max(0.0, FlipSlewTimeSeconds);
+            return a * (-tSlew + Math.Sqrt(tSlew * tSlew + 2.0 * gap / a));
+        }
+
         private RendezvousCommand StepFinalApproach(IRendezvousWorld world, out bool stageComplete, bool autoPark)
         {
             stageComplete = false;
@@ -627,12 +632,9 @@ namespace Blackbird.Rendezvous
                 Vector3d bearing = relPos.magnitude > 1e-6 ? relPos / relPos.magnitude : Vector3d.zero;
 
                 double remainingDistance = Math.Max(0.0, relPos.magnitude - ParkingDistanceMeters);
-                double brakeToRestSpeed = Math.Sqrt(
-                                            2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared) * remainingDistance);
+                //double brakeToRestSpeed = Math.Sqrt(2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared) * remainingDistance);
 
-                double commandedClosingSpeed = FinalApproachSpeedLimitMetersPerSecond > 0
-                                                ? Math.Min(FinalApproachSpeedLimitMetersPerSecond, brakeToRestSpeed)
-                                                : brakeToRestSpeed;
+                double commandedClosingSpeed = SafeClosingSpeed(relPos.magnitude);
 
                 Vector3d dVBudget = bearing * commandedClosingSpeed - relVel; // cost of burn
                 
