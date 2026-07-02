@@ -74,10 +74,6 @@ namespace Blackbird.Rendezvous
         private bool _warpingToCa;                              // CA warp (re-targeted live) vs Hohmann ignition warp
         public bool Warping { get; private set; }
 
-        // User floor (seconds) on the warp-stop lead, 0 = auto. The auto lead is slew + half the match burn so
-        // the craft can orient and the null straddles the closest approach; this only ever raises it.
-        public double WarpLeadInputSeconds { get; set; } = 30.0;
-
         //public RendezvousPhase Phase => _executor.Phase;
         //public RendezvousStage Stage => _executor.Stage;
         public bool HasInterceptPlan => _executor.HasInterceptPlan; // todo: replace with sharedstate
@@ -133,38 +129,46 @@ namespace Blackbird.Rendezvous
             return executing;
         }
 
-        // Close-approach park distance ("match velocities at X m"); the default is restored when the UI
-        // option is off so a one-off custom value doesn't persist into the next approach.
+        // custom stop distance
         public double ParkingDistanceMeters
         {
-            get { return _executor.ParkingDistance; }
-            set { _executor.ParkingDistance = value; }
+            get { return _executor.ParkingDistanceMeters; }
+            set { _executor.ParkingDistanceMeters = value; }
         }
-        public bool AutoMatchVelocityDistance
+        public bool ParkingDistanceEnabled
         {
-            get { return _executor.UseDistanceForMatchVelocities; }
-            set { _executor.UseDistanceForMatchVelocities = value;  }
+            get { return _executor.ParkingDistanceEnabled; }
+            set { _executor.ParkingDistanceEnabled = value; }
         }
-        public const double CloseStandoffDefaultMeters = TerminalRendezvousExecutor.ParkingDistanceDefaultMeters;
 
-        // Close-approach closing-speed tuning (UI-settable): raise the max speed to close a long-range gap as a
-        // few large burns instead of a slow capped crawl. Gain = closing speed per metre of range.
-        public double CloseApproachGain
-        {
-            get { return _executor.RendezDistanceApproachGain; }
-            set { _executor.RendezDistanceApproachGain = value; }
-        }
+        /**
+         *  >>> USER INPUTS <<<
+        **/
+        public double WarpLeadInputSeconds { get; set; } = 30.0;
+
         public double CloseApproachMaxSpeedMetersPerSecond
         {
-            get { return _executor.RendezMaxApproachSpeedMetersPerSecond; }
-            set { _executor.RendezMaxApproachSpeedMetersPerSecond = value; }
+            get { return _executor.FinalApproachSpeedLimitMetersPerSecond; }
+            set { _executor.FinalApproachSpeedLimitMetersPerSecond = value; }
         }
 
-        // Invalidate the cached plan preview so it recomputes once (planner switched / manual refresh).
-        public const double CloseApproachGainDefault = TerminalRendezvousExecutor.RendezDistanceApproachGainDefault;
-        public const double CloseApproachMaxSpeedDefault = TerminalRendezvousExecutor.RendezMaxApproachSpeedDefaultMetersPerSecond;
+        public bool KeepFaAxesLocked
+        {
+            get { return _executor.KeepFaAxesFrozen; }
+            set { _executor.KeepFaAxesFrozen = value; }
+        }
+
         public void Abort() { _executor.Abort(); _attitude.Reset(); _settle.Reset(); ClearSettleStall(); StopWarp(); bbState.RendezvousEnabled = false; }
-        public void ResetSequence() { _executor.Reset(); _attitude.Reset(); _settle.Reset(); ClearSettleStall(); StopWarp(); }
+        public void ResetSequence() {
+            CloseApproachMaxSpeedMetersPerSecond = 0.0;
+            ParkingDistanceEnabled = false;
+            ParkingDistanceMeters = 0.0;
+            _executor.Reset(); 
+            _attitude.Reset(); 
+            _settle.Reset(); 
+            ClearSettleStall(); 
+            StopWarp();
+        }
         private void ClearSettleStall() { _orientStartUt = double.NaN; SettleStalled = false; SettleStallReason = null; }
 
         // Stop cleanly after losing the control authority (e.g. Docking Assume Control) mid-stage: drop to

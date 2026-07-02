@@ -52,6 +52,7 @@ namespace Blackbird.RendezvousHarness
             CheckMatchVelocityAtDistanceHoldsWhileFinalApproachChases();
             CheckMatchVelocityAtDistanceBrakesAtTrigger();
             CheckFinalApproachIsTwoDiscreteBurnsNoPulsing();
+            CheckFinalApproachFrozenAxisHoldsConstantDirection();
             CheckMatchVelocityReaimsEachTick();
             CheckMatchVelocityStopsOnOvershootNoSecondBurn();
             CheckThrustEnvelope();
@@ -867,7 +868,7 @@ namespace Blackbird.RendezvousHarness
 
             SimWorld sim = MakeCatchupSim(250000.0, 15.0);
             TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
-            ex.UseDistanceForMatchVelocities = false;   // test the immediate null-relVel match (not distance-gated braking)
+            ex.ParkingDistanceEnabled = false;   // test the immediate null-relVel match (not distance-gated braking)
 
             const double maxAccel = 50.0;   // near-impulsive engine so both burns finish quickly
             double dt = 0.02;
@@ -1034,7 +1035,9 @@ namespace Blackbird.RendezvousHarness
             double rangeBefore = (sim.TargetPosition - sim.ActivePosition).magnitude;
 
             // Park at 100 m for this test (independent of the default), so the standoff-band asserts are meaningful.
-            ex.ParkingDistance = 100.0;
+            // Cap the closing speed at 5 m/s (no speed limit => brake-to-rest, ~84 m/s here); keeps this a gentle-park test.
+            ex.ParkingDistanceMeters = 100.0;
+            ex.FinalApproachSpeedLimitMetersPerSecond = 5.0;
 
             AssertTrue("execute close", ex.ForceExecute(RendezvousMethod.FinalApproach));
             const double maxAccel = 20.0;
@@ -1102,7 +1105,7 @@ namespace Blackbird.RendezvousHarness
 
             // Immediate null-relVel match to reach the close stage; restore the default afterwards so the
             // caller's close-approach run still uses the distance-gated behavior.
-            ex.UseDistanceForMatchVelocities = false;
+            ex.ParkingDistanceEnabled = false;
             ex.ForceExecute(RendezvousMethod.MatchVelocity);
             ticks = 0;
             while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 500000)
@@ -1113,7 +1116,7 @@ namespace Blackbird.RendezvousHarness
                     sim.ApplyDeltaV(cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt));
                 sim.Advance(dt);
             }
-            ex.UseDistanceForMatchVelocities = true;
+            ex.ParkingDistanceEnabled = true;
 
             return ex;
         }
@@ -1397,7 +1400,7 @@ namespace Blackbird.RendezvousHarness
             // Match Velocity + "at X" checked: far from the brake point -> HOLD retrograde, zero throttle, and
             // crucially NOT toward the target (CA fed in band; MV must ignore it, not chase).
             TerminalRendezvousExecutor mv = NewExecutor(out _);
-            mv.UseDistanceForMatchVelocities = true;
+            mv.ParkingDistanceEnabled = true;
             mv.BrakingDecelMetersPerSecondSquared = 5.0;
             mv.ForceExecute(RendezvousMethod.MatchVelocity);
             RendezvousCommand hold = mv.Update(world, 50.0, 60.0);
@@ -1406,7 +1409,7 @@ namespace Blackbird.RendezvousHarness
 
             // Final Approach (box unchecked): same geometry must actively control the approach (nonzero throttle).
             TerminalRendezvousExecutor fa = NewExecutor(out _);
-            fa.UseDistanceForMatchVelocities = false;
+            fa.ParkingDistanceEnabled = false;
             fa.BrakingDecelMetersPerSecondSquared = 5.0;
             fa.ForceExecute(RendezvousMethod.FinalApproach);
             RendezvousCommand chase = fa.Update(world, 50.0, 60.0);
@@ -1432,8 +1435,8 @@ namespace Blackbird.RendezvousHarness
                 TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(30.0, 100.0, 0)
             };
             TerminalRendezvousExecutor hold = NewExecutor(out _);
-            hold.UseDistanceForMatchVelocities = true;
-            hold.ParkingDistance = 100.0;
+            hold.ParkingDistanceEnabled = true;
+            hold.ParkingDistanceMeters = 100.0;
             hold.BrakingDecelMetersPerSecondSquared = 5.0;
             hold.ForceExecute(RendezvousMethod.MatchVelocity);
             hold.Update(far, 900.0, 30.0);                               // tick 1: set the brake point
@@ -1450,8 +1453,8 @@ namespace Blackbird.RendezvousHarness
                 TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(30.0, 100.0, 0)
             };
             TerminalRendezvousExecutor mv = NewExecutor(out _);
-            mv.UseDistanceForMatchVelocities = true;
-            mv.ParkingDistance = 100.0;
+            mv.ParkingDistanceEnabled = true;
+            mv.ParkingDistanceMeters = 100.0;
             mv.BrakingDecelMetersPerSecondSquared = 5.0;
             mv.ForceExecute(RendezvousMethod.MatchVelocity);
             mv.Update(near, 80.0, 6.0);                            // tick 1: set the brake point, hold
@@ -1468,7 +1471,7 @@ namespace Blackbird.RendezvousHarness
                 TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(2.0, 100.0, 0)
             };
             TerminalRendezvousExecutor hav = NewExecutor(out _);
-            hav.UseDistanceForMatchVelocities = true;
+            hav.ParkingDistanceEnabled = true;
             hav.ForceExecute(RendezvousMethod.MatchVelocity);
             RendezvousCommand burn = hav.Update(haven, 8.0, 60.0);
             AssertTrue("fires inside the parking band", burn.Throttle > 0.0);
@@ -1544,13 +1547,14 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("docking aligns to the port", plan.Align);
         }
 
-        // Case 21: Final Approach is a discrete TWO-burn sequence (close, then kill) — not a per-tick regulator.
-        // The old controller toggled the throttle in and out of a range-scaled deadband every frame, so it read
-        // "holding" while the engine kept pulsing. Here we count burn EPISODES (contiguous throttle>0 runs) over
-        // a full run and require exactly two, with a genuine zero-throttle coast between them, ending parked.
+        // Case 21: Final Approach (TRACKING mode, KeepFaAxesFrozen=false) is a discrete TWO-burn sequence (close,
+        // then kill) — not a per-tick regulator. The old controller toggled the throttle in and out of a range-scaled
+        // deadband every frame, so it read "holding" while the engine kept pulsing. Here we count burn EPISODES
+        // (contiguous throttle>0 runs) over a full run and require exactly two, with a genuine zero-throttle coast
+        // between them, ending parked.
         private static void CheckFinalApproachIsTwoDiscreteBurnsNoPulsing()
         {
-            Console.WriteLine("Case 21: final approach = two discrete burns (close, kill), zero-throttle hold between");
+            Console.WriteLine("Case 21: final approach [tracking] = two discrete burns (close, kill), zero-throttle hold between");
 
             // Straight-line relative sim (gravity-free; valid at this range) integrated by the test: chaser 500 m
             // behind the target on +X, initially co-moving (relVel 0). Park at 50 m; ample thrust and decel.
@@ -1562,9 +1566,9 @@ namespace Blackbird.RendezvousHarness
             };
 
             TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
-            ex.UseDistanceForMatchVelocities = true;   // box checked -> auto-park with the kill burn
-            ex.ParkingDistance = 50.0;
-            ex.RendezMaxApproachSpeedMetersPerSecond = 5.0;
+            ex.ParkingDistanceEnabled = true;   // box checked -> auto-park with the kill burn
+            ex.ParkingDistanceMeters = 50.0;
+            ex.FinalApproachSpeedLimitMetersPerSecond = 5.0;
             ex.BrakingDecelMetersPerSecondSquared = 5.0;
             ex.ForceExecute(RendezvousMethod.FinalApproach);
 
@@ -1601,6 +1605,78 @@ namespace Blackbird.RendezvousHarness
                 "    episodes={0}  range->{1:F1} m  relSpeed->{2:F3} m/s  ticks={3}", episodes, rangeAfter, relAfter, ticks));
         }
 
+        // Case 21b: Final Approach in FROZEN mode (KeepFaAxesFrozen=true) commits the closing-burn axis at ignition
+        // and HOLDS it — no per-tick re-aim, so the commanded direction is constant through the whole close (this is
+        // what kills the overspeed-flip / spin). A lateral relVel makes the frozen axis genuinely off-bearing, so a
+        // constant direction is a non-trivial property. Still ends as two discrete burns, parked and matched.
+        private static void CheckFinalApproachFrozenAxisHoldsConstantDirection()
+        {
+            Console.WriteLine("Case 21b: final approach [frozen] holds one axis through the close (no re-aim)");
+
+            // Chaser 500 m behind on +X, with a 3 m/s lateral (in +Z) relative drift so the frozen axis is off-bearing.
+            StaticWorld world = new StaticWorld
+            {
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                TargetPosition = new Vector3d(500.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(0, 100.0, 3.0)
+            };
+
+            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
+            ex.KeepFaAxesFrozen = true;                 // frozen-axis mode
+            ex.ParkingDistanceEnabled = true;           // box checked -> auto-park with the kill burn
+            ex.ParkingDistanceMeters = 50.0;
+            ex.FinalApproachSpeedLimitMetersPerSecond = 5.0;
+            ex.BrakingDecelMetersPerSecondSquared = 5.0;
+            ex.ForceExecute(RendezvousMethod.FinalApproach);
+
+            const double maxAccel = 10.0;
+            const double dt = 0.05;
+            int episodes = 0;
+            bool burningPrev = false;
+            int ticks = 0;
+            bool haveFrozenDir = false;
+            Vector3d frozenDir0 = Vector3d.zero;
+            double maxFrozenDirDrift = 0.0;   // worst 1 - dot(dir, dir0) over all frozen-phase burn ticks
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 1000000)
+            {
+                RendezvousCommand cmd = ex.Update(world);
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
+
+                bool burningNow = cmd.HasBurn && cmd.Throttle > 0.0;
+                if (burningNow && !burningPrev) episodes++;
+                burningPrev = burningNow;
+
+                // Track the commanded direction only during the frozen closing burn (Phase 1, "[frozen]" status).
+                if (burningNow && cmd.Status != null && cmd.Status.Contains("frozen"))
+                {
+                    Vector3d dir = cmd.ThrustDirection.normalized;
+                    if (!haveFrozenDir) { frozenDir0 = dir; haveFrozenDir = true; }
+                    else maxFrozenDirDrift = Math.Max(maxFrozenDirDrift, 1.0 - Vector3d.Dot(dir, frozenDir0));
+                }
+
+                if (burningNow)
+                    world.ActiveVelocity += cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt);
+
+                world.ActivePosition += world.ActiveVelocity * dt;   // integrate straight-line relative motion
+                world.TargetPosition += world.TargetVelocity * dt;
+            }
+
+            double rangeAfter = (world.TargetPosition - world.ActivePosition).magnitude;
+            double relAfter = (world.ActiveVelocity - world.TargetVelocity).magnitude;
+
+            AssertTrue("final approach completes", state.InterceptPhase == InterceptPhase.Complete);
+            AssertTrue("saw a frozen closing burn", haveFrozenDir);
+            AssertTrue("frozen axis held constant (<0.1 deg drift)", maxFrozenDirDrift < 1e-6);
+            AssertTrue("frozen axis is off-bearing (lateral component)", Math.Abs(frozenDir0.z) > 0.01);
+            AssertTrue("exactly two burn episodes (close + kill)", episodes == 2);
+            AssertTrue("parked near the standoff (45-70 m)", rangeAfter >= 45.0 && rangeAfter <= 70.0);
+            AssertTrue("matched at standoff (<0.6 m/s)", relAfter < 0.6);
+
+            Console.WriteLine(string.Format(
+                "    episodes={0}  frozenDirDrift={1:E1}  range->{2:F1} m  relSpeed->{3:F3} m/s  ticks={4}",
+                episodes, maxFrozenDirDrift, rangeAfter, relAfter, ticks));
+        }
+
         // Case 22: immediate match velocity (distance gating off) steers opposite the CURRENT relative velocity
         // every tick, so the commanded thrust direction tracks relVel as it changes. (The earlier direction-LOCK
         // when slow was removed; StepMatchVelocity re-aims each tick now.)
@@ -1616,7 +1692,7 @@ namespace Blackbird.RendezvousHarness
             };
 
             TerminalRendezvousExecutor exec = NewExecutor(out _);
-            exec.UseDistanceForMatchVelocities = false;   // immediate null, not distance-gated braking
+            exec.ParkingDistanceEnabled = false;   // immediate null, not distance-gated braking
             exec.ForceExecute(RendezvousMethod.MatchVelocity);
 
             // Thrust opposes relVel: (0,2,0) -> (0,-1,0).
@@ -1644,7 +1720,7 @@ namespace Blackbird.RendezvousHarness
             };
 
             TerminalRendezvousExecutor exec = NewExecutor(out SharedState state);
-            exec.UseDistanceForMatchVelocities = false;
+            exec.ParkingDistanceEnabled = false;
             exec.ForceExecute(RendezvousMethod.MatchVelocity);
 
             // Ignition captures the null axis (0,-1,0) and burns (0.5 m/s > the 0.15 completion tolerance).

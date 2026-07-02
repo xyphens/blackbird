@@ -17,21 +17,42 @@ namespace Blackbird.Modules
         private Rect _windowRect = new Rect(950, 200, 360, 380);
 
         // Above this, a single-rev intercept is almost certainly the wrong tool (too far / wrong phase).
+        // todo: remove - pointless warning (user can read dV)
         private const double HighDeltaVWarnMetersPerSecond = 300.0;
 
         private RendezvousHandler _handler;
 
+        public bool _approachParamsSet = false;
+        
+        // Final Approach - speed limit
+        public bool SpeedLimitEnabled = false;
+        private double _maxVelocityMs = 0.0;
+        private string MaxVelocity
+        {
+            get { return _maxVelocityMs.ToString("F1"); }
+            set { if (double.TryParse(value, out double v)) _maxVelocityMs = v; }
+        }
+
+
+        // Final Approach - lock axes
+        public bool LockedAxes = false;
+
+        private double _warpLead = 30.0;
+        private string WarpLead
+        {
+            get { return _warpLead.ToString("F0"); }
+            set { if (double.TryParse(value, out double v)) _warpLead = v; }
+        }
+
         // Close-approach "match velocities at X m" option (see ApplyCloseStandoff).
-        private bool _matchAtEnabled;
-        private string _matchAtMetersText = "100";
-
-        // Close-approach closing-speed tuning (applied live; see ApplyCloseApproachParams). Raise the max
-        // speed to close a long-range gap as a few large burns instead of a slow capped crawl.
-        private string _closeGainText = "0.2";
-        private string _closeMaxSpeedText = "5";
-
-        // Extra warp-stop lead (seconds) before the closest approach; floors the auto (slew + half the burn).
-        private string _warpLeadText = "30";
+        private bool ParkingDistanceEnabled;
+        private double _parkingDistance = 10.0;
+        private double DefaultParkingDistance = 10.0;
+        private string ParkingDistance
+        {
+            get { return _parkingDistance.ToString("F0"); }
+            set { if (double.TryParse(value, out double v)) _parkingDistance = v; }
+        }
 
         private InterceptMethod _lastAlgorithm;
 
@@ -153,7 +174,6 @@ namespace Blackbird.Modules
 
             GUILayout.Space(8);
             
-
             // --- action buttons: any stage can be executed when rendezvous can hold control and isn't mid-burn ---
             bool canExecute = bbState.CanClaimControl(BlackbirdModule.Rendezvous)
                               && bbState.InterceptPhase != InterceptPhase.Executing
@@ -199,8 +219,7 @@ namespace Blackbird.Modules
 
                 GUI.enabled = (bbState.InterceptPhase != InterceptPhase.Executing || _handler.CoastingToIgnition)
                               && dtToIgnition > 10.0;
-                if (GUILayout.Button($"Warp to transfer ignition ({FormatTime(dtToIgnition)})"))
-                    _handler.WarpToIgnition(ignitionUt);
+                if (GUILayout.Button($"Warp to transfer ignition ({FormatTime(dtToIgnition)})")) _handler.WarpToIgnition(ignitionUt);
                 GUI.enabled = true;
             }
             else
@@ -216,48 +235,64 @@ namespace Blackbird.Modules
             if (GUILayout.Button("Execute: Match Velocity"))
             {
                 bbState.RendezvousMethod = RendezvousMethod.MatchVelocity;
-                ApplyCloseStandoff();
+                SetParkingDistance();
                 _handler.Execute(RendezvousMethod.MatchVelocity);
             }
 
-            if (GUILayout.Button("Execute: Final Approach"))
-            {
-                bbState.RendezvousMethod = RendezvousMethod.FinalApproach;
-                ApplyCloseStandoff();
-                _handler.Execute();
-            }
+            // ---- FINAL APPROACH ----
+            GUI.enabled = canExecute && bbState.RendezvousMethod != RendezvousMethod.FinalApproach;
+
+            if (GUILayout.Button("Final Approach")) bbState.RendezvousMethod = RendezvousMethod.FinalApproach;
 
             GUI.enabled = true;
 
             // Close-approach park distance: when checked, close in to (and velocity-match at) the input
             // distance instead of the default ~100 m. Always editable so it can be set before executing.
             GUILayout.BeginHorizontal();
-            _matchAtEnabled = GUILayout.Toggle(_matchAtEnabled, " Match velocities at:", GUILayout.Width(160));
-            _matchAtMetersText = GUILayout.TextField(_matchAtMetersText, GUILayout.Width(60));
+            ParkingDistanceEnabled = GUILayout.Toggle(ParkingDistanceEnabled, " Park at distance:", GUILayout.Width(160));
+            ParkingDistance = GUILayout.TextField(ParkingDistance, GUILayout.Width(60));
             GUILayout.Label("m");
             GUILayout.EndHorizontal();
 
-            // Close-approach closing-speed levers. Max speed is the big one for long-range gaps: raise it so
-            // the stage accelerates, coasts, then auto-brakes instead of crawling at the cap. Applied live.
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Close gain (speed/m):", GUILayout.Width(160));
-            _closeGainText = GUILayout.TextField(_closeGainText, GUILayout.Width(60));
-            GUILayout.EndHorizontal();
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Max closing speed:", GUILayout.Width(160));
-            _closeMaxSpeedText = GUILayout.TextField(_closeMaxSpeedText, GUILayout.Width(60));
-            GUILayout.Label("m/s");
-            GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
             GUILayout.Label("Warp lead (0=auto):", GUILayout.Width(160));
-            _warpLeadText = GUILayout.TextField(_warpLeadText, GUILayout.Width(60));
+            WarpLead = GUILayout.TextField(WarpLead, GUILayout.Width(60));
             GUILayout.Label("s");
             GUILayout.EndHorizontal();
-            ApplyCloseApproachParams();
+
+            if (bbState.RendezvousMethod == RendezvousMethod.FinalApproach)
+            {
+                // speed limit FA is allowed to use.  higher = farther it can reach
+                GUILayout.BeginHorizontal();
+                SpeedLimitEnabled = GUILayout.Toggle(SpeedLimitEnabled, " Max closing speed:", GUILayout.Width(160));
+                MaxVelocity = GUILayout.TextField(MaxVelocity, GUILayout.Width(60));
+                GUILayout.Label("m/s");
+                GUILayout.EndHorizontal();
+
+                LockedAxes = GUILayout.Toggle(LockedAxes, " Keep axes frozen", GUILayout.Width(160));
+
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Apply")) ApplyCloseApproachParams();
+
+                GUI.enabled = _approachParamsSet;
+                if (GUILayout.Button("Execute")) _handler.Execute();
+                GUILayout.EndHorizontal();
+            }
+
+            GUI.enabled = true;
 
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Abort")) _handler.Abort();
-            if (GUILayout.Button("Reset")) _handler.ResetSequence();
+            if (GUILayout.Button("Reset"))
+            {
+                _approachParamsSet = false;
+
+                // reset parking distance
+                _parkingDistance = DefaultParkingDistance;
+                ParkingDistance = DefaultParkingDistance.ToString("F0");
+                ParkingDistanceEnabled = false;
+                _handler.ResetSequence();
+            }
             GUILayout.EndHorizontal();
 
             GUI.DragWindow();
@@ -280,8 +315,7 @@ namespace Blackbird.Modules
             GUILayout.EndHorizontal();
 
             double now = Planetarium.GetUniversalTime();
-            bool canChoose = bbState.InterceptPhase != InterceptPhase.Executing
-                             && bbState.InterceptPhase != InterceptPhase.Aborted;
+            bool canChoose = bbState.InterceptPhase != InterceptPhase.Executing && bbState.InterceptPhase != InterceptPhase.Aborted;
 
             for (int i = 0; i < candidates.Count; i++)
             {
@@ -339,36 +373,26 @@ namespace Blackbird.Modules
             }
         }
 
-        // Apply the "match velocities at X m" option to the executor before a close-approach run: when
-        // enabled with a valid positive number, park/match at that distance; otherwise restore the default.
-        private void ApplyCloseStandoff()
-        {
-            double meters;
-
-            if (_matchAtEnabled
-                && double.TryParse(_matchAtMetersText, out meters)
-                && !double.IsNaN(meters) && meters > 0.0)
-            {
-                _handler.ParkingDistanceMeters = meters;
-                _handler.AutoMatchVelocityDistance = true;
-            }
-            else
-            {
-                _handler.ParkingDistanceMeters = RendezvousHandler.CloseStandoffDefaultMeters;
-                _handler.AutoMatchVelocityDistance = false;
-            }
-        }
-
         // Apply the close-approach closing-speed levers live (each draw). Invalid/empty text keeps the last
         // good value. Raising the max speed turns a long-range crawl into a few large burns + coast + brake.
         private void ApplyCloseApproachParams()
         {
-            if (double.TryParse(_closeGainText, out double gain) && !double.IsNaN(gain) && gain > 0.0)
-                _handler.CloseApproachGain = gain;
-            if (double.TryParse(_closeMaxSpeedText, out double maxSpeed) && !double.IsNaN(maxSpeed) && maxSpeed > 0.0)
-                _handler.CloseApproachMaxSpeedMetersPerSecond = maxSpeed;
-            if (double.TryParse(_warpLeadText, out double warpLead) && !double.IsNaN(warpLead) && warpLead >= 0.0)
-                _handler.WarpLeadInputSeconds = warpLead;
+            _handler.CloseApproachMaxSpeedMetersPerSecond = SpeedLimitEnabled && !double.IsNaN(_maxVelocityMs) && _maxVelocityMs > 0.0 // impossible to FA if _maxVelocityMs = 0
+                                                            ? _maxVelocityMs
+                                                            : 0.0;
+            
+            _handler.WarpLeadInputSeconds = !double.IsNaN(_warpLead) && _warpLead >= 0.0 ? _warpLead : 0.0;
+            _handler.KeepFaAxesLocked = LockedAxes;
+            SetParkingDistance();
+            _approachParamsSet = true;
+        }
+
+        private void SetParkingDistance()
+        {
+            _handler.ParkingDistanceEnabled = ParkingDistanceEnabled;
+            _handler.ParkingDistanceMeters = ParkingDistanceEnabled && !double.IsNaN(_parkingDistance) && _parkingDistance >= 0.0
+                                ? _parkingDistance
+                                : DefaultParkingDistance;
         }
 
         private static string StageName(RendezvousMethod stage)
