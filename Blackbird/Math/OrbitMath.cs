@@ -115,7 +115,6 @@ namespace Blackbird.Mathematics
             return v2 > 0.0 ? Math.Sqrt(v2) : double.NaN;
         }
 
-        
         public static double GetSemiMajorAxis(CelestialBody body, double apoapsisAlt, double periapsisAlt)
         {
             if (body == null) return double.NaN;
@@ -453,6 +452,16 @@ namespace Blackbird.Mathematics
             return mtx * vector;
         }
 
+        public static double PeriapsisRadius(Vector3d r, Vector3d v, double mu)
+        {
+            double rMag = r.magnitude;
+            double energy = 0.5 * v.sqrMagnitude - mu / rMag;
+            double hMag = Vector3d.Cross(r, v).magnitude;
+            double a = -mu / (2.0 * energy);
+            double e = Math.Sqrt(Math.Max(0.0, 1.0 + 2.0 * energy * hMag * hMag / (mu * mu)));
+            return a * (1.0 - e);   // valid for ellipse and hyperbola (a<0, e>1 → still positive Pe)
+        }
+
         public static (double ut, double distance) NextClosestApproach(Orbit vessel, Orbit target)
         {
             double ut = Planetarium.GetUniversalTime();
@@ -601,7 +610,6 @@ namespace Blackbird.Mathematics
             double mu = vessel.orbit.referenceBody.gravParameter;
             return DeltaVForHohmannTransferCandidates(ut, r1, v1, r2, v2, mu, maxCount, coplanar);
         }
-
 
         private static List<(Vector3d dv1, double ut1, Vector3d dv2, double ut2, double total)> CollectHohmannWindows(
             double ut, Vector3d _r1, Vector3d _v1, Vector3d _r2, Vector3d _v2, double mu, bool coplanar)

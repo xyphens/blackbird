@@ -133,6 +133,15 @@ namespace Blackbird.Rendezvous
             get { return _executor.ParkingDistanceMeters; }
             set { _executor.ParkingDistanceMeters = value; }
         }
+        public bool FinalApproachWouldDeorbit()
+        {
+            Vessel active = FlightGlobals.ActiveVessel;
+            if (active == null || Target == null) return false;
+
+            VesselRendezvousWorld world = new VesselRendezvousWorld(active, Target);
+            return TerminalRendezvousExecutor.WouldDeorbit(world, _executor.FinalApproachClosingDeltaV(world));
+        }
+
         public bool ParkingDistanceEnabled
         {
             get { return _executor.ParkingDistanceEnabled; }

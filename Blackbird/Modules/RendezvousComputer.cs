@@ -3,7 +3,9 @@ using Blackbird.Guidance;
 using Blackbird.Mathematics;
 using Blackbird.Rendezvous;
 using System;
+using System.CodeDom.Compiler;
 using UnityEngine;
+using static UnityEngine.GraphicsBuffer;
 
 namespace Blackbird.Modules
 {
@@ -27,6 +29,8 @@ namespace Blackbird.Modules
         private const double HighDeltaVWarnMetersPerSecond = 300.0;
 
         private string _faError;
+
+        private bool _faWillDeorbit = false;
 
         public bool _approachParamsSet = false;
 
@@ -257,13 +261,22 @@ namespace Blackbird.Modules
 
             if (bbState.RendezvousMethod == RendezvousMethod.FinalApproach)
             {
+                // advisory only for now
+                if (_faWillDeorbit) GUILayout.Label("Warning: this closing burn would drop you below a safe orbit", _warnStyle);
+
+                if (GUILayout.Button("Execute")) { _faError = null; _handler.Execute(); }   // no hard block — user's call
+
                 LockedAxes = GUILayout.Toggle(LockedAxes, " Keep axes frozen", GUILayout.Width(160));
 
                 // show errors/warnings
                 if (_faError != null) GUILayout.Label(_faError, _errorStyle);   // reuse the red style at line 38
 
                 GUILayout.BeginHorizontal();
-                if (GUILayout.Button("Apply")) ApplyCloseApproachParams();
+                if (GUILayout.Button("Apply"))
+                {
+                    ApplyCloseApproachParams();
+                    _faWillDeorbit = _handler.FinalApproachWouldDeorbit();
+                }
 
                 GUI.enabled = _approachParamsSet;
                 if (GUILayout.Button("Execute"))

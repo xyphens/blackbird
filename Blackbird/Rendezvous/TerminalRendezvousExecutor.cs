@@ -624,6 +624,21 @@ namespace Blackbird.Rendezvous
             return 0.5 * a * (-tSlew + Math.Sqrt(tSlew * tSlew + 4.0 * distanceGap / a));
         }
 
+        public static bool WouldDeorbit(IRendezvousWorld world, Vector3d deltaV)
+        {
+            double periapsis = OrbitMath.PeriapsisRadius(world.ActivePosition, world.ActiveVelocity + deltaV, world.Mu);
+            return periapsis < world.BodyRadius + Math.Max(0.0, world.AtmosphereDepth);
+        }
+
+        public Vector3d FinalApproachClosingDeltaV(IRendezvousWorld world)
+        {
+            Vector3d relPos = world.TargetPosition - world.ActivePosition;
+            Vector3d relVel = world.ActiveVelocity - world.TargetVelocity;
+            Vector3d bearing = relPos.magnitude > 1e-6 ? relPos / relPos.magnitude : Vector3d.zero;
+            double vc = SafeClosingSpeed(Math.Max(0.0, relPos.magnitude - ParkingDistanceMeters));
+            return bearing * vc - relVel;   // the one closing burn
+        }
+
         private RendezvousCommand StepFinalApproach(IRendezvousWorld world, out bool stageComplete, bool autoPark)
         {
             stageComplete = false;
