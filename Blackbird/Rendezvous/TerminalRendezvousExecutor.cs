@@ -39,7 +39,7 @@ namespace Blackbird.Rendezvous
 
         // --- match-velocity tuning ---
         private const double MatchVelocityToleranceMetersPerSecond = 0.15; // nulled within this
-        private const double MatchTaperBandMetersPerSecond = 3.0;
+        private const double MatchThrottleLimitMetersPerSecond = 3.0;      // prevents us from firing at full throtle at/above this m/s
         private const double MatchStallSeconds = 2.0;                      // cut if rel speed stops dropping...
         private const double MatchStallSpeedFloor = 1.0;                   // ...and is already near nulled
 
@@ -54,7 +54,7 @@ namespace Blackbird.Rendezvous
         public double BrakingDecelMetersPerSecondSquared = 5.0;
         public double FlipSlewTimeSeconds = 0.0; // 180° flip time (retrograde reorientation), fed each tick by the handler like the decel
         public bool KeepFaAxesFrozen = false; // false = track target while burning, true = pick one estimated axis and hold it over burn
-
+        private bool _mvTerminalBraking = false;
         // frozen-axis final approach
         private bool _frozenApproachArmed = false;
         private Vector3d _faDvUnit;
@@ -123,6 +123,7 @@ namespace Blackbird.Rendezvous
             HasInterceptPlan = false;
             _burnArmed = false;
             _matchArmed = false;
+            _mvTerminalBraking = false;
             burnMvAtDistance = 0.0;
             BrakingDecelMetersPerSecondSquared = 5.0;
             HaveHohmannTransfer = false;
@@ -567,8 +568,7 @@ namespace Blackbird.Rendezvous
 
             // Once near the null, if the re-aim would flip past 90° from where we started, we've overshot the
             // match — stop and accept it rather than turn around and chase a second burn (which added speed).
-            bool overshotFlip = relSpeed <= MatchStallSpeedFloor
-                                && Vector3d.Dot(nullDir, _matchNullDir0) < 0.0;
+            bool overshotFlip = relSpeed <= MatchStallSpeedFloor && Vector3d.Dot(nullDir, _matchNullDir0) < 0.0;
 
             if (relSpeed <= MatchVelocityToleranceMetersPerSecond // velocity already matched
                 || overshotFlip                                    // overshot the null: don't chase a second burn
@@ -580,7 +580,8 @@ namespace Blackbird.Rendezvous
             }
 
             // steer + burn in the vel null direction (closed-loop: re-aimed each tick)
-            double throttle = MathHelpers.Clamp(relSpeed / MatchTaperBandMetersPerSecond, BurnMinThrottle, 1.0);
+            // david: this just prevents us from burning full-throttle if m/s < 3
+            double throttle = MathHelpers.Clamp(relSpeed / MatchThrottleLimitMetersPerSecond, BurnMinThrottle, 1.0);
             return Burn(nullDir, throttle, string.Format("match velocity {0:F2} m/s remaining", relSpeed));
         }
 
@@ -589,38 +590,38 @@ namespace Blackbird.Rendezvous
         private RendezvousCommand BrakeAtTerminalDistance(IRendezvousWorld world, out bool stageComplete)
         {
             stageComplete = false;
+            Vector3d relPos = world.TargetPosition - world.ActivePosition;
+            Vector3d relVel = world.ActiveVelocity - world.TargetVelocity;
+            Vector3d bearing = relPos.magnitude > 1e-6 ? relPos / relPos.magnitude : Vector3d.zero;
 
-            Vector3d relPos = world.TargetPosition - world.ActivePosition;   // chaser -> target
-            Vector3d relVel = world.ActiveVelocity - world.TargetVelocity;   // chaser relative to target
-            Vector3d bearing = relPos.magnitude > 1e-6 
-                                ? relPos / relPos.magnitude
-                                : Vector3d.zero;
+            if (!_mvTerminalBraking)
+            {
+                // where do I need to be to have room to kill velocity and stop by the park distance?
+                double closingSpeed = Math.Max(0.0, Vector3d.Dot(relVel, bearing));
+                burnMvAtDistance = ParkingDistanceMeters
+                    + closingSpeed * closingSpeed / (2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared));
 
-            // target is already at or within our desired park distance, burn now
-            if (relPos.magnitude <= Math.Max(ParkingDistanceMeters, burnMvAtDistance)) return StepMatchVelocity(world, out stageComplete);
+                if (relPos.magnitude > Math.Max(ParkingDistanceMeters, burnMvAtDistance))
+                {
+                    // not there yet: hold retrograde and wait
+                    Vector3d holdDir = relVel.sqrMagnitude > 1e-12 ? (-relVel).normalized : bearing;
+                    return Burn(holdDir, 0.0, string.Format(
+                        "match velocity: holding, brake at {0:F0} m ({1:F0} m, {2:F2} m/s closing)",
+                        burnMvAtDistance, relPos.magnitude, closingSpeed));
+                }
 
-            // target is outside of park distance, determine what distance we need to burn at so it stops by ParkingDistanceMeters
-            double closingSpeed = Math.Max(0.0, Vector3d.Dot(relVel, bearing));
-            double stoppingDistance = closingSpeed * closingSpeed / (2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared));
-            burnMvAtDistance = ParkingDistanceMeters + stoppingDistance;
+                _mvTerminalBraking = true;   // reached the mark — from here it's just "kill velocity now"
+            }
 
-            if (relPos.magnitude <= burnMvAtDistance) return StepMatchVelocity(world, out stageComplete);
-
-            // not ready to execute, just throw us in the correct direction
-            Vector3d holdDir = relVel.sqrMagnitude > 1e-12 ? (-relVel).normalized : bearing;
-            return Burn(holdDir, 0.0, string.Format(
-                "match velocity: holding, brake at {0:F0} m ({1:F0} m, {2:F2} m/s closing)",
-                burnMvAtDistance, relPos.magnitude, closingSpeed));
+            return StepMatchVelocity(world, out stageComplete);   // committed: full null to completion, no re-gating
         }
 
         private double SafeClosingSpeed(double distanceGap)
         {
             double a = Math.Max(0.01, BrakingDecelMetersPerSecondSquared);
             double tSlew = Math.Max(0.0, FlipSlewTimeSeconds);
-            //return a * (-tSlew + Math.Sqrt(tSlew * tSlew + 2.0 * distanceGap / a));
-            double closingSpeed = 0.5 * a * (-tSlew + Math.Sqrt(tSlew * tSlew + 4.0 * distanceGap / a));
-            Debug.Log($"[SafeClosingSpeed] decel: {a} slew: {tSlew} closing speed: {closingSpeed}");
-            return closingSpeed;
+            // david todo: may need a lower speed when testing in RSS
+            return 0.5 * a * (-tSlew + Math.Sqrt(tSlew * tSlew + 4.0 * distanceGap / a));
         }
 
         private RendezvousCommand StepFinalApproach(IRendezvousWorld world, out bool stageComplete, bool autoPark)
@@ -798,6 +799,7 @@ namespace Blackbird.Rendezvous
             _lastProgressUt = 0.0;
 
             _matchArmed = false;
+            _mvTerminalBraking = false;
             _matchMinRelSpeed = 0.0;
             _matchLastProgressUt = 0.0;
             _matchNullDir0 = Vector3d.zero;
