@@ -306,7 +306,7 @@ namespace Blackbird.Guidance
 
             return QuaternionD.LookRotation(vessel.north, surfaceUp);
         }
-        private static Vector3d EstimateTorqueAvailable(Vessel vessel)
+        private static Vector3d EstimateTorqueAvailable(Vessel vessel, bool includeGimbal = true)
         {
             Vector3d torque = Vector3d.zero;
 
@@ -340,6 +340,7 @@ namespace Blackbird.Guidance
 
                     if (module is ModuleGimbal gimbal)
                     {
+                        if (!includeGimbal) continue;
                         gimbal.GetPotentialTorque(
                             out Vector3 positive,
                             out Vector3 negative);
@@ -379,7 +380,9 @@ namespace Blackbird.Guidance
         public static double EstimateSlewTimeSeconds(
             Vessel vessel,
             Vector3d targetWorldDirection,
-            double paddingSeconds)
+            double paddingSeconds,
+            bool includeGimbal = true
+            )
         {
             if (vessel == null || vessel.ReferenceTransform == null) return paddingSeconds;
 
@@ -391,7 +394,7 @@ namespace Blackbird.Guidance
             double angleRad = Math.Acos(dot);
             if (angleRad <= 1e-3) return paddingSeconds;
 
-            Vector3d torque = EstimateTorqueAvailable(vessel);
+            Vector3d torque = EstimateTorqueAvailable(vessel, includeGimbal);
             Vector3d moi = vessel.MOI;
             double alphaPitch = SafeAlpha(torque.x, moi.x);   // pitch axis
             double alphaYaw = SafeAlpha(torque.z, moi.z);     // yaw axis

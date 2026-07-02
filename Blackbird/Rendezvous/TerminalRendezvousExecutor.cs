@@ -2,6 +2,7 @@ using Blackbird.Mathematics;
 using Blackbird.Modules;
 using System;
 using System.Collections.Generic;
+using UnityEngine;
 
 namespace Blackbird.Rendezvous
 {
@@ -612,12 +613,14 @@ namespace Blackbird.Rendezvous
                 burnMvAtDistance, relPos.magnitude, closingSpeed));
         }
 
-        private double SafeClosingSpeed(double distanceToTarget)
+        private double SafeClosingSpeed(double distanceGap)
         {
             double a = Math.Max(0.01, BrakingDecelMetersPerSecondSquared);
-            double gap = Math.Max(0.0, distanceToTarget - ParkingDistanceMeters);
             double tSlew = Math.Max(0.0, FlipSlewTimeSeconds);
-            return a * (-tSlew + Math.Sqrt(tSlew * tSlew + 2.0 * gap / a));
+            //return a * (-tSlew + Math.Sqrt(tSlew * tSlew + 2.0 * distanceGap / a));
+            double closingSpeed = 0.5 * a * (-tSlew + Math.Sqrt(tSlew * tSlew + 4.0 * distanceGap / a));
+            Debug.Log($"[SafeClosingSpeed] decel: {a} slew: {tSlew} closing speed: {closingSpeed}");
+            return closingSpeed;
         }
 
         private RendezvousCommand StepFinalApproach(IRendezvousWorld world, out bool stageComplete, bool autoPark)
@@ -631,10 +634,12 @@ namespace Blackbird.Rendezvous
             {
                 Vector3d bearing = relPos.magnitude > 1e-6 ? relPos / relPos.magnitude : Vector3d.zero;
 
+                // current distance - park at
                 double remainingDistance = Math.Max(0.0, relPos.magnitude - ParkingDistanceMeters);
                 //double brakeToRestSpeed = Math.Sqrt(2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared) * remainingDistance);
 
-                double commandedClosingSpeed = SafeClosingSpeed(relPos.magnitude);
+                // might want to freeze this if axis is locked
+                double commandedClosingSpeed = SafeClosingSpeed(remainingDistance);
 
                 Vector3d dVBudget = bearing * commandedClosingSpeed - relVel; // cost of burn
                 

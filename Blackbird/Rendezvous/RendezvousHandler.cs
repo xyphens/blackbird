@@ -375,7 +375,7 @@ namespace Blackbird.Rendezvous
                 // worst-case time to flip vessel 180°
                 if (active?.ReferenceTransform != null)
                     _executor.FlipSlewTimeSeconds = AttitudeControl.EstimateSlewTimeSeconds(
-                        active, -(Vector3d)active.ReferenceTransform.up, 0.0);
+                        active, -(Vector3d)active.ReferenceTransform.up, 0.0, false);
             }
 
 
