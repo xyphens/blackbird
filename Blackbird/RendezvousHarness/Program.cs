@@ -1035,9 +1035,10 @@ namespace Blackbird.RendezvousHarness
             double rangeBefore = (sim.TargetPosition - sim.ActivePosition).magnitude;
 
             // Park at 100 m for this test (independent of the default), so the standoff-band asserts are meaningful.
-            // Cap the closing speed at 5 m/s (no speed limit => brake-to-rest, ~84 m/s here); keeps this a gentle-park test.
+            // A 10 s flip time makes SafeClosingSpeed reserve coast/brake margin (well below raw brake-to-rest).
             ex.ParkingDistanceMeters = 100.0;
-            ex.FinalApproachSpeedLimitMetersPerSecond = 5.0;
+            ex.FlipSlewTimeSeconds = 10.0;
+            ex.BrakingDecelMetersPerSecondSquared = 20.0;   // match the sim's applied brake accel (maxAccel)
 
             AssertTrue("execute close", ex.ForceExecute(RendezvousMethod.FinalApproach));
             const double maxAccel = 20.0;
@@ -1568,8 +1569,8 @@ namespace Blackbird.RendezvousHarness
             TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
             ex.ParkingDistanceEnabled = true;   // box checked -> auto-park with the kill burn
             ex.ParkingDistanceMeters = 50.0;
-            ex.FinalApproachSpeedLimitMetersPerSecond = 5.0;
-            ex.BrakingDecelMetersPerSecondSquared = 5.0;
+            ex.FlipSlewTimeSeconds = 10.0;
+            ex.BrakingDecelMetersPerSecondSquared = 10.0;   // match the sim's applied brake accel (maxAccel)
             ex.ForceExecute(RendezvousMethod.FinalApproach);
 
             const double maxAccel = 10.0;
@@ -1625,8 +1626,8 @@ namespace Blackbird.RendezvousHarness
             ex.KeepFaAxesFrozen = true;                 // frozen-axis mode
             ex.ParkingDistanceEnabled = true;           // box checked -> auto-park with the kill burn
             ex.ParkingDistanceMeters = 50.0;
-            ex.FinalApproachSpeedLimitMetersPerSecond = 5.0;
-            ex.BrakingDecelMetersPerSecondSquared = 5.0;
+            ex.FlipSlewTimeSeconds = 10.0;
+            ex.BrakingDecelMetersPerSecondSquared = 10.0;   // match the sim's applied brake accel (maxAccel)
             ex.ForceExecute(RendezvousMethod.FinalApproach);
 
             const double maxAccel = 10.0;

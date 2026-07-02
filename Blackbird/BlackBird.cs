@@ -109,6 +109,7 @@ namespace Blackbird
                 _windowRect,
                 DrawMainMenu,
                 "BlackBird");
+
             _planner.Draw();
             _guidanceComputer.Draw();
             _rendezvousComputer.Draw();

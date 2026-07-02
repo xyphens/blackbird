@@ -17,8 +17,7 @@ namespace Blackbird.Modules
         private InterceptMethod _lastAlgorithm;
 
         // Lazily-built red label style for warnings (e.g. a burn that can't settle to ignite).
-        private GUIStyle _warnStyle = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.yellow }, wordWrap = true };
-        private GUIStyle _errorStyle = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.red }, wordWrap = true };
+        private GUIStyle _warnStyle, _errorStyle;
 
         private static readonly int WindowId = "Blackbird.RendezvousComputer".GetHashCode();
         private Rect _windowRect = new Rect(950, 200, 360, 380);
@@ -66,6 +65,9 @@ namespace Blackbird.Modules
                 return;
             }
 
+            if (_warnStyle == null) _warnStyle = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.yellow }, wordWrap = true };
+            if (_errorStyle == null) _errorStyle = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.red }, wordWrap = true };
+
             // Engaged (preview + monitor) while the window is open with a target; control authority is separate.
             _handler.ToggleEngage(_handler.Target != null);
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Rendezvous Computer");
@@ -73,7 +75,6 @@ namespace Blackbird.Modules
 
         private void DrawContents(int _)
         {
-
             if (GUI.Button(new Rect(_windowRect.width - 22, 2, 18, 18), " ")) bbState.RendezvousVisible = false;
 
             if (FlightGlobals.ActiveVessel == null) return;
@@ -251,13 +252,14 @@ namespace Blackbird.Modules
             GUILayout.Label("m");
             GUILayout.EndHorizontal();
 
+            // enabled = FA will run MV when done; MV will wait for parking distance
+            ParkingDistanceEnabled = GUILayout.Toggle(ParkingDistanceEnabled, " Match velocities at CA", GUILayout.Width(200));
+
             if (bbState.RendezvousMethod == RendezvousMethod.FinalApproach)
             {
-                // speed limit FA is allowed to use.  higher = farther it can reach
-                GUILayout.BeginHorizontal();
-                ParkingDistanceEnabled = GUILayout.Toggle(ParkingDistanceEnabled, " Match velocities at CA", GUILayout.Width(200));
                 LockedAxes = GUILayout.Toggle(LockedAxes, " Keep axes frozen", GUILayout.Width(160));
 
+                // show errors/warnings
                 if (_faError != null) GUILayout.Label(_faError, _errorStyle);   // reuse the red style at line 38
 
                 GUILayout.BeginHorizontal();
@@ -286,6 +288,7 @@ namespace Blackbird.Modules
                 _parkingDistance = DefaultParkingDistance;
                 ParkingDistance = DefaultParkingDistance.ToString("F0");
                 ParkingDistanceEnabled = false;
+                _faError = null;
                 _handler.ResetSequence();
             }
             GUILayout.EndHorizontal();
