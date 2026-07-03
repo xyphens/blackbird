@@ -159,8 +159,19 @@ namespace Blackbird.Rendezvous
             set { _executor.KeepFaAxesFrozen = value; }
         }
 
-        public void Abort() { _executor.Abort(); _attitude.Reset(); _settle.Reset(); ClearSettleStall(); StopWarp(); bbState.RendezvousEnabled = false; }
-        public void ResetSequence() {
+        // dufixme: abort and resetmaneuver are basically identical
+        public void Abort() { 
+            _executor.Abort(); 
+            _attitude.Reset(); 
+            _settle.Reset(); 
+            ClearSettleStall(); 
+            StopWarp(); 
+            bbState.RendezvousEnabled = false; 
+        }
+
+        // dufixme: abort and resetmaneuver are basically identical
+        public void ResetManeuver() {
+            // dufixme: why are these being reset?  
             ParkingDistanceEnabled = false;
             ParkingDistanceMeters = 0.0;
             _executor.Reset(); 
@@ -171,8 +182,7 @@ namespace Blackbird.Rendezvous
         }
         private void ClearSettleStall() { SettleStalled = false; SettleStallReason = null; }
 
-        // Stop cleanly after losing the control authority (e.g. Docking Assume Control) mid-stage: drop to
-        // idle, release attitude/warp. ActiveModule is already owned by the new module, so it is not touched.
+        // dufixme: this also basically does the same as Abort and ResetManeuver
         private void ReleaseControl()
         {
             _executor.Reset();
@@ -448,8 +458,7 @@ namespace Blackbird.Rendezvous
         // executor's HasInterceptPlan stays true). Execute then fires the chosen window.
         public void SelectInterceptCandidate(int index)
         {
-            if (bbState?.InterceptCandidates == null
-                || index < 0 || index >= bbState.InterceptCandidates.Count) return;
+            if (bbState?.InterceptCandidates == null || index < 0 || index >= bbState.InterceptCandidates.Count) return;
 
             bbState.SelectedInterceptCandidateIndex = index;
             bbState.InterceptSolution = bbState.InterceptCandidates[index];

@@ -140,7 +140,7 @@ namespace Blackbird.Modules
             // Reset Orientation: roll/point the craft to a known attitude ("real up") so the craft-local
             // translation buttons become predictable. Latches until aligned; click again to cancel.
             GUI.enabled = manualEnabled;
-            if (GUILayout.Button(_handler.ResettingOrientation ? "Resetting orientation…" : "Reset Orientation"))
+            if (GUILayout.Button(_handler.ResettingOrientation ? "Resetting orientation..." : "Reset Orientation"))
                 _handler.ResetOrientation();
             GUI.enabled = true;
 

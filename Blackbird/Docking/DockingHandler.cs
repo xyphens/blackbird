@@ -185,15 +185,18 @@ namespace Blackbird.Docking
                 return;
             }
 
-            // Attitude: a one-shot "Reset Orientation" (point at the port + roll to "real up" so the craft's
-            // local translation frame is predictable) takes priority and auto-clears once aligned; otherwise
-            // optionally keep the nose on the port. Roll 0 = dorsal to the surface-up reference.
+            // orient the craft vs target or closest reference body 
+            // fuck
             if (_resetOrientation)
             {
-                Vector3d facing = HasTarget ? PointAtTargetDirection() : (Vector3d)vessel.ReferenceTransform.up;
+                // Vector3d facing = HasTarget ? PointAtTargetDirection() : (Vector3d)vessel.ReferenceTransform.up;
+                // use the closest main body as "up" if no target
+                Vector3d facing = HasTarget ? PointAtTargetDirection() : PointAtWorldDirection();
+
                 if (facing.sqrMagnitude > 0.0)
                 {
-                    _attitude.DriveInertial(vessel, state, facing, 0.0);
+                    // claude claims the "90.0" will only work if used near equator, otherwise i need to do some kind of vector transform
+                    _attitude.DriveInertial(vessel, state, facing, 90.0);
                     if (OrientationAligned(vessel, facing)) _resetOrientation = false;
                 }
                 else _resetOrientation = false;
@@ -201,7 +204,7 @@ namespace Blackbird.Docking
             else if (KeepPointed && HasTarget)
             {
                 Vector3d facing = PointAtTargetDirection();
-                if (facing.sqrMagnitude > 0.0) _attitude.DriveInertial(vessel, state, facing, 0.0);
+                if (facing.sqrMagnitude > 0.0) _attitude.DriveInertial(vessel, state, facing, 90.0);
             }
 
             if (!ManualInputFresh()) return;   // no buttons held -> release (don't burn RCS idling)
@@ -248,6 +251,14 @@ namespace Blackbird.Docking
             Transform tt = _targetObject.GetTransform();
             if (tt == null) return Vector3d.zero;
             Vector3d los = (Vector3d)tt.position - (Vector3d)_vessel.ReferenceTransform.position;
+            return los.sqrMagnitude > 1e-9 ? los.normalized : Vector3d.zero;
+        }
+
+        private Vector3d PointAtWorldDirection()
+        {
+            if (_vessel == null || _vessel.mainBody == null) return Vector3d.zero;
+            if (_vessel.mainBody.transform == null) return Vector3d.zero;
+            Vector3d los = (Vector3d)_vessel.mainBody.transform.position - (Vector3d)_vessel.ReferenceTransform.position;
             return los.sqrMagnitude > 1e-9 ? los.normalized : Vector3d.zero;
         }
 

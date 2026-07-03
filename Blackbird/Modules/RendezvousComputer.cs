@@ -87,7 +87,7 @@ namespace Blackbird.Modules
             {
                 string strTarget = _handler?.Target?.name ?? "no target";
 
-                GUILayout.Label($"Rendezvous computer unavailable (target: {strTarget}, altitude: {FormatDistance(FlightGlobals.ActiveVessel.altitude)} m / {FormatDistance(FlightGlobals.currentMainBody.atmosphereDepth)} m)");
+                GUILayout.Label($"Rendezvous computer unavailable (target: {strTarget}, altitude: {FormatDistance(FlightGlobals.ActiveVessel.altitude)} / {FormatDistance(FlightGlobals.currentMainBody.atmosphereDepth)})");
                 GUI.DragWindow();
                 return;
             }
@@ -151,7 +151,7 @@ namespace Blackbird.Modules
             // clear prior plan and calc the targeted plan type
             if (bbState.InterceptMethod != _lastAlgorithm)
             {
-                _handler.ResetSequence();
+                _handler.ResetManeuver();
                 _lastAlgorithm = bbState.InterceptMethod;
                 _handler.GenerateNewInterceptPlan(FlightGlobals.ActiveVessel, _handler.Target, bbState.InterceptMethod);
             }
@@ -264,8 +264,6 @@ namespace Blackbird.Modules
                 // advisory only for now
                 if (_faWillDeorbit) GUILayout.Label("Warning: this closing burn would drop you below a safe orbit", _warnStyle);
 
-                if (GUILayout.Button("Execute")) { _faError = null; _handler.Execute(); }   // no hard block — user's call
-
                 LockedAxes = GUILayout.Toggle(LockedAxes, " Keep axes frozen", GUILayout.Width(160));
 
                 // show errors/warnings
@@ -281,13 +279,18 @@ namespace Blackbird.Modules
                 GUI.enabled = _approachParamsSet;
                 if (GUILayout.Button("Execute"))
                 {
-                    if (MathHelpers.IsFinite(_handler.LiveClosestApproachMeters)
-                        && _handler.LiveClosestApproachMeters < _parkingDistance)
+                    if (MathHelpers.IsFinite(_handler.LiveClosestApproachMeters) && _handler.LiveClosestApproachMeters < _parkingDistance)
+                    {
                         _faError = "Closest approach is already inside the park distance — lower it or use Match Velocity.";
-                    else { _faError = null; _handler.Execute(); }
+                    } else { 
+                        _faError = null; 
+                        _handler.Execute(); 
+                    }
                 }
                 GUILayout.EndHorizontal();
             }
+
+            GUILayout.Space(10);
 
             GUI.enabled = true;
 
@@ -302,7 +305,8 @@ namespace Blackbird.Modules
                 ParkingDistance = DefaultParkingDistance.ToString("F0");
                 ParkingDistanceEnabled = false;
                 _faError = null;
-                _handler.ResetSequence();
+                _faWillDeorbit = false;
+                _handler.ResetManeuver();
             }
             GUILayout.EndHorizontal();
 
@@ -341,8 +345,7 @@ namespace Blackbird.Modules
 
                 bool isSelected = bbState.SelectedInterceptCandidateIndex == i;
                 GUI.enabled = canChoose && !isSelected;
-                if (GUILayout.Button(isSelected ? "Active" : "Choose", GUILayout.Width(60)))
-                    _handler.SelectInterceptCandidate(i);
+                if (GUILayout.Button(isSelected ? "Active" : "Choose", GUILayout.Width(60))) _handler.SelectInterceptCandidate(i);
                 GUI.enabled = true;
                 GUILayout.EndHorizontal();
             }
@@ -351,7 +354,9 @@ namespace Blackbird.Modules
         // The one line that tells the user what is happening and what to do next.
         private string GetInstruction()
         {
-            if (!bbState.RendezvousEnabled) return "inactive";
+            if (!bbState.RendezvousEnabled) {
+                _faWillDeorbit = false;
+            }
 
             switch (bbState.InterceptPhase)
             {
