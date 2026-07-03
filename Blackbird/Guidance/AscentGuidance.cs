@@ -15,6 +15,7 @@ namespace Blackbird.Guidance
         private bool IsPrincipia = false;
         private double _holdPitchUntilAlt = 0.0;
         private double _minVrfSpeedToPitch = 100.0;
+        private bool _handedToPsg;   // latched at the PSG handoff so it can't bounce back into the bootstrap turn
 
         // important to call this before the class is used
         public void Refresh(bool isRss, bool isPrincipia, double holdUntilAltitude, double minVrfSp = 100.0)
@@ -28,6 +29,7 @@ namespace Blackbird.Guidance
         {
             _poweredGuidance.Reset();
             _classicGuidance.Reset();
+            _handedToPsg = false;
         }
 
         // Produces current flight commands from the selected launch profile and guidance mode.
@@ -76,27 +78,43 @@ namespace Blackbird.Guidance
             double commandRoll;
 
             bool holdVSpeed = false;
+            bool followPsgInertial = false;
 
             if (guidanceMode == GuidanceMode.Autopilot)
             {
                 holdVSpeed = vessel.srfSpeed < _minVrfSpeedToPitch || vessel.altitude < _holdPitchUntilAlt;
 
-                commandHeading = poweredCommand != null
-                    ? poweredCommand.HeadingDeg
-                    : MathHelpers.NormalizeDegrees(profileHeading);
+                bool psgReady = poweredCommand != null && poweredCommand.HasInertialDirection;
+                double psgPitch = poweredCommand != null ? poweredCommand.PitchDeg : double.NaN;
+
+                if (!holdVSpeed && psgReady && (!vessel.mainBody.atmosphere || profilePitch <= psgPitch)) _handedToPsg = true;
+
                 if (holdVSpeed)
                 {
                     commandPitch = 90.0;
+                }
+                else if (_handedToPsg && psgReady)
+                {
+                    commandPitch = MathHelpers.Clamp(psgPitch, -30.0, 90.0);
+                    followPsgInertial = true;
+                } else if (_handedToPsg) {
+                    commandPitch = GetSurfaceProgradePitchDeg(vessel); // dufixme
                 } else
                 {
-                    // note: replaced ClampPitchForAutopilot/ClampPitchForControl with MathHelpers.Clamp
-                    commandPitch = poweredCommand != null
-                                ? MathHelpers.Clamp(poweredCommand.PitchDeg, -30.0, 90.0)
-                                : MathHelpers.Clamp(profilePitch, -30.0, 90.0);
+                    commandPitch = MathHelpers.Clamp(profilePitch, -30.0, 90.0);
                 }
 
+                commandHeading = followPsgInertial && poweredCommand != null
+                    ? poweredCommand.HeadingDeg
+                    : MathHelpers.NormalizeDegrees(profileHeading);
+
+                // note: replaced ClampPitchForAutopilot/ClampPitchForControl with MathHelpers.Clamp
+                //commandPitch = poweredCommand != null
+                //            ? MathHelpers.Clamp(poweredCommand.PitchDeg, -30.0, 90.0)
+                //            : MathHelpers.Clamp(profilePitch, -30.0, 90.0);
+
                 commandThrottle = poweredCommand != null ? poweredCommand.Throttle : profileThrottle;
-                commandRoll = 0.0; // todo: i dont think autopilot would need roll?
+                commandRoll = 0.0;
             }
             else if (guidanceMode == GuidanceMode.Manual)
             {
@@ -130,7 +148,8 @@ namespace Blackbird.Guidance
                 CommandHeadingDeg = commandHeading,
                 CommandThrottle = commandThrottle,
                 CommandRoll = commandRoll,
-                HasInertialDirection = !holdVSpeed && poweredCommand != null && poweredCommand.HasInertialDirection,
+                //HasInertialDirection = !holdVSpeed && poweredCommand != null && poweredCommand.HasInertialDirection,
+                HasInertialDirection = followPsgInertial,
                 InertialDirection = poweredCommand != null ? poweredCommand.InertialDirection : Vector3d.zero,
 
                 CurrentPitchDeg = currentPitch,
@@ -224,6 +243,16 @@ namespace Blackbird.Guidance
             double angleFromUp = Vector3d.Angle(forward, up);
             return 90.0 - angleFromUp;
         }
+
+        private static double GetSurfaceProgradePitchDeg(Vessel vessel)
+        {
+            Vector3d up = (TrajectoryProvider.GetPosition(vessel) - vessel.mainBody.position).normalized;
+            Vector3d srfVel = vessel.srf_velocity;
+            if (srfVel.sqrMagnitude < 1.0) return 90.0;
+            double angleFromUp = Vector3d.Angle(srfVel.normalized, up);
+            return 90.0 - angleFromUp;
+        }
+
 
         // Computes a usable launch heading when the selected plan does not provide one.
         private static double GetFallbackLaunchHeading(Vessel vessel, LaunchPlan plan)
