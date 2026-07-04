@@ -260,6 +260,11 @@ namespace Blackbird.Guidance
             if (bbState.ActiveModule == BlackbirdModule.LaunchGuidance) bbState.ActiveModule = BlackbirdModule.None;
             GuidanceInfo = null;   // drop the stale result; a completed flight keeps it for the result panel
             _ascentGuidance.Reset();
+
+            // Return to planning: hide the guidance computer and reopen the flight planner (inverse of AcceptPlan).
+            bbState.GuidanceVisible = false;
+            bbState.PlannerVisible = true;
+            bbState.GuidanceState = State;
         }
 
         public void ConstructLaunchPlan(Vessel vessel, Vessel target, double apoapsisAlt, double periapsisAlt, double headingDeg, double launchUt = double.NaN)

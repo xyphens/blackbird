@@ -81,11 +81,14 @@ namespace Blackbird.Modules
             // -- USER INPUTS / EDITS --
             // Live countdown to the selected candidate's absolute launch UT (the stored seconds-to-launch is a
             // stale snapshot from plan time).
-            double selectedLaunchUt = bbState.SelectedLaunchCandidate?.LaunchUt ?? double.NaN;
-            string _ltFullText = !double.IsNaN(selectedLaunchUt)
-                ? BlackbirdHelpers.FormatDuration(selectedLaunchUt - Planetarium.GetUniversalTime())
-                : "--";
-            GUILayout.Label($"Launch in: {_ltFullText}");
+            if (targetVessel != null)
+            {
+                double selectedLaunchUt = bbState.SelectedLaunchCandidate?.LaunchUt ?? double.NaN;
+                string _ltFullText = !double.IsNaN(selectedLaunchUt)
+                    ? BlackbirdHelpers.FormatDuration(selectedLaunchUt - Planetarium.GetUniversalTime())
+                    : "--";
+                GUILayout.Label($"Launch in: {_ltFullText}");
+            }
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("Apoapsis:", GUILayout.Width(70));
@@ -202,10 +205,10 @@ namespace Blackbird.Modules
             _launchHandler.Init(bbState);
             _launchHandler.SetTargetVessel(targetVessel);   // plan may already exist (LaunchPlanner.Create path), which skips ConstructLaunchPlan
 
-            if (bbState.LaunchPlan == null)
+            if (targetVessel == null || bbState.LaunchPlan == null)
             {
                 InsertionTarget it = CreateInsertionTargetFromUi();
-                double launchUt = bbState.SelectedLaunchCandidate?.LaunchUt ?? double.NaN;
+                double launchUt = targetVessel == null ? double.NaN : bbState.SelectedLaunchCandidate?.LaunchUt ?? double.NaN;
                 _launchHandler.ConstructLaunchPlan(vessel, targetVessel, it.ApoapsisAlt, it.PeriapsisAlt, it.Heading, launchUt);
             }
 

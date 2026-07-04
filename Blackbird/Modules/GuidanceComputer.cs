@@ -71,6 +71,11 @@ namespace Blackbird.Modules
                 GUILayout.Label($"Rel. Inclination: {relInc:F2}°");
                 GUILayout.Label($"Inclination: {orbit.inclination:F2}° vs {_launchHandler.TargetVessel.orbit.inclination:F2}°");
                 GUILayout.Label($"RAAN (LAN): {orbit.LAN:F2}° vs {_launchHandler.TargetVessel.orbit.LAN:F2}°");
+
+                bbState.LaunchPlan.LaunchWindow = LaunchWindowInfo.Create(
+                    FlightGlobals.ActiveVessel,
+                    OrbitInfo.Create(_launchHandler.TargetVessel.orbit),
+                    LaunchLocation.FromVessel(FlightGlobals.ActiveVessel));
             }
 
             if (_launchHandler.State != LaunchGuidanceState.GuidingAscent)
@@ -85,22 +90,23 @@ namespace Blackbird.Modules
                     GUILayout.Label($"Selected Offset: {lw.PlaneOffsetDeg:F2}°");
                 }
 
-                double countdown = GetDisplayedLaunchCountdownSeconds(bbState.LaunchPlan);
-                GUILayout.Label(double.IsNaN(countdown) ? "T- -- seconds" : $"T- {countdown:F0} seconds");
+                double countdown = double.NaN;
 
-                // Armed: warp to the window, then pick a flight mode (which begins the ascent).
-                GUI.enabled = countdown >= MinSecondsToUseWarp;
-                if (GUILayout.Button("Warp To Launch")) _launchHandler.WarpToLaunch();
+                if (_launchHandler.TargetVessel != null)
+                {
+                    countdown = GetDisplayedLaunchCountdownSeconds(bbState.LaunchPlan);
+                    GUILayout.Label(double.IsNaN(countdown) ? "T- -- seconds" : $"T- {countdown:F0} seconds");
+
+                    // Armed: warp to the window, then pick a flight mode (which begins the ascent).
+                    GUI.enabled = countdown >= MinSecondsToUseWarp;
+                    if (GUILayout.Button("Warp To Launch")) _launchHandler.WarpToLaunch();
+                }
+
                 GUI.enabled = true;
 
                 DrawSelectGuidanceMethod();
-                // Begin the ascent once a flight mode is chosen AND we're at the launch window (countdown within
-                // the warp-stop lead). Gating on the countdown lets the operator pick a mode and then Warp To
-                // Launch: while the countdown is large, BeginAscent holds off (so it can't zero the warp rate
-                // each frame); the warp stops at the window, the countdown drops into the lead, and ascent begins.
-                // !(>) not (<=) so a manual-input plan (no launch window -> NaN countdown) reads as ready-to-fly
-                // and begins immediately, instead of NaN failing the <= test and never releasing.
-                if (_launchHandler.GuidanceMode != GuidanceMode.None && !(countdown > MinSecondsToUseWarp))
+                // Begin the ascent once a flight mode is chosen AND we're at the launch window or there's no target (countdown)
+                if (_launchHandler.GuidanceMode != GuidanceMode.None && (countdown == double.NaN || !(countdown > MinSecondsToUseWarp)))
                 {
                     _launchHandler.BeginAscent();
                 }
