@@ -80,20 +80,20 @@ namespace Blackbird.Modules
 
             if (_launchHandler.State != LaunchGuidanceState.GuidingAscent)
             {
-                LaunchWindowInfo lw = bbState.LaunchPlan.LaunchWindow;
-                if (lw != null)
-                {
-                    GUILayout.Label($"Asc Node Lon: {lw.AscendingNodeLongitudeDeg:F2}°");
-                    GUILayout.Label($"Desc Node Lon: {lw.DescendingNodeLongitudeDeg:F2}°");
-                    GUILayout.Label($"Time to Asc: {lw.TimeToAscendingNodeSeconds:F0}s");
-                    GUILayout.Label($"Time to Desc: {lw.TimeToDescendingNodeSeconds:F0}s");
-                    GUILayout.Label($"Selected Offset: {lw.PlaneOffsetDeg:F2}°");
-                }
-
                 double countdown = double.NaN;
 
                 if (_launchHandler.TargetVessel != null)
                 {
+                    LaunchWindowInfo lw = bbState.LaunchPlan.LaunchWindow;
+                    if (lw != null)
+                    {
+                        GUILayout.Label($"Asc Node Lon: {lw.AscendingNodeLongitudeDeg:F2}°");
+                        GUILayout.Label($"Desc Node Lon: {lw.DescendingNodeLongitudeDeg:F2}°");
+                        GUILayout.Label($"Time to Asc: {lw.TimeToAscendingNodeSeconds:F0}s");
+                        GUILayout.Label($"Time to Desc: {lw.TimeToDescendingNodeSeconds:F0}s");
+                        GUILayout.Label($"Selected Offset: {lw.PlaneOffsetDeg:F2}°");
+                    }
+
                     countdown = GetDisplayedLaunchCountdownSeconds(bbState.LaunchPlan);
                     GUILayout.Label(double.IsNaN(countdown) ? "T- -- seconds" : $"T- {countdown:F0} seconds");
 
@@ -106,7 +106,7 @@ namespace Blackbird.Modules
 
                 DrawSelectGuidanceMethod();
                 // Begin the ascent once a flight mode is chosen AND we're at the launch window or there's no target (countdown)
-                if (_launchHandler.GuidanceMode != GuidanceMode.None && (countdown == double.NaN || !(countdown > MinSecondsToUseWarp)))
+                if (_launchHandler.GuidanceMode != GuidanceMode.None && (double.IsNaN(countdown) || !(countdown > MinSecondsToUseWarp)))
                 {
                     _launchHandler.BeginAscent();
                 }

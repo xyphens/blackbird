@@ -75,7 +75,7 @@ namespace Blackbird.Mathematics
         }
     }
 
-    internal class OrbitMath
+    public class OrbitMath
     {
         // Diagnostic log for the Hohmann optimizer (HOHMANN-OPT lines in rendezvous.log): per-window
         // dt1/tt/dv1/dv2 + the chosen transfer, so a bad plan can be traced to window selection vs the solve.
@@ -657,7 +657,7 @@ namespace Blackbird.Mathematics
                 : Math.Max(OrbitalPeriod(_r1, _v1, mu), OrbitalPeriod(_r2, _v2, mu));
             double stpMax = MathHelpers.IsFinite(searchPeriod) ? (searchPeriod / scale.TimeScale) / 2.0 : 0.0;
 
-            const int MAX_GLOBAL_ITERATIONS = 50;
+            const int MAX_GLOBAL_ITERATIONS = 250;
             const double DIFF = 1e-6;
             const double EPS = 1e-9;
             const int MAX_ITERATIONS = 1000;
@@ -697,7 +697,7 @@ namespace Blackbird.Mathematics
                         dv1World.magnitude + dv2World.magnitude));
                 }
 
-                dtGuess += searchPeriod * 0.10;
+                dtGuess += searchPeriod * 0.02;
             }
 
             return windows;

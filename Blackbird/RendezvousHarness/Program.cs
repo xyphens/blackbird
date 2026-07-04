@@ -14,6 +14,8 @@ namespace Blackbird.RendezvousHarness
     {
         private const double KerbinMu = 3.5316e12;
         private const double KerbinRadius = 600000.0;
+        private const double EarthMu = 3.986004418e14;
+        private const double EarthRadius = 6378136.3;
 
         private static int _failures;
 
@@ -22,6 +24,7 @@ namespace Blackbird.RendezvousHarness
             Console.WriteLine("BlackBird Rendezvous Harness");
             Console.WriteLine();
 
+            CheckHohmannWindowSolverSweep();
             CheckRelativeStateEquatorial();
             CheckRelativeStateRotatedPlane();
             CheckKeplerPropagation();
@@ -68,6 +71,94 @@ namespace Blackbird.RendezvousHarness
 
             Console.WriteLine(_failures + " CHECK(S) FAILED");
             return 1;
+        }
+
+        // Diagnostic (not pass/fail): does the production Hohmann-window solver actually surface the cheapest
+        // rendezvous window? Reconstructs the reported flight (chaser ~181 km circular, target ~350 km, ~0.93 deg
+        // relative plane, a phase gap) and compares the production coarse multi-start search against a fine 2-D
+        // (departure, time-of-flight) brute-force sweep of the SAME Lambert objective. A large gap = ΔV the search
+        // is leaving on the table; ~0 gap = the quoted cost is the real 2-impulse minimum (improve elsewhere).
+        private static void CheckHohmannWindowSolverSweep()
+        {
+            Console.WriteLine("Hohmann window solver: production coarse search vs fine brute-force sweep");
+            double _prodSolveMs = 0.0; int _prodSolveCount = 0;
+
+            double mu = EarthMu, R = EarthRadius;
+            ElementsToState(R + 181000.0, 28.18, 72.52, 0.0, mu, out Vector3d rc, out Vector3d vc);
+            ElementsToState(R + 350000.0, 28.64, 70.82, 94.5, mu, out Vector3d rt, out Vector3d vt);
+
+            double Tc = Period(rc, vc, mu), Tt = Period(rt, vt, mu);
+            double syn = Tc * Tt / Math.Abs(Tt - Tc);
+            double hohmannTof = Math.PI * Math.Sqrt(Math.Pow(0.5 * (rc.magnitude + rt.magnitude), 3.0) / mu);
+            Console.WriteLine($"  chaser T={Tc / 60:F1}min  target T={Tt / 60:F1}min  synodic={syn / 3600:F1}h  hohmann tof={hohmannTof / 60:F1}min");
+
+            // Sweep the starting phase gap: at each, compare the production coarse search's cheapest window against a
+            // fine 2-D brute force of the same objective. A big gap at some phases = the coarse multi-start straddles
+            // the (narrow) clean-window basin and misses it — i.e. the ΔV the user sees depends on luck of phase.
+            Console.WriteLine("  phaseGap   fineMin   prodMin    gap   (m/s)");
+            double worstGap = 0.0;
+            for (double phase = 0.0; phase < 360.0; phase += 20.0)
+            {
+                ElementsToState(R + 350000.0, 28.64, 70.82, phase, mu, out Vector3d rtp, out Vector3d vtp);
+
+                double fineMin = double.MaxValue;
+                for (double dt = 0.0; dt < 5.0 * syn; dt += syn / 150.0)
+                    for (double tof = hohmannTof * 0.5; tof <= hohmannTof * 2.0; tof += hohmannTof * 0.02)
+                    {
+                        double dv = RendezvousDv(rc, vc, rtp, vtp, mu, dt, tof);
+                        if (dv < fineMin) fineMin = dv;
+                    }
+
+                var _sw = System.Diagnostics.Stopwatch.StartNew();
+                var windows = OrbitMath.DeltaVForHohmannTransferCandidates(0.0, rc, vc, rtp, vtp, mu, 5);
+                _sw.Stop();
+                _prodSolveMs += _sw.Elapsed.TotalMilliseconds;
+                _prodSolveCount++;
+                double prodMin = double.MaxValue;
+                foreach (var w in windows) prodMin = Math.Min(prodMin, w.dv1.magnitude + w.dv2.magnitude);
+
+                double gap = prodMin - fineMin;
+                worstGap = Math.Max(worstGap, gap);
+                Console.WriteLine($"    {phase,6:F0}   {fineMin,7:F1}   {prodMin,7:F1}   {gap,6:F1}");
+            }
+            Console.WriteLine($"  => worst production-vs-optimal gap across phase: {worstGap:F1} m/s");
+            Console.WriteLine($"  => production solver: {_prodSolveMs / _prodSolveCount:F1} ms per call ({_prodSolveCount} calls)");
+            Console.WriteLine();
+        }
+
+        // Replicates the production objective (LambertSolver.NlpFunction) in real units: chaser -> burn point at dt,
+        // target -> arrival at dt+tof, single-rev Lambert, sum of the two burn magnitudes.
+        private static double RendezvousDv(Vector3d rc, Vector3d vc, Vector3d rt, Vector3d vt, double mu, double dt, double tof)
+        {
+            TwoBody.Propagate(rc, vc, mu, dt, out Vector3d rb, out Vector3d vb);
+            TwoBody.Propagate(rt, vt, mu, dt + tof, out Vector3d ra, out Vector3d va);
+            LambertResult lam = LambertSolver.Solve(rb, ra, tof, mu, true, Vector3d.Cross(rb, vb));
+            if (!lam.Success) return 1e9;
+            return (lam.V1 - vb).magnitude + (va - lam.V2).magnitude;
+        }
+
+        private static double Period(Vector3d r, Vector3d v, double mu)
+        {
+            double a = 1.0 / (2.0 / r.magnitude - v.sqrMagnitude / mu);
+            return 2.0 * Math.PI * Math.Sqrt(a * a * a / mu);
+        }
+
+        // Circular state vector from radius / inclination / RAAN / true-anomaly (deg), inertial +Z pole.
+        private static void ElementsToState(double radius, double incDeg, double lanDeg, double taDeg, double mu,
+            out Vector3d position, out Vector3d velocity)
+        {
+            double i = incDeg * Math.PI / 180.0, O = lanDeg * Math.PI / 180.0, u = taDeg * Math.PI / 180.0;
+            double cosI = Math.Cos(i), sinI = Math.Sin(i);
+            Vector3d rHat = new Vector3d(
+                Math.Cos(O) * Math.Cos(u) - Math.Sin(O) * Math.Sin(u) * cosI,
+                Math.Sin(O) * Math.Cos(u) + Math.Cos(O) * Math.Sin(u) * cosI,
+                Math.Sin(u) * sinI);
+            Vector3d vHat = new Vector3d(
+                -Math.Cos(O) * Math.Sin(u) - Math.Sin(O) * Math.Cos(u) * cosI,
+                -Math.Sin(O) * Math.Sin(u) + Math.Cos(O) * Math.Cos(u) * cosI,
+                Math.Cos(u) * sinI);
+            position = radius * rHat;
+            velocity = Math.Sqrt(mu / radius) * vHat;
         }
 
         // Known geometry: target on a circular equatorial orbit (plane = XY, normal = +Z), so the
