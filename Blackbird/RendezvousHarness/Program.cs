@@ -40,6 +40,10 @@ namespace Blackbird.RendezvousHarness
             CheckClosestApproachSeparatingNowFindsNext();
             CheckClosestApproachFastPassMatchesBruteForce();
             CheckClosestApproachNoApproachReturnsNotFound();
+            CheckDeepestApproachConvergingPair();
+            CheckDeepestApproachStillConvergingAtHorizonEdge();
+            CheckDeepestApproachEqualDepthAndEmptyScans();
+            CheckDeepestApproachUnderJ2MatchesBruteForce();
             CheckHonestPredictedCaUnderJ2();
             CheckJ2AimReducesMiss();
             CheckReSolveAtIgnitionBeatsFrozen();
@@ -726,6 +730,235 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("approach beyond horizon: not fabricated", !shortHorizon.Found);
 
             Console.WriteLine("    flat co-orbital + short-horizon both correctly NotFound");
+        }
+
+        // Post-Hohmann converging pair used by the deepest-approach checks: chaser trailing the target on the
+        // same radius but slightly slow (a lower, slightly eccentric orbit), so it closes the along-track gap
+        // every rev while a small radial epicycle sweeps it past the target once per orbit — the in-game
+        // 170->150->130->50 km per-pass pattern. eps = fractional tangential speed deficit.
+        private static void ConvergingPair(double radius, double vCirc, double eps, double gapMeters,
+            out Vector3d aPos, out Vector3d aVel, out Vector3d tPos, out Vector3d tVel)
+        {
+            double gap = gapMeters / radius;
+            aPos = new Vector3d(radius * Math.Cos(gap), -radius * Math.Sin(gap), 0.0);
+            aVel = vCirc * (1.0 - eps) * new Vector3d(Math.Sin(gap), Math.Cos(gap), 0.0);
+            tPos = new Vector3d(radius, 0.0, 0.0);
+            tVel = new Vector3d(0.0, vCirc, 0.0);
+        }
+
+        // The panel's "next pass" materially understates the eventual miss of a converging pair; ScanApproaches
+        // must surface the deep pass several orbits out. Asserts the scan's Next reproduces FindNextApproach
+        // bit-exactly (same sweep, one call), the deepest is a later and far deeper pass matching a dense
+        // brute-force global minimum over the whole horizon, the early minima shrink monotonically, and
+        // StillConverging is false because the bottom lies inside the horizon.
+        private static void CheckDeepestApproachConvergingPair()
+        {
+            Console.WriteLine("Case 37: deepest-approach scan finds the eventual minimum of a converging pair");
+
+            double R = KerbinRadius + 150000.0;
+            double vc = Math.Sqrt(KerbinMu / R);
+            ConvergingPair(R, vc, 0.001, 100000.0, out Vector3d aPos, out Vector3d aVel, out Vector3d tPos, out Vector3d tVel);
+
+            double horizon = 24.0 * 3600.0;
+            ApproachScan scan = ClosestApproachSolver.ScanApproaches(aPos, aVel, tPos, tVel, KerbinMu, horizon, 240);
+            ApproachResult next = ClosestApproachSolver.FindNextApproach(aPos, aVel, tPos, tVel, KerbinMu, horizon, 240);
+
+            AssertTrue("scan found a multi-pass sequence (>=5)", scan.Next.Found && scan.Deepest.Found && scan.Passes.Length >= 5);
+            AssertTrue("Next reproduces FindNextApproach bit-exactly",
+                scan.Next.Found == next.Found
+                && scan.Next.DistanceMeters == next.DistanceMeters
+                && scan.Next.TimeSeconds == next.TimeSeconds);
+            AssertTrue("deepest is a later pass", scan.DeepestIndex > 0);
+            AssertTrue("deepest is materially deeper than next (<20%)",
+                scan.Deepest.DistanceMeters < 0.2 * scan.Next.DistanceMeters);
+            AssertTrue("early passes shrink monotonically",
+                scan.Passes.Length >= 3
+                && scan.Passes[1].DistanceMeters < scan.Passes[0].DistanceMeters
+                && scan.Passes[2].DistanceMeters < scan.Passes[1].DistanceMeters);
+            AssertTrue("passes grow again after the deepest (bottom inside horizon)",
+                scan.DeepestIndex < scan.Passes.Length - 1
+                && scan.Passes[scan.Passes.Length - 1].DistanceMeters > scan.Deepest.DistanceMeters);
+            AssertTrue("not flagged still-converging", !scan.StillConverging);
+
+            // Global-minimum oracle: dense uniform sweep of the full horizon (0.5 s samples, exact Kepler).
+            BruteApproach(aPos, aVel, tPos, tVel, KerbinMu, 0.0, horizon, 172800, out double bruteDist, out double bruteTime);
+            AssertTrue("deepest distance matches brute-force global min (<5 m)",
+                Math.Abs(scan.Deepest.DistanceMeters - bruteDist) < 5.0);
+            AssertTrue("deepest time matches brute-force global min (<2 s)",
+                Math.Abs(scan.Deepest.TimeSeconds - bruteTime) < 2.0);
+
+            Console.WriteLine(string.Format(
+                "    next {0:F0} m @ {1:F0}s   deepest {2:F0} m @ {3:F0}s (pass {4}/{5})   brute {6:F0} m @ {7:F0}s",
+                scan.Next.DistanceMeters, scan.Next.TimeSeconds,
+                scan.Deepest.DistanceMeters, scan.Deepest.TimeSeconds, scan.DeepestIndex + 1, scan.Passes.Length,
+                bruteDist, bruteTime));
+
+            // Perf diagnostic (not pass/fail): the scan replaces FindNextApproach on the 0.5 s live-CA
+            // throttle, so its per-call cost is a frame-budget number. Worst-case conic geometry: 39 passes,
+            // every one refined; FindNextApproach early-exits at pass 1.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; i < 50; i++) ClosestApproachSolver.FindNextApproach(aPos, aVel, tPos, tVel, KerbinMu, horizon, 240);
+            sw.Stop();
+            double nextMs = sw.Elapsed.TotalMilliseconds / 50.0;
+            sw.Restart();
+            for (int i = 0; i < 50; i++) ClosestApproachSolver.ScanApproaches(aPos, aVel, tPos, tVel, KerbinMu, horizon, 240);
+            sw.Stop();
+            double scanMs = sw.Elapsed.TotalMilliseconds / 50.0;
+            Console.WriteLine(string.Format(
+                "    perf (conic, 24h, 39 passes): FindNextApproach {0:F2} ms   ScanApproaches {1:F2} ms per call",
+                nextMs, scanMs));
+        }
+
+        // Horizon-edge behavior: the same converging pair scanned with a horizon that ends BEFORE the gap
+        // closes must flag StillConverging (deepest == final pass, minima strictly decreasing), and its
+        // truncated "deepest" must be shallower than the full-horizon bottom — the signal the panel uses to
+        // say the real minimum lies beyond the window.
+        private static void CheckDeepestApproachStillConvergingAtHorizonEdge()
+        {
+            Console.WriteLine("Case 38: horizon cut mid-convergence flags StillConverging");
+
+            double R = KerbinRadius + 150000.0;
+            double vc = Math.Sqrt(KerbinMu / R);
+            ConvergingPair(R, vc, 0.001, 100000.0, out Vector3d aPos, out Vector3d aVel, out Vector3d tPos, out Vector3d tVel);
+
+            double shortHorizon = 4.0 * CircularPeriod(R);   // gap needs ~7 revs to close; cut at 4
+            ApproachScan cut = ClosestApproachSolver.ScanApproaches(aPos, aVel, tPos, tVel, KerbinMu, shortHorizon, 240);
+            ApproachScan full = ClosestApproachSolver.ScanApproaches(aPos, aVel, tPos, tVel, KerbinMu, 24.0 * 3600.0, 240);
+
+            AssertTrue("truncated scan found passes (>=3)", cut.Deepest.Found && cut.Passes.Length >= 3);
+            AssertTrue("flagged still-converging", cut.StillConverging);
+            AssertTrue("deepest is the final pass", cut.DeepestIndex == cut.Passes.Length - 1);
+            AssertTrue("truncated deepest is shallower than the true bottom",
+                cut.Deepest.DistanceMeters > full.Deepest.DistanceMeters);
+
+            BruteApproach(aPos, aVel, tPos, tVel, KerbinMu, 0.0, shortHorizon, 40000, out double bruteDist, out double bruteTime);
+            AssertTrue("truncated deepest matches brute force over the window (<5 m)",
+                Math.Abs(cut.Deepest.DistanceMeters - bruteDist) < 5.0);
+            AssertTrue("truncated deepest time matches brute force (<2 s)",
+                Math.Abs(cut.Deepest.TimeSeconds - bruteTime) < 2.0);
+
+            Console.WriteLine(string.Format(
+                "    cut deepest {0:F0} m (pass {1}/{2}, converging)   full bottom {3:F0} m",
+                cut.Deepest.DistanceMeters, cut.DeepestIndex + 1, cut.Passes.Length, full.Deepest.DistanceMeters));
+        }
+
+        // Adversarial guard tests. (a) Same-radius circular orbits in crossing planes: every pass is the same
+        // depth to round-off, so which one is "deepest" is numerical noise — StillConverging must stay false
+        // (strict-monotone guard) instead of flagging a stable geometry as converging. (b) Constant-separation
+        // co-orbital: the scan must return a genuinely empty result, not a fabricated pass.
+        private static void CheckDeepestApproachEqualDepthAndEmptyScans()
+        {
+            Console.WriteLine("Case 39: equal-depth passes don't fake convergence; no-approach scan is empty");
+
+            double R = KerbinRadius + 200000.0;
+            double vc = Math.Sqrt(KerbinMu / R);
+            double inc = 2.0 * Math.PI / 180.0;
+            double phase = 10.0 * Math.PI / 180.0;
+
+            // (a) Target on the same radius/speed, 10 deg ahead, plane tilted 2 deg: separation oscillates at
+            // twice the orbit rate with analytically identical minima at every pass.
+            Vector3d aPos = new Vector3d(R, 0.0, 0.0);
+            Vector3d aVel = new Vector3d(0.0, vc, 0.0);
+            Vector3d tPos = R * new Vector3d(Math.Cos(phase), Math.Sin(phase) * Math.Cos(inc), Math.Sin(phase) * Math.Sin(inc));
+            Vector3d tVel = vc * new Vector3d(-Math.Sin(phase), Math.Cos(phase) * Math.Cos(inc), Math.Cos(phase) * Math.Sin(inc));
+
+            ApproachScan equal = ClosestApproachSolver.ScanApproaches(aPos, aVel, tPos, tVel, KerbinMu, 6.0 * 3600.0, 240);
+            AssertTrue("equal-depth scan found many passes (>=12)", equal.Passes.Length >= 12);
+
+            double minD = double.PositiveInfinity, maxD = 0.0;
+            for (int i = 0; i < equal.Passes.Length; i++)
+            {
+                minD = Math.Min(minD, equal.Passes[i].DistanceMeters);
+                maxD = Math.Max(maxD, equal.Passes[i].DistanceMeters);
+            }
+            AssertTrue("pass depths equal to <1 m spread", maxD - minD < 1.0);
+            AssertTrue("noise-tied passes NOT flagged still-converging", !equal.StillConverging);
+
+            // (b) Same orbit 180 deg apart: constant range, no minima to report.
+            Vector3d oPos = new Vector3d(-R, 0.0, 0.0);
+            Vector3d oVel = new Vector3d(0.0, -vc, 0.0);
+            ApproachScan empty = ClosestApproachSolver.ScanApproaches(aPos, aVel, oPos, oVel, KerbinMu, 6.0 * 3600.0, 240);
+            AssertTrue("flat co-orbital scan is empty",
+                empty.Passes.Length == 0 && !empty.Next.Found && !empty.Deepest.Found
+                && empty.DeepestIndex == -1 && !empty.StillConverging);
+
+            Console.WriteLine(string.Format(
+                "    {0} equal passes, spread {1:E1} m, converging={2}; empty scan clean",
+                equal.Passes.Length, maxD - minD, equal.StillConverging));
+        }
+
+        // The J2 path: an RSS-scale converging pair (Earth 400 km, 51.6 deg) scanned under J2 must again have
+        // Next == FindNextApproach exactly and a deepest matching a brute-force J2 oracle. The oracle steps
+        // both craft at 1 s RK4 via the solver's own Propagate; the scan integrates at ~period/64, so the
+        // tolerance (50 m / 20 s on a multi-km miss) is the cross-step-size integration difference, not slop.
+        private static void CheckDeepestApproachUnderJ2MatchesBruteForce()
+        {
+            Console.WriteLine("Case 40: deepest-approach scan under J2 matches a fine-step J2 oracle");
+
+            const double earthJ2 = 1.082636e-03;
+            double inc = 51.6 * Math.PI / 180.0;
+            Vector3d u = new Vector3d(1.0, 0.0, 0.0);
+            Vector3d p = new Vector3d(0.0, Math.Cos(inc), Math.Sin(inc));
+            Vector3d pole = new Vector3d(0.0, 0.0, 1.0);
+
+            double R = EarthRadius + 400000.0;
+            double vc = Math.Sqrt(EarthMu / R);
+            double eps = 0.0005;
+            double gap = 150000.0 / R;      // 150 km behind; drift ~64 km/rev -> bottom ~rev 2, inside 6 h
+
+            Vector3d aPos = R * (Math.Cos(gap) * u - Math.Sin(gap) * p);
+            Vector3d aVel = vc * (1.0 - eps) * (Math.Sin(gap) * u + Math.Cos(gap) * p);
+            Vector3d tPos = R * u;
+            Vector3d tVel = vc * p;
+
+            double horizon = 6.0 * 3600.0;
+            ApproachScan scan = ClosestApproachSolver.ScanApproaches(
+                aPos, aVel, tPos, tVel, EarthMu, horizon, 240, earthJ2, EarthRadius, pole);
+            ApproachResult next = ClosestApproachSolver.FindNextApproach(
+                aPos, aVel, tPos, tVel, EarthMu, horizon, 240, earthJ2, EarthRadius, pole);
+
+            AssertTrue("J2 scan found passes (>=3)", scan.Deepest.Found && scan.Passes.Length >= 3);
+            AssertTrue("J2 Next reproduces FindNextApproach bit-exactly",
+                scan.Next.Found == next.Found
+                && scan.Next.DistanceMeters == next.DistanceMeters
+                && scan.Next.TimeSeconds == next.TimeSeconds);
+            AssertTrue("J2 deepest is a later, deeper pass",
+                scan.DeepestIndex > 0 && scan.Deepest.DistanceMeters < scan.Next.DistanceMeters);
+
+            // 1 s sequential RK4 oracle using the solver's own propagator.
+            Vector3d ra = aPos, va = aVel, rt = tPos, vt = tVel;
+            double bruteDist = (ra - rt).magnitude, bruteTime = 0.0;
+            int steps = (int)horizon;
+            for (int i = 1; i <= steps; i++)
+            {
+                ClosestApproachSolver.Propagate(ra, va, 1.0, EarthMu, earthJ2, EarthRadius, pole, out ra, out va);
+                ClosestApproachSolver.Propagate(rt, vt, 1.0, EarthMu, earthJ2, EarthRadius, pole, out rt, out vt);
+                double d = (ra - rt).magnitude;
+                if (d < bruteDist) { bruteDist = d; bruteTime = i; }
+            }
+
+            AssertTrue("J2 deepest distance matches oracle (<50 m)", Math.Abs(scan.Deepest.DistanceMeters - bruteDist) < 50.0);
+            AssertTrue("J2 deepest time matches oracle (<20 s)", Math.Abs(scan.Deepest.TimeSeconds - bruteTime) < 20.0);
+
+            Console.WriteLine(string.Format(
+                "    J2 next {0:F0} m   deepest {1:F0} m @ {2:F0}s (pass {3}/{4})   oracle {5:F0} m @ {6:F0}s",
+                scan.Next.DistanceMeters, scan.Deepest.DistanceMeters, scan.Deepest.TimeSeconds,
+                scan.DeepestIndex + 1, scan.Passes.Length, bruteDist, bruteTime));
+
+            // Perf diagnostic (not pass/fail): the RK4/J2 path at the production 24 h horizon — the RSS cost
+            // the 0.5 s live-CA throttle actually pays per recompute.
+            double prodHorizon = 24.0 * 3600.0;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; i < 20; i++) ClosestApproachSolver.FindNextApproach(aPos, aVel, tPos, tVel, EarthMu, prodHorizon, 240, earthJ2, EarthRadius, pole);
+            sw.Stop();
+            double nextMs = sw.Elapsed.TotalMilliseconds / 20.0;
+            sw.Restart();
+            for (int i = 0; i < 20; i++) ClosestApproachSolver.ScanApproaches(aPos, aVel, tPos, tVel, EarthMu, prodHorizon, 240, earthJ2, EarthRadius, pole);
+            sw.Stop();
+            double scanMs = sw.Elapsed.TotalMilliseconds / 20.0;
+            Console.WriteLine(string.Format(
+                "    perf (J2, 24h horizon): FindNextApproach {0:F2} ms   ScanApproaches {1:F2} ms per call",
+                nextMs, scanMs));
         }
 
         // Phase 2A: the honest predicted-CA helper. A conic Lambert transfer that hits the target under conic

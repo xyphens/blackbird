@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Blackbird.Mathematics;
 using UnityEngine;
 
@@ -9,6 +10,16 @@ namespace Blackbird.Rendezvous
         public bool Found;
         public double DistanceMeters;
         public double TimeSeconds;   // time from now until the closest approach
+    }
+
+    public struct ApproachScan
+    {
+        // horizon is defined as the look-ahead window
+        public ApproachResult[] Passes; // empty when no approach within horizon
+        public ApproachResult Next;     // Passes[0] or Found = false
+        public ApproachResult Deepest;  // smallest distance; earliest pass on ties
+        public int DeepestIndex;        // -1 when empty
+        public bool StillConverging;    // deepest is the FINAL pass and minima strictly decrease => true minimum likely beyond the horizon
     }
 
     // Finds the NEXT closest approach between two coasting trajectories — the next local minimum of range
@@ -22,6 +33,76 @@ namespace Blackbird.Rendezvous
     // RK4 under J2 when j2 != 0 (RSS/Principia oblateness). Both run through the same sweep + refine.
     public static class ClosestApproachSolver
     {
+        // full horizon scan of FindNextApproach
+        public static ApproachScan ScanApproaches(
+            Vector3d activePosition, Vector3d activeVelocity,
+            Vector3d targetPosition, Vector3d targetVelocity,
+            double mu, double maxHorizonSeconds, int coarseSamples,
+            double j2 = 0.0, double referenceRadius = 0.0, Vector3d pole = default(Vector3d))
+        {
+            ApproachScan scan = new ApproachScan
+            {
+                Passes = new ApproachResult[0],
+                Next = new ApproachResult {  Found = false },
+                Deepest = new ApproachResult { Found = false },
+                DeepestIndex = -1
+            };
+
+            if (mu <= 0.0 || maxHorizonSeconds <= 0.0) return scan;
+
+            bool useJ2 = j2 != 0.0 && pole.sqrMagnitude > 0.0;
+
+            double currentPeriod = OrbitMath.OrbitalPeriod(activePosition, activeVelocity, mu);
+            double targetPeriod = OrbitMath.OrbitalPeriod(targetPosition, targetVelocity, mu);
+            double minPeriod = double.PositiveInfinity;
+
+            if (MathHelpers.IsFinite(currentPeriod) && currentPeriod > 0.0) minPeriod = Math.Min(minPeriod, currentPeriod);
+            if (MathHelpers.IsFinite(targetPeriod) && targetPeriod > 0.0) minPeriod = Math.Min(minPeriod, targetPeriod);
+
+            double periodStep = MathHelpers.IsFinite(minPeriod) ? minPeriod / CoarseStepsPerOrbit : FallbackCoarseStepSeconds;
+            double budgetStep = coarseSamples >= 2 ? maxHorizonSeconds / coarseSamples : maxHorizonSeconds;
+            double coarseDt = Math.Max(MinStepSeconds, Math.Min(periodStep, budgetStep));
+
+            var passes = new List<ApproachResult>();
+            Sample prev = new Sample(activePosition, activeVelocity, targetPosition, targetVelocity, 0.0);
+
+            long maxIters = (long)(maxHorizonSeconds / coarseDt) + 4;
+
+            for (long iter = 0; iter < maxIters && prev.T < maxHorizonSeconds; iter++) {
+                if (!Step(prev, coarseDt, mu, useJ2, j2, referenceRadius, pole, out Sample cur)) break;
+
+                if (prev.RangeRate < 0.0 && cur.RangeRate >= 0.0 && -prev.RangeRate > ClosingRateFloorFraction * prev.RangeRateScale) {
+                    ApproachResult local = Refine(prev, cur.T - prev.T, mu, useJ2, j2, referenceRadius, pole);
+                    if (local.Found) passes.Add(local);
+                }
+
+                prev = cur;
+            }
+
+            if (passes.Count == 0) return scan;
+
+            // find closest
+            int deepest = 0;
+            for (int i = 1; i < passes.Count; i++)
+            {
+                if (passes[i].DistanceMeters < passes[deepest].DistanceMeters) deepest = i;
+            }
+
+            // Converging = the minima decrease strictly all the way to a final-pass deepest, so the trend says
+            // the true minimum lies past the horizon. The strict-monotone requirement stops round-off ties
+            // between equal-depth passes (e.g. same-radius crossing planes) from flagging a stable geometry.
+            bool monotone = passes.Count >= 2;
+            for (int i = 1; i < passes.Count && monotone; i++)
+                monotone = passes[i].DistanceMeters < passes[i - 1].DistanceMeters;
+
+            scan.Passes = passes.ToArray();
+            scan.Next = passes[0];
+            scan.Deepest = passes[deepest];
+            scan.DeepestIndex = deepest;
+            scan.StillConverging = monotone && deepest == passes.Count - 1;
+            return scan;
+        }
+
         // Coarse bracketing step is at most the shorter period / this, so the sweep cannot step over an
         // approach narrower than ~one such fraction of an orbit.
         private const int CoarseStepsPerOrbit = 64;

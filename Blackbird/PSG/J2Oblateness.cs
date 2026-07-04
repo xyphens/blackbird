@@ -13,7 +13,7 @@ namespace Blackbird.Psg
 
         // Earth: J2 = -sqrt(5) * C-bar(2,0); C-bar(2,0) = -4.8416945732e-04 (sol_gravity_model.proto.txt, degree 2 order 0 cos).
         // Re = reference_radius 6378.1363 km.
-        private static readonly Dictionary<string, Oblateness> Table =
+        private static readonly Dictionary<string, Oblateness> Celestials =
             new Dictionary<string, Oblateness>(StringComparer.OrdinalIgnoreCase)
         {
             { "Earth", new Oblateness { J2 = 1.082636e-03, ReferenceRadiusMeters = 6378136.3 } },
@@ -22,7 +22,7 @@ namespace Blackbird.Psg
 
         public static Oblateness For(CelestialBody body)
         {
-            if (body != null && body.bodyName != null && Table.TryGetValue(body.bodyName, out Oblateness o))
+            if (body != null && body.bodyName != null && Celestials.TryGetValue(body.bodyName, out Oblateness o))
                 return o;
             return new Oblateness { J2 = 0.0, ReferenceRadiusMeters = body != null ? body.Radius : 0.0 };
         }

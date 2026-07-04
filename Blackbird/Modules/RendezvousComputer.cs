@@ -118,6 +118,14 @@ namespace Blackbird.Modules
                 GUILayout.Label($"Closest approach: {FormatDistance(_handler.LiveClosestApproachMeters)} "
                               + $"in {FormatTime(_handler.LiveTimeToClosestApproachSeconds)}");
 
+                if (_handler.LiveDeepestPassIndex > 0) {
+                    // dufixme: might search longer than 24 hours
+                    string tail = _handler.LiveDeepestStillConverging ? " — still converging at 24h" : "";
+                    GUILayout.Label($"Deepest approach: {FormatDistance(_handler.LiveDeepestApproachMeters)} "
+                                  + $"in {FormatTime(_handler.LiveTimeToDeepestApproachSeconds)} "
+                                  + $"(pass {_handler.LiveDeepestPassIndex + 1}/{_handler.LiveApproachPassCount}){tail}");
+                }
+
                 // Closest approach is now AND we're separating ⇒ no natural approach within an orbit;
                 // the pair won't close on its own. Tell the user a corrective burn is needed.
                 bool separating = _handler.HasRelative && _handler.Relative.RangeRate > 0.0;
@@ -226,10 +234,21 @@ namespace Blackbird.Modules
             }
             else
             {
+                // warp to CA buttons
+                GUILayout.BeginHorizontal();
                 GUI.enabled = bbState.InterceptPhase != InterceptPhase.Executing
                               && MathHelpers.IsFinite(_handler.LiveTimeToClosestApproachSeconds)
                               && _handler.LiveTimeToClosestApproachSeconds > 10.0;
-                if (GUILayout.Button("Warp to Next Closest Approach")) _handler.WarpToClosestApproach();
+
+                if (GUILayout.Button("Warp to Next Approach")) _handler.WarpToApproach(deepest: false);
+
+                GUI.enabled = bbState.InterceptPhase != InterceptPhase.Executing
+                              && MathHelpers.IsFinite(_handler.LiveTimeToDeepestApproachSeconds)
+                              && _handler.LiveDeepestPassIndex > 0
+                              && _handler.LiveTimeToDeepestApproachSeconds > 10.0;
+                if (GUILayout.Button("Best Approach (24 hr)")) _handler.WarpToApproach(deepest: true);
+                GUILayout.EndHorizontal();
+
                 GUI.enabled = true;
             }
 

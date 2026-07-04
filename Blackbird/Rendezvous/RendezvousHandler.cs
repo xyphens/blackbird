@@ -38,10 +38,8 @@ namespace Blackbird.Rendezvous
         // synodic period (capped) so time-to-CA actually counts down rather than pinning at one period.
         private const double CaRecomputeIntervalSeconds = 0.5;
         private const int CaSampleCount = 240;
-        // Horizon for the next-approach search. Must exceed the synodic period of nearly-matched rendezvous
-        // orbits (which the old 6 h cap truncated, pinning time-to-CA and never letting it count to zero). The
-        // solver early-terminates at the first real approach, so this is only the no-near-approach scan bound.
-        private const double CaMaxHorizonSeconds = 24.0 * 3600.0;
+        
+        private const double CaMaxHorizonSeconds = 24.0 * 3600.0; // 24 hour search
         private double _lastCaComputeUt = double.NegativeInfinity;
 
         // Plan preview refresh throttle (so the panel shows ΔV/CA before the user Executes).
@@ -55,6 +53,14 @@ namespace Blackbird.Rendezvous
         // Burn-log throttle so a multi-second burn doesn't write megabytes to the glog.
         private const double BurnLogIntervalSeconds = 0.25;
         private double _lastBurnLogUt = double.NegativeInfinity;
+
+        // deepest pass over the full CA horizon
+        public double LiveDeepestApproachMeters { get; private set; } = double.NaN;
+        public double LiveTimeToDeepestApproachSeconds { get; private set; } = double.NaN;
+        public bool LiveDeepestStillConverging { get; private set; }
+        public int LiveDeepestPassIndex { get; private set; } = -1;
+        public int LiveApproachPassCount { get; private set; }
+
 
         // Orient-then-stabilize-then-burn gate (BurnSettleGate): hold throttle until pointed AND rotation has
         // settled to the craft's control-authority-scaled "still" rate for the dwell, else a burn fired
@@ -201,11 +207,32 @@ namespace Blackbird.Rendezvous
 
         // Warp toward the predicted closest approach (shared safe-warp ladder), auto-stopping a lead short
         // and cancelling the moment a burn starts. No-op without a CA estimate.
-        public void WarpToClosestApproach()
+        //public void WarpToClosestApproach()
+        //{
+        //    if (bbState.InterceptPhase == InterceptPhase.Executing) return;
+        //    //double timeToCa = LiveTimeToClosestApproachSeconds;
+        //    double timeToCa = MathHelpers.IsFinite(LiveTimeToDeepestApproachSeconds) 
+        //                    ? LiveTimeToDeepestApproachSeconds 
+        //                    : LiveTimeToClosestApproachSeconds;
+
+        //    double lead = ComputeWarpLeadSeconds();
+        //    if (!MathHelpers.IsFinite(timeToCa) || timeToCa <= lead) return;
+
+        //    _warpLeadSeconds = lead;
+        //    _warpTargetUt = Planetarium.GetUniversalTime() + timeToCa;
+        //    _warpingToCa = true;
+        //    Warping = true;
+        //}
+
+        // warp to CA (deepest by default) with a slew lead time
+        public void WarpToApproach(bool deepest = false)
         {
             if (bbState.InterceptPhase == InterceptPhase.Executing) return;
-            double timeToCa = LiveTimeToClosestApproachSeconds;
             double lead = ComputeWarpLeadSeconds();
+            double timeToCa = MathHelpers.IsFinite(LiveTimeToDeepestApproachSeconds) && deepest
+                            ? LiveTimeToDeepestApproachSeconds
+                            : LiveTimeToClosestApproachSeconds;
+
             if (!MathHelpers.IsFinite(timeToCa) || timeToCa <= lead) return;
 
             _warpLeadSeconds = lead;
@@ -315,6 +342,7 @@ namespace Blackbird.Rendezvous
             HasRelative = true;
 
             double now = Planetarium.GetUniversalTime();
+            // dufixme: probably remove this
             if (now - _lastCaComputeUt >= CaRecomputeIntervalSeconds)
             {
                 ComputeLiveClosestApproach(active, target);
@@ -528,20 +556,28 @@ namespace Blackbird.Rendezvous
             BodyOblateness.Oblateness ob = BodyOblateness.For(body);
             Vector3d pole = ((Vector3d)body.transform.up).normalized;
 
-            ApproachResult approach = ClosestApproachSolver.FindNextApproach(
-                aPos, aVel, tPos, tVel, mu, CaMaxHorizonSeconds, CaSampleCount,
-                ob.J2, ob.ReferenceRadiusMeters, pole);
+            ApproachScan scan = ClosestApproachSolver.ScanApproaches(aPos, aVel, tPos, tVel, mu, CaMaxHorizonSeconds, CaSampleCount, ob.J2, ob.ReferenceRadiusMeters, pole);
 
-            if (approach.Found)
+            if (scan.Next.Found)
             {
-                LiveClosestApproachMeters = approach.DistanceMeters;
-                LiveTimeToClosestApproachSeconds = approach.TimeSeconds;
-            }
-            else
+                LiveClosestApproachMeters = scan.Next.DistanceMeters;
+                LiveTimeToClosestApproachSeconds = scan.Next.TimeSeconds;
+                LiveDeepestApproachMeters = scan.Deepest.DistanceMeters;
+                LiveTimeToDeepestApproachSeconds = scan.Deepest.TimeSeconds;
+                LiveDeepestStillConverging = scan.StillConverging;
+                LiveDeepestPassIndex = scan.DeepestIndex;
+                LiveApproachPassCount = scan.Passes.Length;
+            } else
             {
-                // No approach within the horizon: clear, don't leave a stale value the panel keeps showing.
+                // no approach found
+                // note: this shouldn't be possible with J2.  even perfectly circular and identical orbits will eventually resolve to some CA
                 LiveClosestApproachMeters = double.NaN;
                 LiveTimeToClosestApproachSeconds = double.NaN;
+                LiveDeepestApproachMeters = double.NaN;
+                LiveTimeToDeepestApproachSeconds = double.NaN;
+                LiveDeepestStillConverging = false;
+                LiveDeepestPassIndex = -1;
+                LiveApproachPassCount = 0;
             }
         }
 
