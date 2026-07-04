@@ -101,6 +101,8 @@ namespace Blackbird.Planning
                 TargetPosition = targetRelPos,
                 TargetVelocity = targetVel,
                 TargetOrbitNormal = targetNormal,
+                TargetSemiMajorRadius = targetOrbit.SemiMajorAxis,
+                TargetPeriodSeconds = targetOrbit.PeriodSeconds,
                 AscentDurationSeconds = ascentDuration,
                 RemainingDeltaV = vesselState.RemainingDeltaV
             };

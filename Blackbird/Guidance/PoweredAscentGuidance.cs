@@ -229,7 +229,11 @@ namespace Blackbird.Guidance
                             vesselState.UniversalTime,
                             gateMaxRate);
 
-                    GetPitchHeadingFromInertial(vesselState, guidance.InertialDirection, out double psgPitch, out double psgHeading);
+                    // Heading is a launch-time decision: the azimuth that holds the ascent in the target plane
+                    GetPitchHeadingFromInertial(vesselState, guidance.InertialDirection, out double psgPitch, out _);
+
+                    double heldHeading = profileHeadingDeg;
+                    Vector3d heldDirection = GetSurfaceCommandDirection(vesselState, heldHeading, psgPitch);
 
                     double commandedThrottle = _solution.TimeToGo(vesselState.UniversalTime) <= 0.0 ? 1.0 : guidance.Throttle;
                     _phase = PoweredGuidancePhase.PoweredGuidance;
@@ -240,7 +244,7 @@ namespace Blackbird.Guidance
                         PoweredGuidancePhase.PoweredGuidance,
                         guidanceStatus,
                         MathHelpers.Clamp(psgPitch, -30.0, 90.0),
-                        psgHeading,
+                        heldHeading,
                         commandedThrottle, // was guidance.Throttle
                         apError,
                         peError,
@@ -248,7 +252,7 @@ namespace Blackbird.Guidance
                         velocityToGo,
                         false,
                         true,
-                        guidance.InertialDirection);
+                        heldDirection);
                 }
             }
 
@@ -506,6 +510,62 @@ namespace Blackbird.Guidance
             return GetSurfaceCommandDirection(vesselState, profileHeadingDeg, profilePitchDeg);
         }
 
+        // --- pure steering-frame math (shared with PsgHarness; no Vessel required) ---
+
+        // Local steering frame from a body-relative position and the body spin axis. Returns false when the
+        // position lies on the spin axis (north degenerate); up is still set so callers can fall back to vertical.
+        public static bool LocalSteeringFrame(Vector3d relPosition, Vector3d bodySpinAxis,
+            out Vector3d up, out Vector3d north, out Vector3d east)
+        {
+            up = relPosition.normalized;
+            north = Vector3d.Exclude(up, bodySpinAxis).normalized;
+            if (north.sqrMagnitude <= 0.0) { east = Vector3d.zero; return false; }
+            east = Vector3d.Cross(up, north).normalized;
+            return true;
+        }
+
+        // Compose a world steering vector from a surface heading+pitch in the given local frame.
+        public static Vector3d ComposeSteering(double headingDeg, double pitchDeg,
+            Vector3d up, Vector3d north, Vector3d east)
+        {
+            double headingRad = MathHelpers.Deg2Rad(headingDeg);
+            double pitchRad = MathHelpers.Deg2Rad(pitchDeg);
+            Vector3d horizontal = north * Math.Cos(headingRad) + east * Math.Sin(headingRad);
+            return (horizontal * Math.Cos(pitchRad) + up * Math.Sin(pitchRad)).normalized;
+        }
+
+        // Decompose a world direction to surface heading+pitch in the given local frame.
+        public static void DecomposeSteering(Vector3d direction,
+            Vector3d up, Vector3d north, Vector3d east, out double pitchDeg, out double headingDeg)
+        {
+            pitchDeg = 90.0;
+            headingDeg = 90.0;
+            if (direction.sqrMagnitude <= 0.0) return;
+
+            direction = direction.normalized;
+            pitchDeg = Math.Asin(MathHelpers.Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)) * 180.0 / Math.PI;
+
+            Vector3d horizontal = Vector3d.Exclude(up, direction);
+            if (horizontal.sqrMagnitude > 0.0)
+            {
+                Vector3d horizontalDirection = horizontal.normalized;
+                headingDeg = MathHelpers.NormalizeDegrees(
+                    Math.Atan2(
+                        Vector3d.Dot(horizontalDirection, east),
+                        Vector3d.Dot(horizontalDirection, north)) *
+                    180.0 / Math.PI);
+            }
+        }
+
+        // Hold-heading steering: keep PSG's pitch but replace its (ill-conditioned) yaw with the plane-defining
+        // launch azimuth. This is the exact production composition, made pure so the harness can exercise it.
+        public static Vector3d HoldHeadingSteering(Vector3d psgDirection, double heldHeadingDeg,
+            Vector3d up, Vector3d north, Vector3d east)
+        {
+            DecomposeSteering(psgDirection, up, north, east, out double pitchDeg, out _);
+            return ComposeSteering(heldHeadingDeg, pitchDeg, up, north, east);
+        }
+
         private static Vector3d GetSurfaceCommandDirection(
             VesselState vesselState,
             double headingDeg,
@@ -513,15 +573,11 @@ namespace Blackbird.Guidance
         {
             if (vesselState == null || vesselState.Body == null) return Vector3d.zero;
 
-            Vector3d up = (vesselState.Position - vesselState.Body.position).normalized;
-            Vector3d north = Vector3d.Exclude(up, vesselState.Body.transform.up).normalized;
-            if (north.sqrMagnitude <= 0.0) return up;
-            Vector3d east = Vector3d.Cross(up, north).normalized;
-            double headingRad = MathHelpers.Deg2Rad(headingDeg);
-            double pitchRad = MathHelpers.Deg2Rad(pitchDeg);
-            Vector3d horizontal = north * Math.Cos(headingRad) + east * Math.Sin(headingRad);
+            if (!LocalSteeringFrame(vesselState.Position - vesselState.Body.position,
+                    vesselState.Body.transform.up, out Vector3d up, out Vector3d north, out Vector3d east))
+                return up;
 
-            return (horizontal * Math.Cos(pitchRad) + up * Math.Sin(pitchRad)).normalized;
+            return ComposeSteering(headingDeg, pitchDeg, up, north, east);
         }
 
         private static void GetPitchHeadingFromInertial(
@@ -535,24 +591,11 @@ namespace Blackbird.Guidance
 
             if (vesselState == null || vesselState.Body == null || inertialDirection.sqrMagnitude <= 0.0) return;
 
-            Vector3d up = (vesselState.Position - vesselState.Body.position).normalized;
-            Vector3d north = Vector3d.Exclude(up, vesselState.Body.transform.up).normalized;
-            if (north.sqrMagnitude <= 0.0) return;
-            Vector3d east = Vector3d.Cross(up, north).normalized;
-            Vector3d direction = inertialDirection.normalized;
-            Vector3d horizontal = Vector3d.Exclude(up, direction);
+            if (!LocalSteeringFrame(vesselState.Position - vesselState.Body.position,
+                    vesselState.Body.transform.up, out Vector3d up, out Vector3d north, out Vector3d east))
+                return;
 
-            pitchDeg = Math.Asin(MathHelpers.Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)) * 180.0 / Math.PI;
-
-            if (horizontal.sqrMagnitude > 0.0)
-            {
-                Vector3d horizontalDirection = horizontal.normalized;
-                headingDeg = MathHelpers.NormalizeDegrees(
-                    Math.Atan2(
-                        Vector3d.Dot(horizontalDirection, east),
-                        Vector3d.Dot(horizontalDirection, north)) *
-                    180.0 / Math.PI);
-            }
+            DecomposeSteering(inertialDirection, up, north, east, out pitchDeg, out headingDeg);
         }
 
         private static bool HasUsableOrbitState(VesselState vesselState, double targetAp, double targetPe)

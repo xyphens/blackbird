@@ -35,9 +35,154 @@ namespace Blackbird.LaunchHarness
             // sole source of the multi-orbit miss above).
             Scenario("CONTROL J2=0 (Keplerian closure, expect predCA ~0)", 51.6, 0.0, 20.0, 0.0, CapeLatitude);
 
+            CheckEccentricTargetUsesSemiMajorOrbit();
             CheckLaunchPlaneError();
             CheckPrecessionAwareWindow();
+            CheckSaturnVLaunchWindow();
             return 0;
+        }
+
+        // Faithful replay of the 2026-07-03 Saturn V flight in KSP's OWN frame (+Y pole, left-handed cross), using
+        // the exact pad vector and target orbit-normal pulled from psg.log. In flight the pad sat 25.4 deg OUT of
+        // the target plane at the launch instant (measured from the log) -> 33.7 deg insertion wedge. This asks the
+        // pure solver: given this geometry, WHERE are the real crossings, and is the pad actually in-plane there?
+        // We independently re-derive pad-out-of-plane at each recommended UT (not trusting the candidate's own
+        // PlaneErrorDeg), then repeat with the PHYSICAL (+pole) normal to see whether feeding the raw KSP anti-pole
+        // normal (what LaunchPlanner does via GetOrbitNormal) corrupts the window.
+        private static void CheckSaturnVLaunchWindow()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== Saturn V replay (KSP +Y frame; pad + target normal from psg.log 19:13) ===");
+
+            Vector3d pole = new Vector3d(0, 1, 0);                 // BodyAngularVelocity dir from the log
+            Vector3d pad  = new Vector3d(-1791948.50966043, 3050623.42134499, 5298465.21216374); // pad @ launch, body-rel
+            Vector3d nGame = new Vector3d(0.456838686690156, -0.877865370566086, 0.143703881311822); // as fed to PSG (anti-pole)
+
+            double padLat = Math.Asin(Math.Max(-1.0, Math.Min(1.0, Vector3d.Dot(pad.normalized, pole)))) * 180.0 / Math.PI;
+            double normAngle = Vector3d.Angle(nGame, pole);
+            double padOopNow = Math.Asin(Clamp01(Math.Abs(Vector3d.Dot(pad.normalized, nGame.normalized)))) * 180.0 / Math.PI;
+            Console.WriteLine(string.Format(
+                "  pad latitude {0:F2} deg | target normal {1:F1} deg from +pole ({2}) | pad out-of-plane NOW {3:F2} deg (flight: 25.42)",
+                padLat, normAngle, normAngle > 90.0 ? "ANTI-pole, raw KSP cross" : "+pole physical", padOopNow));
+
+            RunSaturnCase("as-flown (raw anti-pole normal)", pole, pad, nGame);
+            RunSaturnCase("physical (+pole) normal",         pole, pad, -nGame);
+        }
+
+        private static void RunSaturnCase(string label, Vector3d pole, Vector3d pad, Vector3d targetNormal)
+        {
+            Console.WriteLine("  -- " + label + " --");
+
+            // Circular 350 km mothership whose Vector3d.Cross(r,v) reproduces targetNormal (BAC-CAB is handedness-
+            // consistent as long as one cross convention is used throughout, which Unity/KSP guarantee).
+            double r = EarthRadius + 350000.0;
+            Vector3d rHat = Vector3d.Cross(pole, targetNormal).normalized;      // a point on the target plane (its node line)
+            Vector3d targetPos = r * rHat;
+            Vector3d targetVel = Math.Sqrt(EarthMu / r) * Vector3d.Cross(targetNormal, rHat).normalized;
+
+            LaunchWindowSolver.Inputs input = new LaunchWindowSolver.Inputs
+            {
+                Mu = EarthMu, BodyRadius = EarthRadius, AtmosphereDepth = EarthAtmosphere,
+                RotationPeriodSeconds = EarthSiderealDay, J2 = EarthJ2, J2ReferenceRadius = EarthRadius,
+                Pole = pole, RotationAxis = pole,
+                CurrentUt = 0.0, LaunchSitePosition = pad,
+                TargetPosition = targetPos, TargetVelocity = targetVel,
+                TargetOrbitNormal = targetNormal,
+                TargetSemiMajorRadius = r, TargetPeriodSeconds = 2.0 * Math.PI * Math.Sqrt(r * r * r / EarthMu),
+                AscentDurationSeconds = 500.0, RemainingDeltaV = 9500.0
+            };
+
+            List<LaunchWindowSolver.Candidate> candidates = LaunchWindowSolver.Solve(input);
+            if (candidates.Count == 0) { Console.WriteLine("     (no plane crossings found)"); return; }
+
+            foreach (LaunchWindowSolver.Candidate c in candidates)
+            {
+                if (!c.IsValid) { Console.WriteLine(string.Format("     {0,-11} INVALID: {1}", c.NodeName, c.Reason)); continue; }
+
+                // Independent truth: carry the pad forward by body rotation to the recommended UT and measure its
+                // true out-of-plane angle vs the target plane. The solver's PlaneErrorDeg must agree with this.
+                Vector3d padAtLaunch = RotateAbout(pad, pole, 2.0 * Math.PI * c.SecondsUntilLaunch / EarthSiderealDay);
+                double oopIndep = Math.Asin(Clamp01(Math.Abs(Vector3d.Dot(padAtLaunch.normalized, targetNormal.normalized)))) * 180.0 / Math.PI;
+                string verdict = oopIndep < 2.0 ? "OK (pad in plane)" : "BAD (pad NOT in plane)";
+                Console.WriteLine(string.Format(
+                    "     {0,-11} launch +{1,6:F1} min  hdg {2,5:F1}  candPlaneErr {3,4:F1}  indepPadOOP {4,5:F2} deg -> {5}",
+                    c.NodeName, c.SecondsUntilLaunch / 60.0, c.AzimuthDeg, c.PlaneErrorDeg, oopIndep, verdict));
+            }
+        }
+
+        private static void CheckEccentricTargetUsesSemiMajorOrbit()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== Eccentric target sizing (phasing uses semi-major orbit, not current radius) ===");
+
+            double peAlt = 300000.0;
+            double apAlt = 900000.0;
+            double semiMajorRadius = EarthRadius + 0.5 * (peAlt + apAlt);
+            double period = 2.0 * Math.PI * Math.Sqrt(semiMajorRadius * semiMajorRadius * semiMajorRadius / EarthMu);
+
+            bool found = false;
+            for (double trueAnomalyDeg = 0.0; trueAnomalyDeg < 360.0; trueAnomalyDeg += 15.0)
+            {
+                StateFromElements(semiMajorRadius, (apAlt - peAlt) / (2.0 * EarthRadius + apAlt + peAlt),
+                    51.6, 0.0, trueAnomalyDeg, EarthMu, out Vector3d targetPos, out Vector3d targetVel);
+
+                LaunchWindowSolver.Inputs corrected = EccentricBaseInput(targetPos, targetVel);
+                corrected.TargetSemiMajorRadius = semiMajorRadius;
+                corrected.TargetPeriodSeconds = period;
+
+                LaunchWindowSolver.Inputs legacy = corrected;
+                legacy.TargetSemiMajorRadius = 0.0;
+                legacy.TargetPeriodSeconds = 0.0;
+
+                LaunchWindowSolver.Candidate cNew = FirstValid(LaunchWindowSolver.Solve(corrected));
+                LaunchWindowSolver.Candidate cOld = FirstValid(LaunchWindowSolver.Solve(legacy));
+                if (!cNew.IsValid || !cOld.IsValid) continue;
+
+                double delta = Math.Abs(cOld.PhasingApoapsisAlt - cNew.PhasingApoapsisAlt);
+                if (delta < 200000.0) continue;
+
+                found = true;
+                bool newInBand = cNew.PhasingApoapsisAlt <= 0.5 * (peAlt + apAlt) + 300000.0;
+                bool oldWasCurrentRadiusBiased = delta > 200000.0;
+                string verdict = newInBand && oldWasCurrentRadiusBiased ? "PASS" : "FAIL";
+                Console.WriteLine(string.Format(
+                    "  nu {0,5:F0} deg  corrected {1,5:F0} km  legacy {2,5:F0} km  delta {3,5:F0} km  -> {4}",
+                    trueAnomalyDeg, cNew.PhasingApoapsisAlt / 1000.0, cOld.PhasingApoapsisAlt / 1000.0,
+                    delta / 1000.0, verdict));
+
+                if (verdict != "PASS") throw new Exception("Eccentric target sizing regression.");
+                break;
+            }
+
+            if (!found) throw new Exception("Eccentric target sizing check did not find an adversarial case.");
+        }
+
+        private static LaunchWindowSolver.Inputs EccentricBaseInput(Vector3d targetPos, Vector3d targetVel)
+        {
+            return new LaunchWindowSolver.Inputs
+            {
+                Mu = EarthMu,
+                BodyRadius = EarthRadius,
+                AtmosphereDepth = EarthAtmosphere,
+                RotationPeriodSeconds = EarthSiderealDay,
+                J2 = 0.0,
+                J2ReferenceRadius = EarthRadius,
+                Pole = Pole,
+                CurrentUt = 0.0,
+                LaunchSitePosition = SiteVector(EarthRadius, CapeLatitude, CapeLongitude),
+                TargetPosition = targetPos,
+                TargetVelocity = targetVel,
+                TargetOrbitNormal = Vector3d.Cross(targetPos, targetVel).normalized,
+                AscentDurationSeconds = 500.0,
+                RemainingDeltaV = 9500.0
+            };
+        }
+
+        private static LaunchWindowSolver.Candidate FirstValid(List<LaunchWindowSolver.Candidate> candidates)
+        {
+            foreach (LaunchWindowSolver.Candidate c in candidates)
+                if (c.IsValid) return c;
+            return default(LaunchWindowSolver.Candidate);
         }
 
         // The crossing search must meet the target plane AS IT WILL BE at the launch UT, not the frozen now-plane.
@@ -278,6 +423,23 @@ namespace Blackbird.LaunchHarness
 
             position = radius * rHat;
             velocity = Math.Sqrt(mu / radius) * vHat;
+        }
+
+        private static void StateFromElements(double semiMajorRadius, double eccentricity, double incDeg,
+            double lanDeg, double trueAnomalyDeg, double mu, out Vector3d position, out Vector3d velocity)
+        {
+            double i = incDeg * Math.PI / 180.0;
+            double O = lanDeg * Math.PI / 180.0;
+            double nu = trueAnomalyDeg * Math.PI / 180.0;
+            double cosI = Math.Cos(i), sinI = Math.Sin(i);
+            double p = semiMajorRadius * (1.0 - eccentricity * eccentricity);
+            double r = p / (1.0 + eccentricity * Math.Cos(nu));
+
+            Vector3d pHat = new Vector3d(Math.Cos(O), Math.Sin(O), 0.0);
+            Vector3d qHat = new Vector3d(-Math.Sin(O) * cosI, Math.Cos(O) * cosI, sinI);
+
+            position = r * (Math.Cos(nu) * pHat + Math.Sin(nu) * qHat);
+            velocity = Math.Sqrt(mu / p) * (-Math.Sin(nu) * pHat + (eccentricity + Math.Cos(nu)) * qHat);
         }
     }
 }

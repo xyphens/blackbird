@@ -44,6 +44,8 @@ namespace Blackbird.Guidance
         {
             if (vessel == null || plan == null) return null;
 
+            if (plan.TargetVessel != null) plan.TargetOrbitNormal = TrajectoryProvider.GetOrbitNormal(plan.TargetVessel);
+
             VesselState vesselState = VesselState.FromVessel(vessel);
             LaunchCandidate selectedCandidate = plan.SelectedCandidate;
             AscentProfile ascentProfile = selectedCandidate != null ? selectedCandidate.AscentProfile : plan.AscentProfile;

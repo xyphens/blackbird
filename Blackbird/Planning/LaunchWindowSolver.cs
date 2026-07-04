@@ -37,6 +37,8 @@ namespace Blackbird.Planning
             public Vector3d TargetOrbitNormal;       // PHYSICAL prograde normal (same side as Pole for a prograde
                                                      // orbit). Supplied because cross(r,v) flips sign under KSP's
                                                      // left-handed frame; falls back to cross(r,v) if zero.
+            public double TargetSemiMajorRadius;      // target orbit size; falls back to |TargetPosition| for legacy/circular callers
+            public double TargetPeriodSeconds;        // target period; falls back to Kepler period from TargetSemiMajorRadius
 
             public double AscentDurationSeconds;     // estimated launch -> insertion
             public double RemainingDeltaV;           // total vehicle dV budget
@@ -229,9 +231,18 @@ namespace Blackbird.Planning
             if (c.SecondsUntilLaunch < 0.0 || c.SecondsUntilLaunch > MaxLaunchWaitSeconds)
             { c.Reason = "Launch is more than a day out."; return c; }
 
-            double targetRadius = input.TargetPosition.magnitude;
+            // double targetRadius = input.TargetPosition.magnitude;
+            // added by codex
+            double targetRadius = MathHelpers.IsFinite(input.TargetSemiMajorRadius) && input.TargetSemiMajorRadius > input.BodyRadius
+                ? input.TargetSemiMajorRadius
+                : input.TargetPosition.magnitude;
             double targetAlt = targetRadius - input.BodyRadius;
-            double targetPeriod = 2.0 * Math.PI * Math.Sqrt(Math.Pow(targetRadius, 3.0) / input.Mu);
+            //double targetPeriod = 2.0 * Math.PI * Math.Sqrt(Math.Pow(targetRadius, 3.0) / input.Mu);
+            // added by codex
+            double targetPeriod = MathHelpers.IsFinite(input.TargetPeriodSeconds) && input.TargetPeriodSeconds > 0.0
+                ? input.TargetPeriodSeconds
+                : 2.0 * Math.PI * Math.Sqrt(Math.Pow(targetRadius, 3.0) / input.Mu);
+
             double inclination = Vector3d.Angle(hHat, pole);
             double latitudeDeg = Math.Asin(MathHelpers.Clamp(
                 Vector3d.Dot(input.LaunchSitePosition.normalized, pole), -1.0, 1.0)) * 180.0 / Math.PI;
