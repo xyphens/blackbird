@@ -78,6 +78,7 @@ namespace Blackbird.Rendezvous
         private double _warpTargetUt;
         private double _warpLeadSeconds = WarpLeadMinSeconds;   // lead actually used for the active warp
         private bool _warpingToCa;                              // CA warp (re-targeted live) vs Hohmann ignition warp
+        private bool _warpToDeepest;                            // which live event feeds the CA-warp retarget
         public bool Warping { get; private set; }
 
         //public RendezvousPhase Phase => _executor.Phase;
@@ -154,6 +155,13 @@ namespace Blackbird.Rendezvous
             set { _executor.ParkingDistanceEnabled = value; }
         }
 
+        // MV "Closest approach" sub-box: kill burn triggers on the live range-rate CA, not the park distance.
+        public bool MatchAtClosestApproach
+        {
+            get { return _executor.MatchAtClosestApproach; }
+            set { _executor.MatchAtClosestApproach = value; }
+        }
+
         /**
          *  >>> USER INPUTS <<<
         **/
@@ -177,8 +185,9 @@ namespace Blackbird.Rendezvous
 
         // dufixme: abort and resetmaneuver are basically identical
         public void ResetManeuver() {
-            // dufixme: why are these being reset?  
+            // dufixme: why are these being reset?
             ParkingDistanceEnabled = false;
+            MatchAtClosestApproach = false;
             ParkingDistanceMeters = 0.0;
             _executor.Reset(); 
             _attitude.Reset(); 
@@ -205,31 +214,16 @@ namespace Blackbird.Rendezvous
             _executor.Reset();
         }
 
-        // Warp toward the predicted closest approach (shared safe-warp ladder), auto-stopping a lead short
-        // and cancelling the moment a burn starts. No-op without a CA estimate.
-        //public void WarpToClosestApproach()
-        //{
-        //    if (bbState.InterceptPhase == InterceptPhase.Executing) return;
-        //    //double timeToCa = LiveTimeToClosestApproachSeconds;
-        //    double timeToCa = MathHelpers.IsFinite(LiveTimeToDeepestApproachSeconds) 
-        //                    ? LiveTimeToDeepestApproachSeconds 
-        //                    : LiveTimeToClosestApproachSeconds;
-
-        //    double lead = ComputeWarpLeadSeconds();
-        //    if (!MathHelpers.IsFinite(timeToCa) || timeToCa <= lead) return;
-
-        //    _warpLeadSeconds = lead;
-        //    _warpTargetUt = Planetarium.GetUniversalTime() + timeToCa;
-        //    _warpingToCa = true;
-        //    Warping = true;
-        //}
-
-        // warp to CA (deepest by default) with a slew lead time
+        // Warp toward an approach event (shared safe-warp ladder), auto-stopping a lead short and cancelling
+        // the moment a burn starts. deepest=true targets the deepest pass in the horizon; the choice is
+        // remembered so the in-warp retarget follows the SAME event (the old retarget always chased the next
+        // pass, which silently redirected a deepest-pass warp). No-op without a CA estimate.
         public void WarpToApproach(bool deepest = false)
         {
             if (bbState.InterceptPhase == InterceptPhase.Executing) return;
             double lead = ComputeWarpLeadSeconds();
-            double timeToCa = MathHelpers.IsFinite(LiveTimeToDeepestApproachSeconds) && deepest
+            _warpToDeepest = deepest && MathHelpers.IsFinite(LiveTimeToDeepestApproachSeconds);
+            double timeToCa = _warpToDeepest
                             ? LiveTimeToDeepestApproachSeconds
                             : LiveTimeToClosestApproachSeconds;
 
@@ -320,6 +314,7 @@ namespace Blackbird.Rendezvous
             if (Warping) WarpHelper.Stop();
             Warping = false;
             _warpingToCa = false;
+            _warpToDeepest = false;
             _warpTargetUt = 0.0;
         }
 
@@ -356,9 +351,10 @@ namespace Blackbird.Rendezvous
                 // proper lead short of the REAL event rather than a frozen snapshot. A momentary NotFound keeps
                 // the last good target so the warp doesn't bail and force a manual restart. The Hohmann ignition
                 // warp keeps its fixed target.
-                if (_warpingToCa && MathHelpers.IsFinite(LiveTimeToClosestApproachSeconds))
+                double liveTimeToEvent = _warpToDeepest ? LiveTimeToDeepestApproachSeconds : LiveTimeToClosestApproachSeconds;
+                if (_warpingToCa && MathHelpers.IsFinite(liveTimeToEvent))
                 {
-                    _warpTargetUt = now + LiveTimeToClosestApproachSeconds;
+                    _warpTargetUt = now + liveTimeToEvent;
                     _warpLeadSeconds = ComputeWarpLeadSeconds();
                 }
 

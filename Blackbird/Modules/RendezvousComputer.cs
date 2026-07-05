@@ -46,6 +46,8 @@ namespace Blackbird.Modules
 
         // tells executor if it should auto-MV when finished
         private bool ParkingDistanceEnabled;
+        // MV sub-box: kill burn triggers on the live closest approach instead of the park distance
+        private bool MatchAtClosestApproach;
         private double _parkingDistance = 100.0;
         private double DefaultParkingDistance = 100.0;
         private string ParkingDistance
@@ -267,16 +269,24 @@ namespace Blackbird.Modules
 
             GUI.enabled = true;
 
-            // Close-approach park distance: when checked, close in to (and velocity-match at) the input
-            // distance instead of the default ~100 m. Always editable so it can be set before executing.
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Park at distance:", GUILayout.Width(160));
-            ParkingDistance = GUILayout.TextField(ParkingDistance, GUILayout.Width(60));
-            GUILayout.Label("m");
-            GUILayout.EndHorizontal();
+            // enabled = FA will run MV when done; MV will wait for its trigger: the park distance, or the live
+            // closest approach when the sub-box is checked (which greys the distance input — the CA is the mark).
+            // FA ALWAYS consumes the distance as its don't-overburn margin, so the input also shows for FA.
+            ParkingDistanceEnabled = GUILayout.Toggle(ParkingDistanceEnabled, " Match velocities at distance", GUILayout.Width(200));
+            if (ParkingDistanceEnabled || bbState.RendezvousMethod == RendezvousMethod.FinalApproach)
+            {
+                GUILayout.BeginHorizontal();
+                GUI.enabled = !MatchAtClosestApproach;
+                GUILayout.Label("Park at distance:", GUILayout.Width(160));
+                ParkingDistance = GUILayout.TextField(ParkingDistance, GUILayout.Width(60));
+                GUILayout.Label("m");
+                GUI.enabled = true;
+                GUILayout.EndHorizontal();
 
-            // enabled = FA will run MV when done; MV will wait for parking distance
-            ParkingDistanceEnabled = GUILayout.Toggle(ParkingDistanceEnabled, " Match velocities at CA", GUILayout.Width(200));
+                // The CA trigger is an MV concept; keep the sub-box tied to the MV toggle, not FA.
+                if (ParkingDistanceEnabled)
+                    MatchAtClosestApproach = GUILayout.Toggle(MatchAtClosestApproach, " Closest approach", GUILayout.Width(200));
+            }
 
             if (bbState.RendezvousMethod == RendezvousMethod.FinalApproach)
             {
@@ -323,6 +333,7 @@ namespace Blackbird.Modules
                 _parkingDistance = DefaultParkingDistance;
                 ParkingDistance = DefaultParkingDistance.ToString("F0");
                 ParkingDistanceEnabled = false;
+                MatchAtClosestApproach = false;
                 _faError = null;
                 _faWillDeorbit = false;
                 _handler.ResetManeuver();
@@ -411,6 +422,7 @@ namespace Blackbird.Modules
         private void SetParkingDistance()
         {
             _handler.ParkingDistanceEnabled = ParkingDistanceEnabled;
+            _handler.MatchAtClosestApproach = MatchAtClosestApproach;
             _handler.ParkingDistanceMeters = !double.IsNaN(_parkingDistance) && _parkingDistance >= 0.0
                                 ? _parkingDistance
                                 : DefaultParkingDistance;

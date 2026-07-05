@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python \"C:/Users/David/AppData/Local/Temp/claude/c--Users-David-source-repos-Blackbird-Blackbird/8c0d0ed3-e5c0-4781-b341-793378c7822e/scratchpad/pitch.py\" \"/d/SteamLibrary/steamapps/common/Kerbal Space Program Development/glog/Blackbird/psg.log\")"
+      "Bash(python \"C:/Users/David/AppData/Local/Temp/claude/c--Users-David-source-repos-Blackbird-Blackbird/8c0d0ed3-e5c0-4781-b341-793378c7822e/scratchpad/pitch.py\" \"/d/SteamLibrary/steamapps/common/Kerbal Space Program Development/glog/Blackbird/psg.log\")",
+      "PowerShell(& \"c:\\\\Users\\\\David\\\\source\\\\repos\\\\Blackbird\\\\Blackbird\\\\RendezvousHarness\\\\bin\\\\Debug\\\\Blackbird.RendezvousHarness.exe\")"
     ]
   }
 }

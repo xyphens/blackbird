@@ -143,13 +143,13 @@ namespace Blackbird.Guidance
             _targetUt = bbState.LaunchPlan?.SelectedCandidate?.LaunchUt ?? 0;
             bbState.ActiveModule = BlackbirdModule.LaunchGuidance;
             RefreshGuidanceComputer();
-            GuidanceMode = GuidanceMode.None;
             State = LaunchGuidanceState.AwaitingLaunch;
         }
 
         // Begin the ascent once a flight mode is chosen while armed (stops any launch warp first).
         public void BeginAscent()
         {
+            if (State == LaunchGuidanceState.PlanAccepted) StartGuidance();
             if (State != LaunchGuidanceState.AwaitingLaunch && State != LaunchGuidanceState.WarpingToLaunch) return;
             TimeWarp.SetRate(0, true);
             _ascentGuidance.Reset();
@@ -198,9 +198,9 @@ namespace Blackbird.Guidance
 
             if (gMode == GuidanceMode.None)
             {
-                // reset guidance
-                bbState.ActiveModule = BlackbirdModule.None;
-                State = LaunchGuidanceState.Idle;
+                // disengage flight mode
+                GuidanceMode = GuidanceMode.None;
+                _attitudeControl.Reset();
                 _ascentGuidance.Reset();
                 return;
             }
@@ -220,6 +220,8 @@ namespace Blackbird.Guidance
 
             if (vessel == null || GuidanceInfo == null)
             {
+                _attitudeControl.Reset();
+                _ascentGuidance.Reset();
                 GuidanceMode = gMode;
                 return;
             }
@@ -391,14 +393,7 @@ namespace Blackbird.Guidance
                 return;
             }
 
-            //if (State != LaunchGuidanceState.GuidingAscent
-            //    || GuidanceMode == GuidanceMode.None
-            //    || GuidanceInfo == null)
-            //{
-            //    return;
-            //}
-
-            double throttle = bbState.GuidanceMode == GuidanceMode.Manual ? ManualThrottleCommand : GuidanceInfo.CommandThrottle;
+            double throttle = GuidanceMode == GuidanceMode.Manual ? ManualThrottleCommand : GuidanceInfo.CommandThrottle;
 
             if (IsPrelaunchHold(vessel))
             {

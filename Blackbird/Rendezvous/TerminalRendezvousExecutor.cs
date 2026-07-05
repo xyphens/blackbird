@@ -46,6 +46,7 @@ namespace Blackbird.Rendezvous
         // --- final approach tuning ---
         public double ParkingDistanceMeters = 100.0; // we will ALWAYS stop by at least this distance if MV is used
         public bool ParkingDistanceEnabled = false; // used to determine a) if E: MV should wait or b) if E: FA should flip + MV;  NOTE: does not determine if we use ParkingDistanceMeters or not, just whether we flip
+        public bool MatchAtClosestApproach = false; // MV "Closest approach" sub-box: kill burn triggers on the live range-rate CA instead of the park distance
         private double burnMvAtDistance = 0.0;
         // Final-approach closing speed = min(brake-to-rest to the parking distance, Max Closing Speed)
         //public const double RendezDistanceApproachGainDefault = 0.2;
@@ -153,6 +154,7 @@ namespace Blackbird.Rendezvous
             BrakingDecelMetersPerSecondSquared = 5.0;
             _burnArmed = false;
             _matchArmed = false;
+            _mvTerminalBraking = false;
             ResetFinalApproach();
             HasLastInterceptBurnReport = false;
             return true;
@@ -167,6 +169,7 @@ namespace Blackbird.Rendezvous
 
             _burnArmed = false;
             _matchArmed = false;
+            _mvTerminalBraking = false;
             _faClosingDone = false;
             burnMvAtDistance = 0.0;
             ResetFinalApproach();
@@ -398,8 +401,10 @@ namespace Blackbird.Rendezvous
                 return StepIntercept(world, out stageComplete);
             if (bbState.RendezvousMethod == RendezvousMethod.MatchVelocity)
                 return ParkingDistanceEnabled
-                    ? BrakeAtTerminalDistance(world, out stageComplete) // "match velocities at X": close, ride in, park
-                    : StepMatchVelocity(world, out stageComplete);      // unchecked: immediate null
+                    ? (MatchAtClosestApproach
+                        ? BrakeAtClosestApproach(world, out stageComplete)    // sub-box: ignite centered on the live CA
+                        : BrakeAtTerminalDistance(world, out stageComplete))  // "match velocities at X": close, ride in, park
+                    : StepMatchVelocity(world, out stageComplete);            // unchecked: immediate null
             if (bbState.RendezvousMethod == RendezvousMethod.FinalApproach)
                 return StepFinalApproach(world, out stageComplete, ParkingDistanceEnabled); // chase; box checked -> auto-park, else hand back
 
@@ -596,24 +601,66 @@ namespace Blackbird.Rendezvous
 
             if (!_mvTerminalBraking)
             {
-                // where do I need to be to have room to kill velocity and stop by the park distance?
-                double closingSpeed = Math.Max(0.0, Vector3d.Dot(relVel, bearing));
+                // Where do I need to be to have room to kill velocity and stop by the park distance? Budget the
+                // FULL relative speed, not its line-of-sight component: on a flyby arc the LOS rate decays to
+                // zero near CA while the speed to kill doesn't, which collapsed the trigger toward the park
+                // distance (late fire) and never fired at all once the CA drifted outside it. Erring early is
+                // the safe direction for a brake.
+                double relSpeed = relVel.magnitude;
                 burnMvAtDistance = ParkingDistanceMeters
-                    + closingSpeed * closingSpeed / (2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared));
+                    + relSpeed * relSpeed / (2.0 * Math.Max(0.01, BrakingDecelMetersPerSecondSquared));
 
-                if (relPos.magnitude > Math.Max(ParkingDistanceMeters, burnMvAtDistance))
+                if (relPos.magnitude > burnMvAtDistance)
                 {
                     // not there yet: hold retrograde and wait
                     Vector3d holdDir = relVel.sqrMagnitude > 1e-12 ? (-relVel).normalized : bearing;
                     return Burn(holdDir, 0.0, string.Format(
-                        "match velocity: holding, brake at {0:F0} m ({1:F0} m, {2:F2} m/s closing)",
-                        burnMvAtDistance, relPos.magnitude, closingSpeed));
+                        "match velocity: holding, brake at {0:F0} m ({1:F0} m, {2:F2} m/s)",
+                        burnMvAtDistance, relPos.magnitude, relSpeed));
                 }
 
                 _mvTerminalBraking = true;   // reached the mark — from here it's just "kill velocity now"
             }
 
             return StepMatchVelocity(world, out stageComplete);   // committed: full null to completion, no re-gating
+        }
+
+        // "Match velocities at closest approach" (MV + Closest approach sub-box): hold retrograde and ignite so
+        // the kill burn straddles the LIVE closest approach. The trigger is time-based and refreshed every tick
+        // from the measured state (tCA = r·v/|v|², the range-rate zero crossing), so a drifting CA moves the
+        // ignition with it — no frozen distance to deadlock against. Commits at ignition like the distance brake.
+        private RendezvousCommand BrakeAtClosestApproach(IRendezvousWorld world, out bool stageComplete)
+        {
+            stageComplete = false;
+            Vector3d relPos = world.TargetPosition - world.ActivePosition;
+            Vector3d relVel = world.ActiveVelocity - world.TargetVelocity;
+
+            if (!_mvTerminalBraking)
+            {
+                double relSpeed = relVel.magnitude;
+                double a = Math.Max(0.01, BrakingDecelMetersPerSecondSquared);
+
+                // Time to the range-rate zero crossing (straight-line estimate, refreshed every tick; it
+                // converges as the pass nears). <= 0 means at/past closest approach: kill now.
+                double timeToCa = relVel.sqrMagnitude > 1e-12
+                    ? Vector3d.Dot(relPos, relVel) / relVel.sqrMagnitude
+                    : 0.0;
+                double igniteLead = 0.5 * relSpeed / a + Math.Max(0.0, FlipSlewTimeSeconds);
+
+                if (timeToCa > igniteLead)
+                {
+                    Vector3d holdDir = relVel.sqrMagnitude > 1e-12
+                        ? (-relVel).normalized
+                        : (relPos.magnitude > 1e-6 ? relPos / relPos.magnitude : Vector3d.zero);
+                    return Burn(holdDir, 0.0, string.Format(
+                        "match velocity: holding for closest approach ({0:F0} s, {1:F0} m, {2:F2} m/s)",
+                        timeToCa, relPos.magnitude, relSpeed));
+                }
+
+                _mvTerminalBraking = true;   // centered ignition reached — kill velocity to completion
+            }
+
+            return StepMatchVelocity(world, out stageComplete);
         }
 
         private double SafeClosingSpeed(double distanceGap)

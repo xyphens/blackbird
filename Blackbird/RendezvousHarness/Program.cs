@@ -58,6 +58,8 @@ namespace Blackbird.RendezvousHarness
             CheckDockingController();
             CheckMatchVelocityAtDistanceHoldsWhileFinalApproachChases();
             CheckMatchVelocityAtDistanceBrakesAtTrigger();
+            CheckMatchVelocityBrakeFiresOnFlyby();
+            CheckMatchVelocityAtClosestApproach();
             CheckFinalApproachIsTwoDiscreteBurnsNoPulsing();
             CheckFinalApproachFrozenAxisHoldsConstantDirection();
             CheckMatchVelocityReaimsEachTick();
@@ -1800,6 +1802,144 @@ namespace Blackbird.RendezvousHarness
             hav.ForceExecute(RendezvousMethod.MatchVelocity);
             RendezvousCommand burn = hav.Update(haven, 8.0, 60.0);
             AssertTrue("fires inside the parking band", burn.Throttle > 0.0);
+        }
+
+        // Case 41: reproduces the in-game flyby deadlock (park 1000 m, CA ~1100 m, 50 m/s mostly tangential
+        // near the pass). The old trigger budgeted only the line-of-sight closing rate, which decays to zero
+        // near CA — the trigger collapsed toward the park distance, and with CA outside it the range NEVER
+        // crossed it: the brake never fired. The full-relative-speed budget must fire at park + v²/2a while
+        // still inbound and null the pair near the pass. Straight-line sim, decel matched to the sim engine.
+        private static void CheckMatchVelocityBrakeFiresOnFlyby()
+        {
+            Console.WriteLine("Case 41: MV-at-distance brake fires on a tangential flyby (no LOS-collapse deadlock)");
+
+            // relVel = (49.70, 5.5, 0): |v| ≈ 50.0, straight-line miss = 10000 * 5.5/50 ≈ 1100 m > park 1000 m.
+            StaticWorld world = new StaticWorld
+            {
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                TargetPosition = new Vector3d(10000.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(49.70, 105.5, 0)
+            };
+
+            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
+            ex.ParkingDistanceEnabled = true;
+            ex.ParkingDistanceMeters = 1000.0;
+            ex.BrakingDecelMetersPerSecondSquared = 5.0;   // match the sim's applied brake accel
+            ex.ForceExecute(RendezvousMethod.MatchVelocity);
+
+            const double maxAccel = 5.0;
+            const double dt = 0.05;
+            int episodes = 0, ticks = 0;
+            bool burningPrev = false;
+            double firstBurnRange = double.NaN;
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 1000000)
+            {
+                RendezvousCommand cmd = ex.Update(world);
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
+
+                bool burningNow = cmd.HasBurn && cmd.Throttle > 0.0;
+                if (burningNow && !burningPrev)
+                {
+                    episodes++;
+                    if (double.IsNaN(firstBurnRange)) firstBurnRange = (world.TargetPosition - world.ActivePosition).magnitude;
+                }
+                burningPrev = burningNow;
+
+                if (burningNow)
+                    world.ActiveVelocity += cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt);
+
+                world.ActivePosition += world.ActiveVelocity * dt;
+                world.TargetPosition += world.TargetVelocity * dt;
+            }
+
+            double rangeAfter = (world.TargetPosition - world.ActivePosition).magnitude;
+            double relAfter = (world.ActiveVelocity - world.TargetVelocity).magnitude;
+
+            AssertTrue("brake completes -> idle (old trigger deadlocked here)", state.InterceptPhase == InterceptPhase.Idle);
+            AssertTrue("single kill burn", episodes == 1);
+            AssertTrue("fires at the full-speed trigger (~1250 m, got " + firstBurnRange.ToString("F0") + ")",
+                firstBurnRange >= 1240.0 && firstBurnRange <= 1251.0);
+            AssertTrue("velocity nulled (<0.6 m/s)", relAfter < 0.6);
+            AssertTrue("parked outside the park distance, near the pass (1050-1250 m)",
+                rangeAfter >= 1050.0 && rangeAfter <= 1250.0);
+
+            Console.WriteLine(string.Format(
+                "    fired at {0:F0} m  ->  range {1:F0} m  relSpeed {2:F3} m/s  ticks={3}",
+                firstBurnRange, rangeAfter, relAfter, ticks));
+        }
+
+        // Case 42: MV "Closest approach" mode ignores the park-distance trigger and ignites centered on the
+        // LIVE range-rate closest approach: it must keep holding well INSIDE the distance-mode trigger (the
+        // discriminator), refresh its timing when the CA drifts mid-hold (target velocity nudged), fire while
+        // still closing, and end velocity-matched straddling the pass.
+        private static void CheckMatchVelocityAtClosestApproach()
+        {
+            Console.WriteLine("Case 42: MV-at-closest-approach ignites centered on the live CA (distance trigger ignored)");
+
+            StaticWorld world = new StaticWorld
+            {
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                TargetPosition = new Vector3d(10000.0, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(49.70, 105.5, 0)
+            };
+
+            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
+            ex.ParkingDistanceEnabled = true;
+            ex.MatchAtClosestApproach = true;
+            ex.ParkingDistanceMeters = 1000.0;             // distance mode would fire at ~1250 m — must be ignored
+            ex.BrakingDecelMetersPerSecondSquared = 5.0;
+            ex.ForceExecute(RendezvousMethod.MatchVelocity);
+
+            const double maxAccel = 5.0;
+            const double dt = 0.05;
+            int episodes = 0, ticks = 0;
+            bool burningPrev = false, nudged = false, closingAtIgnition = false;
+            double firstBurnRange = double.NaN;
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 1000000)
+            {
+                Vector3d relPos = world.TargetPosition - world.ActivePosition;
+
+                // Drift the CA mid-hold: a 2 m/s cross-track nudge moves the pass; the time trigger must refresh.
+                if (!nudged && relPos.magnitude < 4000.0)
+                {
+                    world.TargetVelocity += new Vector3d(0, 0, 2.0);
+                    nudged = true;
+                }
+
+                RendezvousCommand cmd = ex.Update(world);
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
+
+                bool burningNow = cmd.HasBurn && cmd.Throttle > 0.0;
+                if (burningNow && !burningPrev && double.IsNaN(firstBurnRange))
+                {
+                    firstBurnRange = relPos.magnitude;
+                    closingAtIgnition = Vector3d.Dot(relPos, world.ActiveVelocity - world.TargetVelocity) > 0.0;
+                }
+                if (burningNow && !burningPrev) episodes++;
+                burningPrev = burningNow;
+
+                if (burningNow)
+                    world.ActiveVelocity += cmd.ThrustDirection.normalized * (cmd.Throttle * maxAccel * dt);
+
+                world.ActivePosition += world.ActiveVelocity * dt;
+                world.TargetPosition += world.TargetVelocity * dt;
+            }
+
+            double rangeAfter = (world.TargetPosition - world.ActivePosition).magnitude;
+            double relAfter = (world.ActiveVelocity - world.TargetVelocity).magnitude;
+
+            AssertTrue("completes -> idle", state.InterceptPhase == InterceptPhase.Idle);
+            AssertTrue("nudge applied mid-hold", nudged);
+            AssertTrue("single kill burn", episodes == 1);
+            AssertTrue("held past the distance trigger, ignited near the pass (1050-1200 m, got "
+                + firstBurnRange.ToString("F0") + ")", firstBurnRange >= 1050.0 && firstBurnRange <= 1200.0);
+            AssertTrue("ignited while still closing (centered burn)", closingAtIgnition);
+            AssertTrue("velocity nulled (<0.6 m/s)", relAfter < 0.6);
+            AssertTrue("parked straddling the pass (1000-1250 m)", rangeAfter >= 1000.0 && rangeAfter <= 1250.0);
+
+            Console.WriteLine(string.Format(
+                "    fired at {0:F0} m (closing={1})  ->  range {2:F0} m  relSpeed {3:F3} m/s  ticks={4}",
+                firstBurnRange, closingAtIgnition, rangeAfter, relAfter, ticks));
         }
 
         // Case 24: ThrustEnvelope bins POSITIVE authority into each of the 6 directions and reads it back.
