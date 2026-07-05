@@ -18,7 +18,7 @@ namespace Blackbird.Guidance
         private const double TerminalSolveIntervalSeconds = 0.5;
         private const double SolutionStaleSeconds = 20.0;
         private const double ExpiredSolutionGraceSeconds = 0.25;
-        private const double TerminalOverrunGraceSeconds = 30.0;
+        private const double TerminalOverrunGraceSeconds = 30.0; // this needs to be WAY lower... 30 seconds overburn most likely means empty tank and god knows where it ends up
         //private const double TerminalSteeringFreezeRemainingVelocity = 15.0; // hold steering over this remaining m/s dV (prevent PSG doing a weird flip-up thing)
 
         // this effectively asks our guidance computer to go into overdrive calculating a more optimal orbit
@@ -28,6 +28,10 @@ namespace Blackbird.Guidance
 
         // Safety margin on how much stage dv we require to reach orbit
         private const double StageTrimVelocityMargin = 1.25;
+
+        // Floor of the terminal shape band: twice the validated ±2.5 km insertion dispersion
+        // (183x188 / 188x183 / 150.2x150.0 flights), so the stock (J2=0) gate keeps a real tolerance.
+        private const double ShapeBandFloorMeters = 5000.0;
 
         private const int MaxConsecutiveOptimizerFailures = 5;
         private int _optimizerFailCount = 0;
@@ -47,6 +51,11 @@ namespace Blackbird.Guidance
 
         private int _lastVesselStage = int.MinValue;
         private bool _runColdSolve;
+
+        // UT when the terminal cut first got blocked on shape; bounds the extra closed-loop time.
+        private double _shapeBlockStartUt = double.NaN;
+
+        public enum TerminalCutDecision { NotReady, Complete, BlockedOnShape }
 
         // expose guidance state to listeners
         public double PredictedApoapsisAlt { get; private set; } = double.NaN;
@@ -74,6 +83,34 @@ namespace Blackbird.Guidance
 
             _lastVesselStage = int.MinValue;
             _runColdSolve = false;
+            _shapeBlockStartUt = double.NaN;
+        }
+
+        // Shape band for the terminal cut: the J2 short-period radial breathing (2x amplitude ≈ 3·J2·Re²/r,
+        // ~20 km at LEO — the spread the mean-radius latch cannot remove), floored so stock keeps a tolerance.
+        public static double TerminalShapeBandMeters(double j2, double referenceRadius, double radius)
+        {
+            double breathing = 3.0 * Math.Abs(j2) * referenceRadius * referenceRadius / Math.Max(1.0, radius);
+            return Math.Max(breathing, ShapeBandFloorMeters);
+        }
+
+        // Pure terminal-cut decision (harness-exercised). Energy pins orbit SIZE; the J2 mean radius is the
+        // monotone/reachable latch (a hard real-Pe gate ran away 06-24: burning at periapsis raises Ap, not
+        // Pe); the banded real-Pe check pins SHAPE, blocking the SMA-right/eccentric cut (2026-07-05: 89x322
+        // completed "on target" against a ~200 km circular target). The caller must time-bound
+        // BlockedOnShape so a structurally unreachable shape cannot burn forever.
+        public static TerminalCutDecision DecideTerminalCut(
+            double specificEnergy, double terminalSpecificEnergy,
+            double realMinRadius, double realMaxRadius,
+            double targetRadius, double targetPeRadius, double shapeBandMeters)
+        {
+            if (!MathHelpers.IsFinite(terminalSpecificEnergy) || specificEnergy < terminalSpecificEnergy)
+                return TerminalCutDecision.NotReady;
+            if (0.5 * (realMinRadius + realMaxRadius) < targetRadius)
+                return TerminalCutDecision.NotReady;
+            return realMinRadius >= targetPeRadius - shapeBandMeters
+                ? TerminalCutDecision.Complete
+                : TerminalCutDecision.BlockedOnShape;
         }
 
         // Logs measured |h| and specific energy at shutdown against the solved terminal targets — the
@@ -118,7 +155,7 @@ namespace Blackbird.Guidance
             UpdateOrbitPrediction(vesselState);
             PinSolutionToGroundedTime(vesselState);
 
-            // energy-based completion shutoff
+            // Terminal completion shutoff: energy (size) + mean-radius latch + banded real-Pe (shape).
             if (!_complete && _solution != null && _solution.IsValid)
             {
                 Vector3d rRel = vesselState.Position - vesselState.Body.position;
@@ -128,12 +165,35 @@ namespace Blackbird.Guidance
                     double targetRadius = vesselState.BodyRadius + 0.5 * (ascentProfile.TargetPeriapsisAlt + ascentProfile.TargetApoapsisAlt);
                     double e = 0.5 * vesselState.OrbitalVelocity.sqrMagnitude - vesselState.BodyGravParameter / rMag;
                     double targetPeRadius = vesselState.BodyRadius + ascentProfile.TargetPeriapsisAlt;
-                    bool energyReached = MathHelpers.IsFinite(_solution.TerminalSpecificEnergy) && e >= _solution.TerminalSpecificEnergy;
-                    if (energyReached && J2MeanRadius(vesselState) >= targetRadius) { 
-                        //if (energyReached && J2PeriapsisRadius(vesselState) >= targetPeRadius)
+
+                    BodyOblateness.Oblateness ob = BodyOblateness.For(vesselState.Body);
+                    J2RadiusExtremes(vesselState, out double minR, out double maxR);
+                    double band = TerminalShapeBandMeters(ob.J2, ob.ReferenceRadiusMeters, rMag);
+                    TerminalCutDecision cut = DecideTerminalCut(
+                        e, _solution.TerminalSpecificEnergy, minR, maxR, targetRadius, targetPeRadius, band);
+
+                    if (cut == TerminalCutDecision.Complete)
+                    {
                         _complete = true;
                         _phase = PoweredGuidancePhase.Complete;
                         LogCompletion("psg-energy-complete", vesselState);
+                    }
+                    else if (cut == TerminalCutDecision.BlockedOnShape)
+                    {
+                        // Closed-loop steering gets bounded extra time to circularize the residual; shape can
+                        // be structurally unreachable (burning at periapsis raises Ap — the 537 km runaway),
+                        // so after the grace we take the size-correct cut and say so in the log.
+                        if (!MathHelpers.IsFinite(_shapeBlockStartUt))
+                        {
+                            _shapeBlockStartUt = vesselState.UniversalTime;
+                            LogCompletion("psg-shape-blocked", vesselState);   // new line
+                        }
+                        else if (vesselState.UniversalTime - _shapeBlockStartUt >= TerminalOverrunGraceSeconds)
+                        {
+                            _complete = true;
+                            _phase = PoweredGuidancePhase.Complete;
+                            LogCompletion("psg-shape-grace", vesselState);
+                        }
                     }
                 }
             }
@@ -293,7 +353,7 @@ namespace Blackbird.Guidance
             PredictedPeriapsisAlt = minR - vs.BodyRadius;
             PredictedApoapsisAlt = maxR - vs.BodyRadius;
         }
-
+        // this was the prior working function
         private double J2MeanRadius(VesselState vs)
         {
             BodyOblateness.Oblateness ob = BodyOblateness.For(vs.Body);
@@ -308,16 +368,18 @@ namespace Blackbird.Guidance
             return 0.5 * (minR + maxR);
         }
 
-        private double J2PeriapsisRadius(VesselState vs)
+        // Real (J2-propagated) radius extremes of the measured state — min = next periapsis radius,
+        // mean of the pair = the monotone size latch. One propagation serves both terminal-cut terms.
+        private void J2RadiusExtremes(VesselState vs, out double minR, out double maxR)
         {
             BodyOblateness.Oblateness ob = BodyOblateness.For(vs.Body);
             Vector3d up = vs.Body.transform.up;
             Vector3d pole = new Vector3d(up.x, up.y, up.z).normalized;
             Vector3d r = vs.Position - vs.Body.position;
-            return J2Propagator.NextPeriapsisRadius(
+            J2Propagator.RadiusExtremes(
                 r, vs.OrbitalVelocity, vs.BodyGravParameter,
                 ob.J2, ob.ReferenceRadiusMeters, pole,
-                TerminalPropagateMaxSeconds, TerminalPropagateStepSeconds);
+                TerminalPropagateMaxSeconds, TerminalPropagateStepSeconds, out minR, out maxR);
         }
 
         // J2 short-period periapsis offset (Keplerian Pe − real J2 Pe) for the current orbit

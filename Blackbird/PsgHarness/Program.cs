@@ -31,6 +31,7 @@ namespace Blackbird.PsgHarness
             RunEarthShapeSweep();
             RunCutoffLeakDemo();
             RunJ2CutoffCheck();
+            RunTerminalShapeGateCheck();
             RunRssBootStallReplay();
             RunBootConvergenceSweep();
             RunTerminalSteeringGateReplay();
@@ -573,6 +574,103 @@ namespace Blackbird.PsgHarness
             Console.WriteLine("     MEAN(size)-cut: real ~180x190, centered on 185 but still ~10 km spread.");
             Console.WriteLine("     The ~10 km spread is J2 on an osc-circular insertion; a cutoff can position it, not remove it.");
             Console.WriteLine();
+        }
+
+        // Guards the terminal-cut decision (DecideTerminalCut + TerminalShapeBandMeters): energy+mean-radius
+        // alone completed a 89x322 km orbit against a ~200 km circular target (2026-07-05 flight, e=0.018,
+        // real Pe read 18 km) — the banded real-Pe term must BLOCK that cut while still passing the validated
+        // converged insertions in RSS (osc-circular family) and stock (J2=0, floor band), and must not
+        // recreate the 06-24 hard-Pe runaway (the block is grace-bounded in GetCommand, decision-only here).
+        private static void RunTerminalShapeGateCheck()
+        {
+            Console.WriteLine("Terminal shape gate (banded real-Pe blocks SMA-right/eccentric cuts):");
+
+            // Inclined basis from the logged RSS insertion state (~29 deg) — the equator maximizes the J2
+            // radial breathing (~2x the inclined value), which misrepresents the flights being guarded.
+            Vector3d pole = new Vector3d(0.0, 1.0, 0.0);
+            Vector3d rLog = new Vector3d(4616976.15665178, 2999292.9189727, 3559341.11249668);
+            Vector3d vLog = new Vector3d(-4248.80365397141, -1106.60175804457, 6443.79036928515);
+            Vector3d rHat = rLog.normalized;
+            Vector3d tHat = Vector3d.Cross(Vector3d.Cross(rLog, vLog).normalized, rHat).normalized;
+            bool pass = true;
+
+            // (A) The 2026-07-05 failure: conic 89.4x322.9 (a on target) vs ~200 km circular target.
+            {
+                double rPe = EarthMeanRadius + 89435.0, rAp = EarthMeanRadius + 322938.0;
+                double a = 0.5 * (rPe + rAp);
+                Vector3d r = rPe * rHat;
+                Vector3d v = Math.Sqrt(EarthMu * (2.0 / rPe - 1.0 / a)) * tHat;
+                double targetRadius = EarthMeanRadius + 200000.0, targetPeRadius = targetRadius;
+                double energy = -EarthMu / (2.0 * a), targetEnergy = -EarthMu / (2.0 * targetRadius);
+
+                J2Propagator.RadiusExtremes(r, v, EarthMu, EarthJ2, EarthRefRadius, pole, 7000.0, 10.0, out double minR, out double maxR);
+                double band = PoweredAscentGuidance.TerminalShapeBandMeters(EarthJ2, EarthRefRadius, rPe);
+                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, band);
+
+                bool oldGateWouldCut = energy >= targetEnergy && 0.5 * (minR + maxR) >= targetRadius;
+                bool ok = cut == PoweredAscentGuidance.TerminalCutDecision.BlockedOnShape && oldGateWouldCut;
+                pass &= ok;
+                Console.WriteLine($"  (A) 89x322 vs 200-circ: old gate cuts={oldGateWouldCut}, new={cut}  band={band / 1000.0:F1} km  {(ok ? "[ok]" : "[FAIL]")}");
+            }
+
+            // (B) Validated converged RSS insertion: osc-circular ~190.5 km (real ~180x190, mean on 185).
+            {
+                double R = EarthMeanRadius + 190500.0;
+                Vector3d r = R * rHat;
+                Vector3d v = Math.Sqrt(EarthMu / R) * tHat;
+                double targetRadius = EarthMeanRadius + 185000.0, targetPeRadius = targetRadius;
+                double energy = -EarthMu / (2.0 * R), targetEnergy = -EarthMu / (2.0 * targetRadius);
+
+                J2Propagator.RadiusExtremes(r, v, EarthMu, EarthJ2, EarthRefRadius, pole, 7000.0, 10.0, out double minR, out double maxR);
+                double band = PoweredAscentGuidance.TerminalShapeBandMeters(EarthJ2, EarthRefRadius, R);
+                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, band);
+
+                bool ok = cut == PoweredAscentGuidance.TerminalCutDecision.Complete;
+                pass &= ok;
+                Console.WriteLine($"  (B) converged RSS insertion (real {(minR - EarthMeanRadius) / 1000.0:F0}x{(maxR - EarthMeanRadius) / 1000.0:F0} vs 185): {cut}  {(ok ? "[ok]" : "[FAIL]")}");
+            }
+
+            // (C) Stock (J2=0): floor band keeps a sub-km-short Pe acceptable — no behavior regression.
+            {
+                double rPe = KerbinRadius + 149200.0, rAp = KerbinRadius + 151000.0;
+                double a = 0.5 * (rPe + rAp);
+                Vector3d r = rPe * rHat;
+                Vector3d v = Math.Sqrt(KerbinMu * (2.0 / rPe - 1.0 / a)) * tHat;
+                double targetRadius = KerbinRadius + 150000.0, targetPeRadius = targetRadius;
+                double energy = -KerbinMu / (2.0 * a), targetEnergy = -KerbinMu / (2.0 * targetRadius);
+
+                J2Propagator.RadiusExtremes(r, v, KerbinMu, 0.0, KerbinRadius, pole, 7000.0, 10.0, out double minR, out double maxR);
+                double band = PoweredAscentGuidance.TerminalShapeBandMeters(0.0, KerbinRadius, rPe);
+                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, band);
+
+                bool ok = cut == PoweredAscentGuidance.TerminalCutDecision.Complete && band == 5000.0;
+                pass &= ok;
+                Console.WriteLine($"  (C) stock 149.2x151 vs 150-circ: {cut}  band={band / 1000.0:F1} km (floor)  {(ok ? "[ok]" : "[FAIL]")}");
+            }
+
+            // (D) Stock, shape wrong (100x201 vs 150-circ, same energy): must block — the guard is not J2-only.
+            {
+                double rPe = KerbinRadius + 100000.0, rAp = KerbinRadius + 201000.0;
+                double a = 0.5 * (rPe + rAp);
+                Vector3d r = rPe * rHat;
+                Vector3d v = Math.Sqrt(KerbinMu * (2.0 / rPe - 1.0 / a)) * tHat;
+                double targetRadius = KerbinRadius + 150000.0, targetPeRadius = targetRadius;
+                double energy = -KerbinMu / (2.0 * a), targetEnergy = -KerbinMu / (2.0 * targetRadius);
+
+                J2Propagator.RadiusExtremes(r, v, KerbinMu, 0.0, KerbinRadius, pole, 7000.0, 10.0, out double minR, out double maxR);
+                double band = PoweredAscentGuidance.TerminalShapeBandMeters(0.0, KerbinRadius, rPe);
+                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, band);
+
+                bool ok = cut == PoweredAscentGuidance.TerminalCutDecision.BlockedOnShape;
+                pass &= ok;
+                Console.WriteLine($"  (D) stock 100x201 vs 150-circ: {cut}  {(ok ? "[ok]" : "[FAIL]")}");
+            }
+
+            Console.WriteLine(pass
+                ? "  [PASS] shape gate blocks eccentric cuts, passes converged insertions in RSS and stock"
+                : "  [FAIL] terminal shape gate regression");
+            Console.WriteLine();
+            if (!pass) throw new Exception("Terminal shape gate regression.");
         }
 
         private static PsgProblem CreateKerbinScenario()

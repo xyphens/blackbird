@@ -118,9 +118,14 @@ namespace Blackbird.Psg
                 return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage mass flow cannot be derived.");
             }
 
-            double nominalBurnTime = MathHelpers.IsFinite(stage.BurnTimeSeconds) && stage.BurnTimeSeconds > 0.0
-                ? stage.BurnTimeSeconds
-                : (startMassKg - endMassKg) / massFlow;
+            // derive burn time from mass instead of KSP
+            // dufixme: replace
+            double nominalBurnTime = (startMassKg - endMassKg) / massFlow;
+            // fuck
+
+            //double nominalBurnTime = MathHelpers.IsFinite(stage.BurnTimeSeconds) && stage.BurnTimeSeconds > 0.0
+            //    ? stage.BurnTimeSeconds
+            //    : (startMassKg - endMassKg) / massFlow;
 
             if (!MathHelpers.IsFinite(nominalBurnTime) || nominalBurnTime <= 0.0)
             {

@@ -8,6 +8,7 @@ using Blackbird.Trajectory;
 using UnityEngine;
 using Blackbird.Helpers;
 using System.Security.Cryptography;
+using Blackbird.Psg;
 
 namespace Blackbird.Models
 {
@@ -116,35 +117,33 @@ namespace Blackbird.Models
                 PoweredStages = GetPoweredStages(vessel),
                 GravityForce = FlightGlobals.getGeeForceAtPosition(vessel.CoMD), // there's a CoM and CoMD -> CoMD maps to a Vector3d so i'm using that
 
-                DynamicPressureKpa = GetDouble(vessel, "dynamicPressurekPa", double.NaN),
-                StaticPressureKpa = GetDouble(vessel, "staticPressurekPa", double.NaN),
-                AtmosphericDensity = GetDouble(vessel, "atmDensity", double.NaN),
-                Mach = GetDouble(vessel, "mach", double.NaN),
+
+                DynamicPressureKpa = vessel.dynamicPressurekPa,
+                StaticPressureKpa = vessel.staticPressurekPa,
+                AtmosphericDensity = vessel.atmDensity,
+                Mach = vessel.mach,
 
                 BodyRadius = body != null ? body.Radius : double.NaN,
                 BodyGravParameter = body != null ? body.gravParameter : double.NaN,
                 BodySurfaceGravity = GetBodySurfaceGravity(body),
                 BodyRotationPeriod = body != null ? body.rotationPeriod : double.NaN
             };
+            
         }
 
         // Reads KSP's stage-resolved delta-v model so powered guidance can build PSG phases.
         private static PoweredStageInfo[] GetPoweredStages(Vessel vessel)
         {
-            // fixme: why aren't we just reading vessel variables directly?
-            object vesselDeltaV = GetMember(vessel, "VesselDeltaV");
-            if (vesselDeltaV == null) return new PoweredStageInfo[0];
+            if (vessel.VesselDeltaV == null) return new PoweredStageInfo[0];
 
-            IEnumerable stageInfos =
-                GetMember(vesselDeltaV, "OperatingStageInfo") as IEnumerable ??
-                GetMember(vesselDeltaV, "WorkingStageInfo") as IEnumerable;
+            IEnumerable stageInfos = vessel.VesselDeltaV.OperatingStageInfo;
 
             if (stageInfos == null) return new PoweredStageInfo[0];
 
             var stages = new List<PoweredStageInfo>();
             int phaseIndex = 0;
 
-            foreach (object stageInfo in stageInfos)
+            foreach (DeltaVStageInfo stageInfo in stageInfos)
             {
                 PoweredStageInfo stage = CreatePoweredStageInfo(vessel, stageInfo, phaseIndex);
                 phaseIndex++;
@@ -162,43 +161,49 @@ namespace Blackbird.Models
         }
 
         // Converts one KSP DeltaVStageInfo object into Blackbird's solver-facing stage contract.
-        private static PoweredStageInfo CreatePoweredStageInfo(Vessel vessel, object stageInfo, int phaseIndex)
+        private static PoweredStageInfo CreatePoweredStageInfo(Vessel vessel, DeltaVStageInfo stageInfo, int phaseIndex)
         {
             if (stageInfo == null) return null;
 
-            double rawKspStage = GetDouble(stageInfo, "stage", double.NaN);
-            double startMass = GetDouble(stageInfo, "startMass", double.NaN);
-            double endMass = GetDouble(stageInfo, "endMass", double.NaN);
-            double thrustVac = GetDouble(stageInfo, "thrustVac", double.NaN);
-            double thrustAsl = GetDouble(stageInfo, "thrustASL", double.NaN);
-            double thrustActual = GetDouble(stageInfo, "thrustActual", double.NaN);
-            double deltaVVac = GetDouble(stageInfo, "deltaVinVac", double.NaN);
-            double deltaVAsl = GetDouble(stageInfo, "deltaVatASL", double.NaN);
-            double deltaVActual = GetDouble(stageInfo, "deltaVActual", double.NaN);
-            double burnTime = GetDouble(stageInfo, "stageBurnTime", double.NaN);
+            //double rawKspStage = GetDouble(stageInfo, "stage", double.NaN);
+            //double startMass = GetDouble(stageInfo, "startMass", double.NaN);
+            //double endMass = GetDouble(stageInfo, "endMass", double.NaN);
+            //double thrustVac = GetDouble(stageInfo, "thrustVac", double.NaN);
+            //double thrustAsl = GetDouble(stageInfo, "thrustASL", double.NaN);
+            //double thrustActual = GetDouble(stageInfo, "thrustActual", double.NaN);
+            //double deltaVVac = GetDouble(stageInfo, "deltaVinVac", double.NaN);
+            //double deltaVAsl = GetDouble(stageInfo, "deltaVatASL", double.NaN);
+            //double deltaVActual = GetDouble(stageInfo, "deltaVActual", double.NaN);
+            //double burnTime = GetDouble(stageInfo, "stageBurnTime", double.NaN);
 
-            if (!MathHelpers.IsFinite(rawKspStage) ||
-                !MathHelpers.IsFinite(startMass) ||
-                !MathHelpers.IsFinite(endMass) ||
-                startMass <= 0.0 ||
-                endMass <= 0.0)
+            if (!MathHelpers.IsFinite(stageInfo.stage) ||
+                !MathHelpers.IsFinite(stageInfo.startMass) ||
+                !MathHelpers.IsFinite(stageInfo.endMass) ||
+                stageInfo.startMass <= 0.0 ||
+                stageInfo.endMass <= 0.0)
             {
                 return CreateInvalidStage(-1, phaseIndex, "KSP stage mass data is unavailable.");
             }
 
-            int kspStage = Convert.ToInt32(rawKspStage);
+            int kspStage = Convert.ToInt32(stageInfo.stage);
 
             double minimumThrust = GetStageMinimumThrust(stageInfo);
-            double maximumThrust = MathHelpers.IsFinite(thrustVac) && thrustVac > 0.0 ? thrustVac : thrustActual;
+            double maximumThrust = MathHelpers.IsFinite(stageInfo.thrustVac) && stageInfo.thrustVac > 0.0 ? stageInfo.thrustVac : stageInfo.thrustActual;
+
+            //double ispVac = stageInfo.ispVac;
+            double burnTime = MathHelpers.IsFinite(stageInfo.ispVac) && stageInfo.ispVac > 0.0 && maximumThrust > 0.0
+                                ? (stageInfo.startMass - stageInfo.endMass) * stageInfo.ispVac * PsgPhase.StandardGravity / maximumThrust
+                                : double.NaN;
+
             double minimumThrottle = maximumThrust > 0.0 && MathHelpers.IsFinite(minimumThrust)
                 ? MathHelpers.Clamp(minimumThrust / maximumThrust, 0.0, 1.0)
                 : 0.0;
 
             bool hasPoweredCapability =
-                (MathHelpers.IsFinite(thrustVac) && thrustVac > 0.0) ||
-                (MathHelpers.IsFinite(thrustActual) && thrustActual > 0.0) ||
-                (MathHelpers.IsFinite(deltaVVac) && deltaVVac > 0.0) ||
-                (MathHelpers.IsFinite(deltaVActual) && deltaVActual > 0.0);
+                (MathHelpers.IsFinite(stageInfo.thrustVac) && stageInfo.thrustVac > 0.0) ||
+                (MathHelpers.IsFinite(stageInfo.thrustActual) && stageInfo.thrustActual > 0.0) ||
+                (MathHelpers.IsFinite(stageInfo.deltaVinVac) && stageInfo.deltaVinVac > 0.0) ||
+                (MathHelpers.IsFinite(stageInfo.deltaVActual) && stageInfo.deltaVActual > 0.0);
 
             if (!hasPoweredCapability)
             {
@@ -213,48 +218,47 @@ namespace Blackbird.Models
                 PhaseIndex = phaseIndex,
                 IsCurrentOrFutureStage = vessel != null && kspStage <= vessel.currentStage,
 
-                StartMass = startMass,
-                EndMass = endMass,
-                DryMass = GetDouble(stageInfo, "dryMass", double.NaN),
-                FuelMass = GetDouble(stageInfo, "fuelMass", double.NaN),
-                DecoupledMass = GetDouble(stageInfo, "decoupledMass", double.NaN),
+                StartMass = stageInfo.startMass,
+                EndMass = stageInfo.endMass,
+                DryMass = stageInfo.dryMass,
+                FuelMass = stageInfo.fuelMass,
+                DecoupledMass = stageInfo.decoupledMass,
 
-                VacuumSpecificImpulse = GetDouble(stageInfo, "ispVac", double.NaN),
-                SeaLevelSpecificImpulse = GetDouble(stageInfo, "ispASL", double.NaN),
-                CurrentSpecificImpulse = GetDouble(stageInfo, "ispActual", double.NaN),
+                VacuumSpecificImpulse = stageInfo.ispVac,
+                SeaLevelSpecificImpulse = stageInfo.ispASL,
+                CurrentSpecificImpulse = stageInfo.ispActual,
 
-                VacuumThrust = thrustVac,
-                SeaLevelThrust = thrustAsl,
-                CurrentThrust = thrustActual,
+                VacuumThrust = stageInfo.thrustVac,
+                SeaLevelThrust = stageInfo.thrustASL,
+                CurrentThrust = stageInfo.thrustActual,
                 MinimumThrust = minimumThrust,
                 MinimumThrottle = minimumThrottle,
 
-                VacuumDeltaV = deltaVVac,
-                SeaLevelDeltaV = deltaVAsl,
-                CurrentDeltaV = deltaVActual,
+                VacuumDeltaV = stageInfo.deltaVinVac,
+                SeaLevelDeltaV = stageInfo.deltaVatASL,
+                CurrentDeltaV = stageInfo.deltaVActual,
                 BurnTimeSeconds = burnTime
             };
         }
 
         // Aggregates engine min-thrust for the stage so PSG can model throttle bounds.
-        private static double GetStageMinimumThrust(object stageInfo)
+        private static double GetStageMinimumThrust(DeltaVStageInfo stageInfo)
         {
-            IEnumerable engines =
-                GetMember(stageInfo, "enginesInStage") as IEnumerable ??
-                GetMember(stageInfo, "enginesActiveInStage") as IEnumerable;
+            IEnumerable engines = stageInfo.enginesInStage ?? stageInfo.enginesActiveInStage;
 
             if (engines == null) return 0.0;
 
             double minimumThrust = 0.0;
 
-            foreach (object engineInfo in engines)
+            foreach (ModuleEngines engineInfo in engines)
             {
-                object engine = GetMember(engineInfo, "engine");
-                if (engine == null) continue;
+                //object engine = GetMember(engineInfo, "engine");
+                if (engineInfo == null) continue;
 
-                double minThrust = Math.Max(0.0, GetDouble(engine, "minThrust", 0.0));
-                double thrustLimiter = MathHelpers.Clamp(GetDouble(engine, "thrustPercentage", 100.0), 0.0, 100.0) / 100.0;
-                minimumThrust += minThrust * thrustLimiter;
+                double tp = MathHelpers.IsFinite(engineInfo.thrustPercentage) ? engineInfo.thrustPercentage : 100.0;
+                double minThrust = MathHelpers.IsFinite(engineInfo.minThrust) ? Math.Max(0.0, engineInfo.minThrust) : 0;
+                double thrustLimiter = MathHelpers.Clamp(tp, 0.0, 100.0) / 100.0;
+                minimumThrust += engineInfo.minThrust * thrustLimiter;
             }
 
             return minimumThrust;
@@ -373,7 +377,8 @@ namespace Blackbird.Models
             double weightedVacuumIsp = 0.0;
             double weightedAtmosphericIsp = 0.0;
             double ispWeight = 0.0;
-            double pressureAtm = GetDouble(vessel, "staticPressurekPa", 0.0) / 101.325;
+            
+            double pressureAtm = MathHelpers.IsFinite(vessel.staticPressurekPa) ? vessel.staticPressurekPa / 101.325 : 0.0;
 
             foreach (Part part in vessel.parts)
             {
@@ -393,8 +398,8 @@ namespace Blackbird.Models
                     info.AvailableThrust += availableThrust;
                     info.CurrentThrust += currentThrust;
 
-                    double vacuumIsp = GetEngineIsp(module, 0.0);
-                    double atmosphericIsp = GetEngineIsp(module, pressureAtm);
+                    double vacuumIsp = GetEngineIsp(e, 0.0);
+                    double atmosphericIsp = GetEngineIsp(e, pressureAtm);
 
                     if (availableThrust > 0.0 && MathHelpers.IsFinite(vacuumIsp))
                     {
@@ -424,23 +429,10 @@ namespace Blackbird.Models
             return info;
         }
 
-        private static double GetEngineIsp(PartModule module, double pressureAtm)
+        private static double GetEngineIsp(ModuleEngines module, double pressureAtm)
         {
-            object curve = GetMember(module, "atmosphereCurve");
-            if (curve == null) return double.NaN;
-
-            var evaluate = curve.GetType().GetMethod("Evaluate", new[] { typeof(float) });
-            if (evaluate == null) return double.NaN;
-
-            try
-            {
-                object value = evaluate.Invoke(curve, new object[] { (float)Math.Max(0.0, pressureAtm) });
-                return ConvertToDouble(value, double.NaN);
-            }
-            catch
-            {
-                return double.NaN;
-            }
+            if (module.atmosphereCurve == null) return double.NaN;
+            return module.atmosphereCurve.Evaluate((float)Math.Max(0.0, pressureAtm));
         }
 
         // Stock ΔV system (vessel.VesselDeltaV). TotalDeltaVVac is the stable, situation-independent ship
@@ -474,41 +466,9 @@ namespace Blackbird.Models
             return body.gravParameter / (body.Radius * body.Radius);
         }
 
-        private static double GetDouble(object instance, string memberName, double fallback)
-        {
-            return ConvertToDouble(GetMember(instance, memberName), fallback);
-        }
-
-        //private static bool GetBool(object instance, string memberName, bool fallback)
+        //private static double GetDouble(object instance, string memberName, double fallback)
         //{
-        //    object value = GetMember(instance, memberName);
-        //    if (value == null) return fallback;
-
-        //    try
-        //    {
-        //        return Convert.ToBoolean(value);
-        //    }
-        //    catch
-        //    {
-        //        return fallback;
-        //    }
-        //}
-
-        //private static bool InvokeBool(object instance, string methodName, bool fallback)
-        //{
-        //    if (instance == null) return fallback;
-
-        //    var method = instance.GetType().GetMethod(methodName, Type.EmptyTypes);
-        //    if (method == null) return fallback;
-
-        //    try
-        //    {
-        //        return Convert.ToBoolean(method.Invoke(instance, null));
-        //    }
-        //    catch
-        //    {
-        //        return fallback;
-        //    }
+        //    return ConvertToDouble(GetMember(instance, memberName), fallback);
         //}
 
         private static object GetMember(object instance, string memberName)

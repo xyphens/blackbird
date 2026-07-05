@@ -186,7 +186,6 @@ namespace Blackbird.Docking
             }
 
             // orient the craft vs target or closest reference body 
-            // fuck
             if (_resetOrientation)
             {
                 // Vector3d facing = HasTarget ? PointAtTargetDirection() : (Vector3d)vessel.ReferenceTransform.up;
@@ -253,7 +252,6 @@ namespace Blackbird.Docking
             Vector3d los = (Vector3d)tt.position - (Vector3d)_vessel.ReferenceTransform.position;
             return los.sqrMagnitude > 1e-9 ? los.normalized : Vector3d.zero;
         }
-
         private Vector3d PointAtWorldDirection()
         {
             if (_vessel == null || _vessel.mainBody == null) return Vector3d.zero;
@@ -261,7 +259,6 @@ namespace Blackbird.Docking
             Vector3d los = (Vector3d)_vessel.mainBody.transform.position - (Vector3d)_vessel.ReferenceTransform.position;
             return los.sqrMagnitude > 1e-9 ? los.normalized : Vector3d.zero;
         }
-
         private void UpdateMetrics()
         {
             RcsFuelPercent = RcsMonopropPercent(_vessel);

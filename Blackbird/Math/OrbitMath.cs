@@ -1,11 +1,7 @@
-﻿using Blackbird.Models;
-using Blackbird.Trajectory;
+﻿using Blackbird.Trajectory;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
-using static SpaceObjectCollider;
-using static Vect;
 
 namespace Blackbird.Mathematics
 {
