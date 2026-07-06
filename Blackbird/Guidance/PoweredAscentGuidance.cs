@@ -331,10 +331,19 @@ namespace Blackbird.Guidance
                             vesselState.UniversalTime,
                             gateMaxRate);
 
-                    // Heading is a launch-time decision: the azimuth that holds the ascent in the target plane
+                    // Heading stays solver-blind (the terminal yaw sweep can be gradual-but-fast, so no
+                    // rate/time gate can pass legitimate yaw and reject the sweep) but must TRACK the
+                    // target plane at the current position: the launch azimuth is only correct at the pad,
+                    // and pinning it for a long downrange burn strips the yaw the optimizer solved jointly
+                    // with pitch (2026-07-06: plan-targeted flights missed LAN/inc; manual flights flew clean).
                     GetPitchHeadingFromInertial(vesselState, guidance.InertialDirection, out double psgPitch, out _);
 
-                    double heldHeading = profileHeadingDeg;
+                    Vector3d headingRelPos = vesselState.Position - vesselState.Body.position;
+                    Vector3d planeNormal = launchPlan != null && launchPlan.TargetOrbitNormal.sqrMagnitude > 0.0
+                        ? launchPlan.TargetOrbitNormal
+                        : Vector3d.Cross(headingRelPos, vesselState.OrbitalVelocity);
+                    double heldHeading = PlaneFollowingHeadingDeg(
+                        headingRelPos, vesselState.Body.transform.up, planeNormal, profileHeadingDeg);
                     Vector3d heldDirection = GetSurfaceCommandDirection(vesselState, heldHeading, psgPitch);
 
                     // Past the plan's end, keep pushing only while measured energy is still short of the
@@ -679,6 +688,28 @@ namespace Blackbird.Guidance
         {
             DecomposeSteering(psgDirection, up, north, east, out double pitchDeg, out _);
             return ComposeSteering(heldHeadingDeg, pitchDeg, up, north, east);
+        }
+
+        // Heading that keeps the ascent parallel to the given orbit plane at the current position.
+        // The launch azimuth equals this only at the pad; over a long downrange burn the plane-following
+        // heading legitimately drifts by degrees, and pinning the stale azimuth forces the vehicle off
+        // every plane (2026-07-06: plan-targeted flights missed LAN/inc while manual flights flew clean).
+        // Solver-blind by construction - no PSG yaw output can reach the flown heading through this.
+        public static double PlaneFollowingHeadingDeg(Vector3d relPosition, Vector3d bodySpinAxis,
+            Vector3d orbitNormal, double fallbackHeadingDeg)
+        {
+            if (orbitNormal.sqrMagnitude <= 0.0 || relPosition.sqrMagnitude <= 0.0) return fallbackHeadingDeg;
+
+            // travel direction within the plane at this position (same raw-cross convention as the
+            // plane normals this codebase produces; validated against logged flight velocity)
+            Vector3d travel = Vector3d.Cross(orbitNormal, relPosition);
+            if (travel.sqrMagnitude <= 0.0) return fallbackHeadingDeg;
+
+            if (!LocalSteeringFrame(relPosition, bodySpinAxis, out Vector3d up, out Vector3d north, out Vector3d east))
+                return fallbackHeadingDeg;
+
+            DecomposeSteering(travel, up, north, east, out _, out double headingDeg);
+            return headingDeg;
         }
 
         private static Vector3d GetSurfaceCommandDirection(

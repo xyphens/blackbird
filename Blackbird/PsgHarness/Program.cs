@@ -74,49 +74,98 @@ namespace Blackbird.PsgHarness
             return result.Success ? 0 : 1;
         }
 
-        // Guards the hold-heading fix for the terminal "sweep": near cutoff PSG's yaw goes ill-conditioned and can
-        // command a heading tens of degrees off the launch azimuth (logged 2026-07-03 Saturn V: +4..+60..-59 deg,
-        // wrecking the insertion). PoweredAscentGuidance now keeps PSG's pitch but pins heading to the plane-defining
-        // launch azimuth. This replays the logged yaw excursions through the exact production composition and asserts
-        // the flown heading stays on the azimuth while PSG's pitch is preserved.
+        // Heading contract for PSG ascent: solver-blind (no PSG yaw can move the flown heading - the
+        // 2026-07-03 terminal sweep was gradual-but-fast, so no rate or time gate can discriminate) yet
+        // plane-TRACKING (2026-07-06: pinning the launch azimuth for the whole burn missed target LAN/inc
+        // on plan-targeted flights while manual flights flew clean). Asserts: the plane-following heading
+        // is exact on an analytic case, points along the motion on logged flight states (handedness guard),
+        // drifts downrange (why a fixed pin is wrong), ignores every PSG yaw excursion while preserving
+        // PSG's pitch, and falls back safely on degenerate inputs.
         private static void RunHeadingHoldCheck()
         {
-            Console.WriteLine("Heading-hold steering (PSG terminal yaw sweep pinned to launch azimuth):");
-
-            // A consistent local frame off the equator (pole +Y), like the RSS launch site. The property under test
-            // is frame-invariant: hold-heading must return the launch azimuth at PSG's pitch no matter how far the
-            // optimizer's yaw has wandered.
+            Console.WriteLine("Plane-following heading (solver-blind, tracks the target plane downrange):");
+            bool pass = true;
             Vector3d pole = new Vector3d(0.0, 1.0, 0.0);
-            Vector3d relPos = new Vector3d(5.0e6, 3.05e6, 0.0);   // ~31 deg latitude
-            PoweredAscentGuidance.LocalSteeringFrame(relPos, pole, out Vector3d up, out Vector3d north, out Vector3d east);
 
-            double launchAzimuth = 88.6;   // the plane-defining azimuth (from the flight)
-            double psgPitch = 5.0;         // shallow terminal pitch PSG holds while the yaw wanders
+            // logged 2026-07-06 tanker states (28.3 deg target plane): mid-ascent and terminal corner
+            Vector3d targetNormal = new Vector3d(0.459485685423086, -0.880320842543612, 0.117932688744817);
+            Vector3d rMid = new Vector3d(5337564.46791572, 3098185.41129199, 1945111.67908336);
+            Vector3d vMid = new Vector3d(700.58604779469, 759.99918177163, 2192.2039373647);
+            Vector3d rCorner = new Vector3d(3866635.33450038, 2918174.29254932, 4463888.72628849);
+            Vector3d vCorner = new Vector3d(-5494.8344325083, -1300.50982323931, 5332.19966426059);
 
-            Console.WriteLine("    PSG yaw off-az   held heading   pitch");
-            double worstHeadingErr = 0.0, worstPitchErr = 0.0;
-            foreach (double yawOffset in new[] { 0.0, 4.0, 8.0, 15.0, 31.0, 60.0, -59.0, 177.0 })
+            // (A) analytic: equatorial prograde plane -> due east at any equatorial position
             {
-                double swungHeading = MathHelpers.NormalizeDegrees(launchAzimuth + yawOffset);
-                Vector3d psgDirection = PoweredAscentGuidance.ComposeSteering(swungHeading, psgPitch, up, north, east);
-
-                // The exact production path: hold heading to the azimuth, keep PSG's pitch.
-                Vector3d held = PoweredAscentGuidance.HoldHeadingSteering(psgDirection, launchAzimuth, up, north, east);
-                PoweredAscentGuidance.DecomposeSteering(held, up, north, east, out double heldPitch, out double heldHeading);
-
-                double headingErr = Math.Abs(MathHelpers.DeltaDegrees(heldHeading, launchAzimuth));
-                double pitchErr = Math.Abs(heldPitch - psgPitch);
-                worstHeadingErr = Math.Max(worstHeadingErr, headingErr);
-                worstPitchErr = Math.Max(worstPitchErr, pitchErr);
-                Console.WriteLine($"    {yawOffset,10:F1}   {heldHeading,10:F3}   {heldPitch,6:F2}");
+                Vector3d r = new Vector3d(EarthMeanRadius + 100000.0, 0.0, 0.0);
+                Vector3d v = new Vector3d(0.0, 0.0, 7800.0);
+                double heading = PoweredAscentGuidance.PlaneFollowingHeadingDeg(r, pole, Vector3d.Cross(r, v), -1.0);
+                bool ok = Math.Abs(heading - 90.0) < 1e-9;
+                pass &= ok;
+                Console.WriteLine($"  (A) equatorial prograde: heading={heading:F3} (expect 90.000)  {(ok ? "[ok]" : "[FAIL]")}");
             }
 
-            bool pass = worstHeadingErr < 1e-6 && worstPitchErr < 1e-6;
+            // (B) logged states: heading points along the actual motion (handedness guard) and drifts
+            // downrange - the drift is exactly what the old fixed launch-azimuth pin could not track
+            double headingMid = PoweredAscentGuidance.PlaneFollowingHeadingDeg(rMid, pole, targetNormal, -1.0);
+            {
+                double headingCorner = PoweredAscentGuidance.PlaneFollowingHeadingDeg(rCorner, pole, targetNormal, -1.0);
+                bool ok = HeadingPointsAlongMotion(rMid, vMid, headingMid, pole)
+                          && HeadingPointsAlongMotion(rCorner, vCorner, headingCorner, pole)
+                          && Math.Abs(MathHelpers.DeltaDegrees(headingCorner, headingMid)) > 0.5;
+                pass &= ok;
+                Console.WriteLine($"  (B) logged tanker: mid-ascent={headingMid:F2} corner={headingCorner:F2} drift={MathHelpers.DeltaDegrees(headingCorner, headingMid):F2} deg  {(ok ? "[ok]" : "[FAIL]")}");
+            }
+
+            // (C) solver-blind: the logged 07-03 yaw sweep cannot move the flown heading; PSG pitch preserved
+            {
+                PoweredAscentGuidance.LocalSteeringFrame(rMid, pole, out Vector3d up, out Vector3d north, out Vector3d east);
+                const double psgPitch = 5.0;
+                double worstHeadingErr = 0.0, worstPitchErr = 0.0;
+                foreach (double yawOffset in new[] { 0.0, 4.0, 8.0, 15.0, 31.0, 60.0, -59.0, 177.0 })
+                {
+                    Vector3d psgDirection = PoweredAscentGuidance.ComposeSteering(
+                        MathHelpers.NormalizeDegrees(headingMid + yawOffset), psgPitch, up, north, east);
+                    Vector3d held = PoweredAscentGuidance.HoldHeadingSteering(psgDirection, headingMid, up, north, east);
+                    PoweredAscentGuidance.DecomposeSteering(held, up, north, east, out double heldPitch, out double heldHeading);
+                    worstHeadingErr = Math.Max(worstHeadingErr, Math.Abs(MathHelpers.DeltaDegrees(heldHeading, headingMid)));
+                    worstPitchErr = Math.Max(worstPitchErr, Math.Abs(heldPitch - psgPitch));
+                }
+                bool ok = worstHeadingErr < 1e-6 && worstPitchErr < 1e-6;
+                pass &= ok;
+                Console.WriteLine($"  (C) PSG yaw sweep ignored: worst heading err={worstHeadingErr:E1} deg, pitch err={worstPitchErr:E1} deg  {(ok ? "[ok]" : "[FAIL]")}");
+            }
+
+            // (D) manual flights (no target plane): current-plane fallback follows the velocity azimuth
+            {
+                double heading = PoweredAscentGuidance.PlaneFollowingHeadingDeg(rMid, pole, Vector3d.Cross(rMid, vMid), -1.0);
+                PoweredAscentGuidance.LocalSteeringFrame(rMid, pole, out Vector3d up, out Vector3d north, out Vector3d east);
+                Vector3d horizontal = PoweredAscentGuidance.ComposeSteering(heading, 0.0, up, north, east);
+                Vector3d velocityHorizontal = Vector3d.Exclude(up, vMid).normalized;
+                bool ok = Vector3d.Dot(horizontal, velocityHorizontal) > 1.0 - 1e-9;
+                pass &= ok;
+                Console.WriteLine($"  (D) manual fallback follows velocity azimuth: dot={Vector3d.Dot(horizontal, velocityHorizontal):F9}  {(ok ? "[ok]" : "[FAIL]")}");
+            }
+
+            // (E) degenerate inputs return the fallback heading
+            {
+                bool ok = PoweredAscentGuidance.PlaneFollowingHeadingDeg(rMid, pole, Vector3d.zero, 88.6) == 88.6
+                          && PoweredAscentGuidance.PlaneFollowingHeadingDeg(Vector3d.zero, pole, targetNormal, 88.6) == 88.6;
+                pass &= ok;
+                Console.WriteLine($"  (E) degenerate fallback  {(ok ? "[ok]" : "[FAIL]")}");
+            }
+
             Console.WriteLine(pass
-                ? "  [PASS] heading pinned to launch azimuth, PSG pitch preserved for every yaw excursion"
-                : $"  [FAIL] worst heading err {worstHeadingErr:E2} deg, worst pitch err {worstPitchErr:E2} deg");
+                ? "  [PASS] heading tracks the plane, ignores PSG yaw, preserves PSG pitch"
+                : "  [FAIL] plane-following heading regression");
             Console.WriteLine();
-            if (!pass) throw new Exception("Heading-hold steering regression.");
+            if (!pass) throw new Exception("Plane-following heading regression.");
+        }
+
+        private static bool HeadingPointsAlongMotion(Vector3d r, Vector3d v, double headingDeg, Vector3d pole)
+        {
+            PoweredAscentGuidance.LocalSteeringFrame(r, pole, out Vector3d up, out Vector3d north, out Vector3d east);
+            Vector3d horizontal = PoweredAscentGuidance.ComposeSteering(headingDeg, 0.0, up, north, east);
+            return Vector3d.Dot(horizontal, v) > 0.0;
         }
 
         // Offline validation of J2Propagator against the flight: feed a near-circular ~186 km insertion
