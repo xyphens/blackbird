@@ -2,21 +2,19 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using Blackbird.Modules;
 using Blackbird.Mathematics;
 using Blackbird.Trajectory;
 using UnityEngine;
 using Blackbird.Helpers;
-using System.Security.Cryptography;
 using Blackbird.Psg;
+using Blackbird.Logging;
+using System.Text;
 
 namespace Blackbird.Models
 {
     public sealed class VesselState
     {
-        private VesselState()
-        {
-        }
+        private VesselState() { }
 
         public Vessel Vessel { get; private set; }
         public CelestialBody Body { get; private set; }
@@ -63,6 +61,17 @@ namespace Blackbird.Models
         public double BodySurfaceGravity { get; private set; }
         public double BodyRotationPeriod { get; private set; }
         public Vector3d GravityForce { get; private set; }
+
+        // PSG re-solves at 0.5-5 s; re-running the fuel sim per frame buys nothing.
+        private const double FuelSimRefreshSeconds = 0.5;
+        private const double FuelSimDivergenceTolerance = 0.01;
+
+        private static readonly BlackbirdLog FuelSimLog = new BlackbirdLog(LogContext.Psg);
+        private static Guid _fuelSimVesselId;
+        private static int _fuelSimStage;
+        private static double _fuelSimUt;
+        private static PoweredStageInfo[] _fuelSimStages;
+        private static string _fuelSimDivergenceSignature = string.Empty;
 
         public static VesselState FromVessel(Vessel vessel)
         {
@@ -128,11 +137,143 @@ namespace Blackbird.Models
                 BodySurfaceGravity = GetBodySurfaceGravity(body),
                 BodyRotationPeriod = body != null ? body.rotationPeriod : double.NaN
             };
-            
+        }
+
+        private static PoweredStageInfo[] GetPoweredStages(Vessel vessel)
+        {
+            double now = Planetarium.GetUniversalTime();
+
+            if (_fuelSimStages != null 
+                && vessel.id == _fuelSimVesselId 
+                && vessel.currentStage == _fuelSimStage 
+                && now - _fuelSimUt < FuelSimRefreshSeconds) return _fuelSimStages;
+
+            PoweredStageInfo[] stockStages = GetStockPoweredStages(vessel);
+            PoweredStageInfo[] stages;
+
+            try
+            {
+                stages = BuildStagesFromFuelSim(vessel, stockStages);
+                if (stages.Length == 0 && stockStages.Length > 0)
+                {
+                    FuelSimLog.Write("[fuelsim-fallback] sim produced no powered stages; using stock VesselDeltaV");
+                    stages = stockStages;
+                }
+            }
+            catch (Exception ex) {
+                FuelSimLog.Write("[fuelsim-fallback] " + ex.Message);
+                stages = stockStages;
+            }
+
+            _fuelSimVesselId = vessel.id;
+            _fuelSimStage = vessel.currentStage;
+            _fuelSimUt = now;
+            _fuelSimStages = stages;
+            return stages;
+        }
+
+        private static PoweredStageInfo[] BuildStagesFromFuelSim(Vessel vessel, PoweredStageInfo[] stockStages)
+        {
+            FuelSim.SimStageStats[] simStats = FuelSim.StagePropellantSimulator.Simulate(vessel);
+
+            var stages = new List<PoweredStageInfo>();
+            int phaseIndex = 0;
+
+            for (int i = 0; i < simStats.Length; i++)
+            {
+                FuelSim.SimStageStats s = simStats[i];
+
+                // decouple-only stages carry no burn and are not phases
+                if (s.VacuumThrustNewtons <= 0.0 || s.BurnablePropellantKg <= 0.0) continue;
+
+                double startMassTons = s.StartMassKg / 1000.0;
+                double endMassTons = s.EndMassKg / 1000.0;
+                double vacuumThrustKn = s.VacuumThrustNewtons / 1000.0;
+                PoweredStageInfo stock = FindStockStage(stockStages, s.Stage);
+
+                stages.Add(new PoweredStageInfo
+                {
+                    IsValid = true,
+                    ReasonUnavailable = null,
+                    Stage = s.Stage,
+                    PhaseIndex = phaseIndex,
+                    IsCurrentOrFutureStage = true,
+
+                    StartMass = startMassTons,
+                    EndMass = endMassTons,
+                    DryMass = endMassTons,
+                    FuelMass = s.BurnablePropellantKg / 1000.0,
+                    DecoupledMass = double.NaN,
+
+                    VacuumSpecificImpulse = s.VacuumIspSeconds,
+                    SeaLevelSpecificImpulse = stock != null ? stock.SeaLevelSpecificImpulse : double.NaN,
+                    CurrentSpecificImpulse = stock != null && MathHelpers.IsFinite(stock.CurrentSpecificImpulse) && stock.CurrentSpecificImpulse > 0.0
+                        ? stock.CurrentSpecificImpulse
+                        : s.VacuumIspSeconds,
+
+                    VacuumThrust = vacuumThrustKn,
+                    SeaLevelThrust = stock != null ? stock.SeaLevelThrust : double.NaN,
+                    CurrentThrust = stock != null ? stock.CurrentThrust : double.NaN,
+                    MinimumThrust = s.MinimumThrottle * vacuumThrustKn,
+                    MinimumThrottle = s.MinimumThrottle,
+
+                    VacuumDeltaV = endMassTons > 0.0
+                        ? s.VacuumIspSeconds * MathHelpers.StandardGravity * Math.Log(startMassTons / endMassTons)
+                        : double.NaN,
+                    SeaLevelDeltaV = double.NaN,
+                    CurrentDeltaV = double.NaN,
+                    BurnTimeSeconds = s.FullThrottleBurnTimeSeconds
+                });
+                phaseIndex++;
+            }
+
+            LogDivergence(stockStages, stages);
+            return stages.ToArray();
+        }
+
+        private static PoweredStageInfo FindStockStage(PoweredStageInfo[] stockStages, int stage)
+        {
+            for (int i = 0; i < stockStages.Length; i++) {
+                if (stockStages[i].Stage == stage) return stockStages[i];
+            }
+
+            return null;
+        }
+
+        private static void LogDivergence(PoweredStageInfo[] stockStages, List<PoweredStageInfo> simStages)
+        {
+            var sb = new StringBuilder();
+
+            for (int i = 0; i < simStages.Count; i++) {
+                PoweredStageInfo sim = simStages[i];
+                PoweredStageInfo stock = FindStockStage(stockStages, sim.Stage);
+
+                if (stock == null)
+                {
+                    sb.Append($"{sim.Stage}: no stock stage; ");
+                    continue;
+                }
+
+                double simProp = sim.StartMass - sim.EndMass;
+                double stockProp = stock.StartMass - stock.EndMass;
+
+                if (Math.Abs(simProp - stockProp) / Math.Max(Math.Abs(simProp), 1e-9) > FuelSimDivergenceTolerance)
+                {
+                    sb.Append($"S{sim.Stage}: prop sim={simProp:F2}t stock={stockProp:F2}t, burnT sim={sim.BurnTimeSeconds:F1}s stock={stock.BurnTimeSeconds:F1}s; ");
+                }
+            }
+
+            string signature = sb.ToString();
+            if (signature.Length > 0 && signature != _fuelSimDivergenceSignature) {
+                FuelSimLog.Write("[fuelsim-divergence] " + signature);
+            }
+
+            _fuelSimDivergenceSignature = signature;
         }
 
         // Reads KSP's stage-resolved delta-v model so powered guidance can build PSG phases.
-        private static PoweredStageInfo[] GetPoweredStages(Vessel vessel)
+        // fallback for our own fuel sim
+        private static PoweredStageInfo[] GetStockPoweredStages(Vessel vessel)
         {
             if (vessel.VesselDeltaV == null) return new PoweredStageInfo[0];
 
@@ -155,7 +296,7 @@ namespace Blackbird.Models
             }
 
             return stages
-                .OrderByDescending(stage => stage.KspStage)
+                .OrderByDescending(stage => stage.Stage)
                 .ThenBy(stage => stage.PhaseIndex)
                 .ToArray();
         }
@@ -185,14 +326,14 @@ namespace Blackbird.Models
                 return CreateInvalidStage(-1, phaseIndex, "KSP stage mass data is unavailable.");
             }
 
-            int kspStage = Convert.ToInt32(stageInfo.stage);
+            int stage = Convert.ToInt32(stageInfo.stage);
 
             double minimumThrust = GetStageMinimumThrust(stageInfo);
             double maximumThrust = MathHelpers.IsFinite(stageInfo.thrustVac) && stageInfo.thrustVac > 0.0 ? stageInfo.thrustVac : stageInfo.thrustActual;
 
             //double ispVac = stageInfo.ispVac;
             double burnTime = MathHelpers.IsFinite(stageInfo.ispVac) && stageInfo.ispVac > 0.0 && maximumThrust > 0.0
-                                ? (stageInfo.startMass - stageInfo.endMass) * stageInfo.ispVac * PsgPhase.StandardGravity / maximumThrust
+                                ? (stageInfo.startMass - stageInfo.endMass) * stageInfo.ispVac * MathHelpers.StandardGravity / maximumThrust
                                 : double.NaN;
 
             double minimumThrottle = maximumThrust > 0.0 && MathHelpers.IsFinite(minimumThrust)
@@ -207,16 +348,16 @@ namespace Blackbird.Models
 
             if (!hasPoweredCapability)
             {
-                return CreateInvalidStage(kspStage, phaseIndex, "Stage has no powered delta-v.");
+                return CreateInvalidStage(stage, phaseIndex, "Stage has no powered delta-v.");
             }
 
             return new PoweredStageInfo
             {
                 IsValid = true,
                 ReasonUnavailable = null,
-                KspStage = kspStage,
+                Stage = stage,
                 PhaseIndex = phaseIndex,
-                IsCurrentOrFutureStage = vessel != null && kspStage <= vessel.currentStage,
+                IsCurrentOrFutureStage = vessel != null && stage <= vessel.currentStage,
 
                 StartMass = stageInfo.startMass,
                 EndMass = stageInfo.endMass,
@@ -250,27 +391,27 @@ namespace Blackbird.Models
 
             double minimumThrust = 0.0;
 
-            foreach (ModuleEngines engineInfo in engines)
+            foreach (DeltaVEngineInfo engineInfo in engines)
             {
-                //object engine = GetMember(engineInfo, "engine");
-                if (engineInfo == null) continue;
+                ModuleEngines engine = engineInfo?.engine;
+                if (engine == null) continue;
 
-                double tp = MathHelpers.IsFinite(engineInfo.thrustPercentage) ? engineInfo.thrustPercentage : 100.0;
-                double minThrust = MathHelpers.IsFinite(engineInfo.minThrust) ? Math.Max(0.0, engineInfo.minThrust) : 0;
+                double tp = MathHelpers.IsFinite(engine.thrustPercentage) ? engine.thrustPercentage : 100.0;
+                double minThrust = MathHelpers.IsFinite(engine.minThrust) ? Math.Max(0.0, engine.minThrust) : 0.0;
                 double thrustLimiter = MathHelpers.Clamp(tp, 0.0, 100.0) / 100.0;
-                minimumThrust += engineInfo.minThrust * thrustLimiter;
+                minimumThrust += minThrust * thrustLimiter;
             }
 
             return minimumThrust;
         }
 
-        private static PoweredStageInfo CreateInvalidStage(int kspStage, int phaseIndex, string reason)
+        private static PoweredStageInfo CreateInvalidStage(int stage, int phaseIndex, string reason)
         {
             return new PoweredStageInfo
             {
                 IsValid = false,
                 ReasonUnavailable = reason,
-                KspStage = kspStage,
+                Stage = stage,
                 PhaseIndex = phaseIndex
             };
         }

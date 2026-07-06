@@ -75,10 +75,10 @@
     <Compile Include="Docking\RcsController.cs" />
     <Compile Include="Docking\DockingGeometry.cs" />
     <Compile Include="Docking\DockingController.cs" />
-    <Compile Include="FuelSim\Engine.cs" />
-    <Compile Include="FuelSim\Part.cs" />
+    <Compile Include="FuelSim\SimEngine.cs" />
+    <Compile Include="FuelSim\SimPart.cs" />
     <Compile Include="FuelSim\StagePropellantSimulator.cs" />
-    <Compile Include="FuelSim\Vessel.cs" />
+    <Compile Include="FuelSim\SimVessel.cs" />
     <Compile Include="Guidance\AscentGuidance.cs" />
     <Compile Include="Guidance\AscentProfile.cs" />
     <Compile Include="Guidance\ClassicAscentGuidance.cs" />

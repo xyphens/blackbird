@@ -7,9 +7,8 @@ namespace Blackbird.Psg
 {
     public sealed class PsgPhase
     {
-        public const double StandardGravity = 9.80665;
-        private const double KilogramsPerKspTon = 1000.0;
-        private const double NewtonsPerKilonewton = 1000.0;
+        // dufixme: move this to 
+
         private const double MinimumUsablePropellantMassKg = 1.0;
         private const double MinimumUsableBurnTimeSeconds = 0.05;
 
@@ -37,12 +36,12 @@ namespace Blackbird.Psg
 
         public double ExhaustVelocityVacuumMetersPerSecond
         {
-            get { return VacuumSpecificImpulseSeconds * StandardGravity; }
+            get { return VacuumSpecificImpulseSeconds * MathHelpers.StandardGravity; }
         }
 
         public double ExhaustVelocityCurrentMetersPerSecond
         {
-            get { return CurrentSpecificImpulseSeconds * StandardGravity; }
+            get { return CurrentSpecificImpulseSeconds * MathHelpers.StandardGravity; }
         }
 
         public double PropellantMassKg
@@ -74,17 +73,17 @@ namespace Blackbird.Psg
 
             if (!stage.IsValid)
             {
-                return CreateInvalid(stage.KspStage, stage.PhaseIndex, stage.ReasonUnavailable);
+                return CreateInvalid(stage.Stage, stage.PhaseIndex, stage.ReasonUnavailable);
             }
 
             if (!stage.IsCurrentOrFutureStage)
             {
-                return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage is not current or future.");
+                return CreateInvalid(stage.Stage, stage.PhaseIndex, "Stage is not current or future.");
             }
 
-            double startMassKg = stage.StartMass * KilogramsPerKspTon;
-            double endMassKg = stage.EndMass * KilogramsPerKspTon;
-            double vacuumThrustNewtons = stage.VacuumThrust * NewtonsPerKilonewton;
+            double startMassKg = stage.StartMass * MathHelpers.KilogramsPerTon;
+            double endMassKg = stage.EndMass * MathHelpers.KilogramsPerTon;
+            double vacuumThrustNewtons = stage.VacuumThrust * MathHelpers.NewtonsPerKilonewton;
             double vacuumIsp = stage.VacuumSpecificImpulse;
             double currentIsp = MathHelpers.IsFinite(stage.CurrentSpecificImpulse) && stage.CurrentSpecificImpulse > 0.0
                 ? stage.CurrentSpecificImpulse
@@ -94,28 +93,28 @@ namespace Blackbird.Psg
                 !MathHelpers.IsFinite(endMassKg) || endMassKg <= 0.0 ||
                 endMassKg > startMassKg)
             {
-                return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage mass bounds are invalid.");
+                return CreateInvalid(stage.Stage, stage.PhaseIndex, "Stage mass bounds are invalid.");
             }
 
             if (startMassKg - endMassKg <= MinimumUsablePropellantMassKg)
             {
-                return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage has no usable propellant.");
+                return CreateInvalid(stage.Stage, stage.PhaseIndex, "Stage has no usable propellant.");
             }
 
             if (!MathHelpers.IsFinite(vacuumThrustNewtons) || vacuumThrustNewtons <= 0.0)
             {
-                return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage vacuum thrust is unavailable.");
+                return CreateInvalid(stage.Stage, stage.PhaseIndex, "Stage vacuum thrust is unavailable.");
             }
 
             if (!MathHelpers.IsFinite(vacuumIsp) || vacuumIsp <= 0.0)
             {
-                return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage vacuum specific impulse is unavailable.");
+                return CreateInvalid(stage.Stage, stage.PhaseIndex, "Stage vacuum specific impulse is unavailable.");
             }
 
-            double massFlow = vacuumThrustNewtons / (vacuumIsp * StandardGravity);
+            double massFlow = vacuumThrustNewtons / (vacuumIsp * MathHelpers.StandardGravity);
             if (!MathHelpers.IsFinite(massFlow) || massFlow <= 0.0)
             {
-                return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage mass flow cannot be derived.");
+                return CreateInvalid(stage.Stage, stage.PhaseIndex, "Stage mass flow cannot be derived.");
             }
 
             // derive burn time from mass instead of KSP
@@ -129,12 +128,12 @@ namespace Blackbird.Psg
 
             if (!MathHelpers.IsFinite(nominalBurnTime) || nominalBurnTime <= 0.0)
             {
-                return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage burn time cannot be derived.");
+                return CreateInvalid(stage.Stage, stage.PhaseIndex, "Stage burn time cannot be derived.");
             }
 
             if (nominalBurnTime <= MinimumUsableBurnTimeSeconds)
             {
-                return CreateInvalid(stage.KspStage, stage.PhaseIndex, "Stage burn time is too short to guide.");
+                return CreateInvalid(stage.Stage, stage.PhaseIndex, "Stage burn time is too short to guide.");
             }
 
             double minimumThrottle = MathHelpers.Clamp(stage.MinimumThrottle, 0.0, 1.0);
@@ -146,7 +145,7 @@ namespace Blackbird.Psg
             {
                 IsValid = true,
                 ReasonUnavailable = string.Empty,
-                KspStage = stage.KspStage,
+                KspStage = stage.Stage,
                 PhaseIndex = stage.PhaseIndex,
                 StartMassKg = startMassKg,
                 EndMassKg = endMassKg,

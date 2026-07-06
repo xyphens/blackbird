@@ -1,4 +1,5 @@
 using System;
+using Blackbird.FuelSim;
 using Blackbird.Guidance;
 using Blackbird.Mathematics;
 using Blackbird.Models;
@@ -26,6 +27,7 @@ namespace Blackbird.PsgHarness
             Console.WriteLine("BlackBird PSG Harness");
             Console.WriteLine();
 
+            RunFuelSimChecks();
             RunHeadingHoldCheck();
             RunEarthJ2Check();
             RunEarthShapeSweep();
@@ -512,7 +514,7 @@ namespace Blackbird.PsgHarness
             {
                 IsValid = true,
                 ReasonUnavailable = string.Empty,
-                KspStage = kspStage,
+                Stage = kspStage,
                 PhaseIndex = phaseIndex,
                 IsCurrentOrFutureStage = true,
                 StartMass = startMassTon,
@@ -703,7 +705,7 @@ namespace Blackbird.PsgHarness
             {
                 IsValid = true,
                 ReasonUnavailable = string.Empty,
-                KspStage = 0,
+                Stage = 0,
                 PhaseIndex = 0,
                 IsCurrentOrFutureStage = true,
                 StartMass = 219.8,
@@ -764,6 +766,210 @@ namespace Blackbird.PsgHarness
                     guidance.InertialDirection.y.ToString("F3") + ", " +
                     guidance.InertialDirection.z.ToString("F3") + ")");
             }
+        }
+
+        // FuelSim replaces stock DeltaVStageInfo, which mis-attributes shared/incompatible fuel and
+        // inflates stageBurnTime by 1/minThrottle. Four hand-computed cases: (A) tanker payload exclusion
+        // plus the x6 burn-time regression, (B) serial staging with engine activation and honest mass
+        // chaining, (C) crossfeed drop-tank with equal-split draining and the never-drop-reachable-fuel
+        // staging rule, (D) RealFuels residuals floor.
+        private static void RunFuelSimChecks()
+        {
+            Console.WriteLine("FuelSim stage propellant simulation:");
+            bool pass = true;
+
+            const int Fuel = 1;               // propellant the engines burn
+            const int PayloadFuel = 2;        // incompatible fuel carried as cargo
+            const double Density = 0.001;     // tons/unit -> 1 unit = 1 kg
+
+            // (A) Saturn-V-tanker repro: 5 t usable fuel, 98 t MethaLox payload the engine cannot burn.
+            {
+                var vessel = new SimVessel();
+                vessel.SetCurrentStage(0);
+
+                SimPart core = MakeSimPart(vessel, "core", 30.0, 0);
+                AddSimResource(core, Fuel, 5000.0, Density);
+                SimPart payload = MakeSimPart(vessel, "payload", 2.0, 0);
+                AddSimResource(payload, PayloadFuel, 98000.0, Density);
+                LinkParts(core, payload);
+
+                AddSimEngine(core, Fuel, Density, FlowMode.StagePriorityFlow, 0.275, 1.0 / 6.0, 436.0);
+                vessel.FinalizeBuild();
+
+                SimStageStats[] stats = StagePropellantSimulator.Run(vessel);
+                SimStageStats s = stats[0];
+
+                double expectStart = (30.0 + 5.0 + 2.0 + 98.0) * 1000.0;
+                double expectTime = 5.0 / 0.275;
+
+                bool ok = stats.Length == 1
+                          && Near(s.StartMassKg, expectStart, 1e-6)
+                          && Near(s.BurnablePropellantKg, 5000.0, 1e-6)
+                          && Near(s.EndMassKg, expectStart - 5000.0, 1e-6)
+                          && Near(s.FullThrottleBurnTimeSeconds, expectTime, 1e-9)
+                          && Near(s.MinimumThrottle, 1.0 / 6.0, 1e-9)
+                          && Near(s.VacuumIspSeconds, 436.0, 1e-6);
+                pass &= ok;
+                Console.WriteLine($"  (A) tanker: burnable={s.BurnablePropellantKg:F1} kg (expect 5000), burnT={s.FullThrottleBurnTimeSeconds:F2} s (expect {expectTime:F2}; x6 bug would say {expectTime * 6.0:F0}), minThl={s.MinimumThrottle:F4}  {(ok ? "[ok]" : "[FAIL]")}");
+            }
+
+            // (B) serial staging: booster burns out, decoupler drops it, upper engine lights.
+            {
+                var vessel = new SimVessel();
+                vessel.SetCurrentStage(1);
+
+                SimPart upper = MakeSimPart(vessel, "upper", 4.0, 0);
+                AddSimResource(upper, Fuel, 3000.0, Density);
+                SimPart decoupler = MakeSimPart(vessel, "decoupler", 0.5, 0);
+                SimPart booster = MakeSimPart(vessel, "booster", 6.0, 1);
+                AddSimResource(booster, Fuel, 6000.0, Density);
+                LinkParts(upper, decoupler);
+                LinkParts(decoupler, booster);
+                decoupler.Decoupler = new Decoupler { Staged = true, StagingEnabled = true, AttachedPart = booster };
+
+                AddSimEngine(upper, Fuel, Density, FlowMode.NoFlow, 0.15, 0.0, 320.0);
+                AddSimEngine(booster, Fuel, Density, FlowMode.NoFlow, 0.2, 0.0, 300.0);
+                vessel.FinalizeBuild();
+
+                SimStageStats[] stats = StagePropellantSimulator.Run(vessel);
+
+                // stage 1: 19.5 t total, booster burns its 6 t in 30 s; stage 0: booster's 6 t dry mass
+                // is dropped, upper burns its 3 t in 20 s.
+                bool ok = stats.Length == 2
+                          && stats[0].Stage == 1
+                          && Near(stats[0].StartMassKg, 19500.0, 1e-6)
+                          && Near(stats[0].BurnablePropellantKg, 6000.0, 1e-6)
+                          && Near(stats[0].FullThrottleBurnTimeSeconds, 30.0, 1e-9)
+                          && stats[1].Stage == 0
+                          && Near(stats[1].StartMassKg, 7500.0, 1e-6)
+                          && Near(stats[1].BurnablePropellantKg, 3000.0, 1e-6)
+                          && Near(stats[1].FullThrottleBurnTimeSeconds, 20.0, 1e-9);
+                pass &= ok;
+                Console.WriteLine($"  (B) serial staging: S1 start={stats[0].StartMassKg:F0} kg burnT={stats[0].FullThrottleBurnTimeSeconds:F1} s, S0 start={stats[1].StartMassKg:F0} kg burnT={stats[1].FullThrottleBurnTimeSeconds:F1} s  {(ok ? "[ok]" : "[FAIL]")}");
+            }
+
+            // (C) crossfeed drop-tank: one engine feeding from its own tank plus a droppable tank at equal
+            // priority. Draining splits equally; staging must wait for the drop tank to run dry.
+            {
+                var vessel = new SimVessel();
+                vessel.SetCurrentStage(1);
+
+                SimPart core = MakeSimPart(vessel, "core", 10.0, 1);
+                AddSimResource(core, Fuel, 10000.0, Density);
+                SimPart decoupler = MakeSimPart(vessel, "decoupler", 0.4, 0);
+                SimPart dropTank = MakeSimPart(vessel, "droptank", 1.5, 0);
+                AddSimResource(dropTank, Fuel, 2000.0, Density);
+                LinkParts(core, decoupler);
+                LinkParts(decoupler, dropTank);
+                decoupler.Decoupler = new Decoupler { Staged = true, StagingEnabled = true, AttachedPart = dropTank };
+
+                AddSimEngine(core, Fuel, Density, FlowMode.StackPrioritySearch, 0.1, 0.0, 350.0);
+                core.CrossFeedPartSet.Add(core);
+                core.CrossFeedPartSet.Add(dropTank);
+                vessel.FinalizeBuild();
+
+                SimStageStats[] stats = StagePropellantSimulator.Run(vessel);
+
+                // stage 1 ends when the drop tank empties: 2 t from the drop tank + 2 t from the core
+                // (equal split at 50 units/s each). Stage 0 = the core's remaining 8 t, drop tank gone.
+                bool ok = stats.Length == 2
+                          && Near(stats[0].BurnablePropellantKg, 4000.0, 1e-6)
+                          && Near(stats[0].FullThrottleBurnTimeSeconds, 40.0, 1e-6)
+                          && Near(stats[1].StartMassKg, 18400.0, 1e-6)
+                          && Near(stats[1].BurnablePropellantKg, 8000.0, 1e-6)
+                          && Near(stats[1].FullThrottleBurnTimeSeconds, 80.0, 1e-6);
+                pass &= ok;
+                Console.WriteLine($"  (C) drop-tank: S1 burnable={stats[0].BurnablePropellantKg:F0} kg/{stats[0].FullThrottleBurnTimeSeconds:F1} s (priority-bug would stage at 2000), S0 start={stats[1].StartMassKg:F0} kg burnable={stats[1].BurnablePropellantKg:F0} kg  {(ok ? "[ok]" : "[FAIL]")}");
+            }
+
+            // (D) RealFuels residuals: 5% of tank capacity is unusable and stays aboard as mass.
+            {
+                var vessel = new SimVessel();
+                vessel.SetCurrentStage(0);
+
+                SimPart core = MakeSimPart(vessel, "core", 30.0, 0);
+                AddSimResource(core, Fuel, 5000.0, Density);
+                AddSimEngine(core, Fuel, Density, FlowMode.StagePriorityFlow, 0.275, 0.0, 436.0, 0.05);
+                vessel.FinalizeBuild();
+
+                SimStageStats[] stats = StagePropellantSimulator.Run(vessel);
+                SimStageStats s = stats[0];
+
+                bool ok = Near(s.BurnablePropellantKg, 4750.0, 1e-6)
+                          && Near(s.EndMassKg, 30000.0 + 250.0, 1e-6)
+                          && Near(s.FullThrottleBurnTimeSeconds, 4.75 / 0.275, 1e-6);
+                pass &= ok;
+                Console.WriteLine($"  (D) residuals 5%: burnable={s.BurnablePropellantKg:F1} kg (expect 4750), end={s.EndMassKg:F1} kg (expect 30250)  {(ok ? "[ok]" : "[FAIL]")}");
+            }
+
+            Console.WriteLine(pass
+                ? "  [PASS] payload excluded, burn times honest, staging and residual rules hold"
+                : "  [FAIL] FuelSim regression");
+            Console.WriteLine();
+            if (!pass) throw new Exception("FuelSim regression.");
+        }
+
+        private static SimPart MakeSimPart(SimVessel vessel, string name, double dryTons, int inverseStage)
+        {
+            var part = new SimPart(vessel, name)
+            {
+                DryMassTons = dryTons,
+                InverseStage = inverseStage,
+                StagingOn = true,
+                IsRoot = vessel.Parts.Count == 0
+            };
+            vessel.Parts.Add(part);
+            return part;
+        }
+
+        private static void AddSimResource(SimPart part, int id, double amountUnits, double densityTonsPerUnit)
+        {
+            part.Resources[id] = new Resource
+            {
+                Id = id,
+                Amount = amountUnits,
+                MaxAmount = amountUnits,
+                Density = densityTonsPerUnit,
+                Free = false
+            };
+        }
+
+        private static void LinkParts(SimPart a, SimPart b)
+        {
+            a.Links.Add(b);
+            b.Links.Add(a);
+        }
+
+        private static SimEngine AddSimEngine(
+            SimPart part, int resourceId, double densityTonsPerUnit, FlowMode flowMode,
+            double maxFlowTonsPerSec, double minThrottle, double vacIsp, double residuals = 0.0)
+        {
+            var engine = new SimEngine
+            {
+                Part = part,
+                IsEnabled = true,
+                IsOperational = false,
+                ThrustLimiter = 1.0,
+                MaxFuelFlowTons = maxFlowTonsPerSec,
+                MinFuelFlowTons = maxFlowTonsPerSec * minThrottle,
+                VacuumIsp = vacIsp,
+                ModuleResiduals = residuals
+            };
+            engine.Propellants.Add(new EnginePropellant
+            {
+                ResourceId = resourceId,
+                Ratio = 1.0,
+                DensityTonsPerUnit = densityTonsPerUnit,
+                FlowMode = flowMode
+            });
+            engine.Initialize();
+            part.Engines.Add(engine);
+            return engine;
+        }
+
+        private static bool Near(double actual, double expected, double tolerance)
+        {
+            return Math.Abs(actual - expected) <= tolerance;
         }
 
         private sealed class OrbitSummary

@@ -5,7 +5,7 @@ namespace Blackbird.Models
         public bool IsValid { get; set; }
         public string ReasonUnavailable { get; set; }
 
-        public int KspStage { get; set; }
+        public int Stage { get; set; }
         public int PhaseIndex { get; set; }
         public bool IsCurrentOrFutureStage { get; set; }
 

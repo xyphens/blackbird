@@ -292,7 +292,7 @@ namespace Blackbird.Guidance
                 return 0.0;
             if (!MathHelpers.IsFinite(dvTotal) || dvTotal <= 0.0) return 0.0;
 
-            double vE = vs.VacuumSpecificImpulse * PsgPhase.StandardGravity;
+            double vE = vs.VacuumSpecificImpulse * MathHelpers.StandardGravity;
             double halfDv = dvTotal * 0.5;
             return (vE * vs.TotalMass / vs.AvailableThrust) * (1.0 - Math.Exp(-halfDv / vE));
         }

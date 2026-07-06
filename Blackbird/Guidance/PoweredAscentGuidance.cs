@@ -410,7 +410,7 @@ namespace Blackbird.Guidance
 
             // bridge to allow optimizer to continue if vessel stages mid-circularization
             int currentStage = vesselState.PoweredStages != null && vesselState.PoweredStages.Length > 0
-                ? vesselState.PoweredStages[0].KspStage : _lastVesselStage;
+                ? vesselState.PoweredStages[0].Stage : _lastVesselStage;
 
             if (currentStage != _lastVesselStage && _lastVesselStage != int.MinValue)
             {

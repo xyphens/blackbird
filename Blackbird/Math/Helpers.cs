@@ -4,6 +4,10 @@ namespace Blackbird.Mathematics
 {
     public static class MathHelpers
     {
+        public const double StandardGravity = 9.80665;
+        public const double KilogramsPerTon = 1000.0;
+        public const double NewtonsPerKilonewton = 1000.0;
+
         // convert negative degrees to a real radian
         public static double NormalizeDegrees(double degrees)
         {
