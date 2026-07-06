@@ -31,8 +31,65 @@ namespace Blackbird.FuelSim
         {
             if (vessel == null || vessel.parts == null) return new SimStageStats[0];
 
+            // KSP rebuilds crossfeed part sets lazily; reading a stale set routes fuel across closed
+            // crossfeed boundaries (e.g. through the tanker's SLA adapter). MechJeb performs the same
+            // refresh before every simulation build.
+            vessel.UpdateResourceSetsIfDirty();
+
             SimVessel simVessel = BuildVessel(vessel);
             return Run(simVessel);
+        }
+
+        // Routing diagnostic: the sim's view of every fuel-relevant part (staging, priority, crossfeed
+        // reach, resources) and each engine's propellant flow modes. One line; log on stage change.
+        public static string DescribeParts(Vessel kspVessel)
+        {
+            if (kspVessel == null || kspVessel.parts == null) return "no vessel";
+
+            kspVessel.UpdateResourceSetsIfDirty();
+            SimVessel vessel = BuildVessel(kspVessel);
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append("stage=").Append(vessel.CurrentStage).Append(" parts=").Append(vessel.Parts.Count);
+
+            foreach (SimPart part in vessel.Parts)
+            {
+                if (part.Resources.Count == 0 && part.Engines.Count == 0 && part.DisabledResourcesMassTons <= 0.0) continue;
+
+                sb.Append(" || ").Append(part.Name)
+                  .Append(" inv=").Append(part.InverseStage)
+                  .Append(" dec=").Append(part.DecoupledInStage)
+                  .Append(" pri=").Append(part.ResourcePriority)
+                  .Append(" xf=").Append(part.CrossFeedPartSet.Count);
+
+                foreach (Resource resource in part.Resources.Values)
+                {
+                    sb.Append(' ').Append(ResourceName(resource.Id)).Append('=').Append(resource.Amount.ToString("F0"));
+                }
+
+                if (part.DisabledResourcesMassTons > 0.0)
+                {
+                    sb.Append(" lockedMass=").Append(part.DisabledResourcesMassTons.ToString("F1")).Append('t');
+                }
+
+                foreach (SimEngine engine in part.Engines)
+                {
+                    sb.Append(" ENG[");
+                    foreach (EnginePropellant propellant in engine.Propellants)
+                    {
+                        sb.Append(ResourceName(propellant.ResourceId)).Append(':').Append(propellant.FlowMode).Append(' ');
+                    }
+                    sb.Append(']');
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        private static string ResourceName(int resourceId)
+        {
+            PartResourceDefinition definition = PartResourceLibrary.Instance.GetDefinition(resourceId);
+            return definition != null ? definition.name : resourceId.ToString();
         }
 
         // Runs the staged drain simulation. Public so harnesses can drive a hand-built vessel.

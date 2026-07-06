@@ -55,6 +55,13 @@ namespace Blackbird.Guidance
         // UT when the terminal cut first got blocked on shape; bounds the extra closed-loop time.
         private double _shapeBlockStartUt = double.NaN;
 
+        // Terminal-gate interlock: shape-correcting end-games overshoot energy mid-plan and bring it back,
+        // so the cut may only be evaluated near the plan's end - unless the plan end keeps receding (the
+        // runaway signature, where waiting would burn forever).
+        private const double TerminalGateArmSeconds = 10.0;
+        private const double PlanEndRecedeToleranceSeconds = 15.0;
+        private double _minPlanFinalUt = double.NaN;
+
         public enum TerminalCutDecision { NotReady, Complete, BlockedOnShape }
 
         // expose guidance state to listeners
@@ -84,6 +91,18 @@ namespace Blackbird.Guidance
             _lastVesselStage = int.MinValue;
             _runColdSolve = false;
             _shapeBlockStartUt = double.NaN;
+            _minPlanFinalUt = double.NaN;
+        }
+
+        // Pure interlock decision (harness-exercised): evaluate the terminal cut only when the plan is
+        // nearly done, or when the plan's end time has receded past the tolerance (divergent re-solves).
+        // Mid-plan, measured energy crossing the target is expected, not terminal - the 2026-07-06 tanker
+        // died to exactly that cut, 10 s before its plan completed at the target orbit.
+        public static bool ShouldEvaluateTerminalGate(double timeToGoSeconds, double planFinalUt, double minPlanFinalUt)
+        {
+            if (!MathHelpers.IsFinite(planFinalUt) || !MathHelpers.IsFinite(minPlanFinalUt)) return true;
+            if (planFinalUt - minPlanFinalUt > PlanEndRecedeToleranceSeconds) return true;
+            return timeToGoSeconds <= TerminalGateArmSeconds;
         }
 
         // Shape band for the terminal cut: the J2 short-period radial breathing (2x amplitude ≈ 3·J2·Re²/r,
@@ -102,13 +121,19 @@ namespace Blackbird.Guidance
         public static TerminalCutDecision DecideTerminalCut(
             double specificEnergy, double terminalSpecificEnergy,
             double realMinRadius, double realMaxRadius,
-            double targetRadius, double targetPeRadius, double shapeBandMeters)
+            double targetRadius, double targetPeRadius, double targetApRadius, double shapeBandMeters)
         {
             if (!MathHelpers.IsFinite(terminalSpecificEnergy) || specificEnergy < terminalSpecificEnergy)
                 return TerminalCutDecision.NotReady;
             if (0.5 * (realMinRadius + realMaxRadius) < targetRadius)
                 return TerminalCutDecision.NotReady;
-            return realMinRadius >= targetPeRadius - shapeBandMeters
+
+            // Both apsides must sit in band: a Pe-only check is Ap-blind and completed 200x261 against a
+            // 204-circular target (2026-07-06 replay) - energy >= target does not bound Ap from above when
+            // the end-game approaches the target energy from overshoot.
+            bool shapeInBand = realMinRadius >= targetPeRadius - shapeBandMeters
+                               && realMaxRadius <= targetApRadius + shapeBandMeters;
+            return shapeInBand
                 ? TerminalCutDecision.Complete
                 : TerminalCutDecision.BlockedOnShape;
         }
@@ -155,22 +180,39 @@ namespace Blackbird.Guidance
             UpdateOrbitPrediction(vesselState);
             PinSolutionToGroundedTime(vesselState);
 
-            // Terminal completion shutoff: energy (size) + mean-radius latch + banded real-Pe (shape).
+            // Terminal completion shutoff: energy (size) + mean-radius latch + banded real-Pe (shape),
+            // evaluated only near the plan's end (or when the plan end recedes - the runaway signature).
             if (!_complete && _solution != null && _solution.IsValid)
             {
+                if (MathHelpers.IsFinite(_solution.FinalUniversalTime))
+                {
+                    _minPlanFinalUt = double.IsNaN(_minPlanFinalUt)
+                        ? _solution.FinalUniversalTime
+                        : Math.Min(_minPlanFinalUt, _solution.FinalUniversalTime);
+                }
+
+                bool gateArmed = ShouldEvaluateTerminalGate(
+                    _solution.TimeToGo(vesselState.UniversalTime), _solution.FinalUniversalTime, _minPlanFinalUt);
+                if (!gateArmed)
+                {
+                    // dormant mid-plan: the shape-grace clock must measure contiguous blocked time near the end
+                    _shapeBlockStartUt = double.NaN;
+                }
+
                 Vector3d rRel = vesselState.Position - vesselState.Body.position;
                 double rMag = rRel.magnitude;
-                if (rMag > 0.0)
+                if (gateArmed && rMag > 0.0)
                 {
                     double targetRadius = vesselState.BodyRadius + 0.5 * (ascentProfile.TargetPeriapsisAlt + ascentProfile.TargetApoapsisAlt);
                     double e = 0.5 * vesselState.OrbitalVelocity.sqrMagnitude - vesselState.BodyGravParameter / rMag;
                     double targetPeRadius = vesselState.BodyRadius + ascentProfile.TargetPeriapsisAlt;
+                    double targetApRadius = vesselState.BodyRadius + ascentProfile.TargetApoapsisAlt;
 
                     BodyOblateness.Oblateness ob = BodyOblateness.For(vesselState.Body);
                     J2RadiusExtremes(vesselState, out double minR, out double maxR);
                     double band = TerminalShapeBandMeters(ob.J2, ob.ReferenceRadiusMeters, rMag);
                     TerminalCutDecision cut = DecideTerminalCut(
-                        e, _solution.TerminalSpecificEnergy, minR, maxR, targetRadius, targetPeRadius, band);
+                        e, _solution.TerminalSpecificEnergy, minR, maxR, targetRadius, targetPeRadius, targetApRadius, band);
 
                     if (cut == TerminalCutDecision.Complete)
                     {
@@ -295,7 +337,18 @@ namespace Blackbird.Guidance
                     double heldHeading = profileHeadingDeg;
                     Vector3d heldDirection = GetSurfaceCommandDirection(vesselState, heldHeading, psgPitch);
 
-                    double commandedThrottle = _solution.TimeToGo(vesselState.UniversalTime) <= 0.0 ? 1.0 : guidance.Throttle;
+                    // Past the plan's end, keep pushing only while measured energy is still short of the
+                    // target (the burn-sliver finish). Full throttle past BOTH the plan and the target
+                    // energy on a stale direction destroys the orbit (2026-07-06 replay: a stable 204x255
+                    // coast state was wrecked to 9.6x414 in 25 s of exactly that).
+                    double commandedThrottle = guidance.Throttle;
+                    if (_solution.TimeToGo(vesselState.UniversalTime) <= 0.0)
+                    {
+                        Vector3d rNow = vesselState.Position - vesselState.Body.position;
+                        double energyNow = 0.5 * vesselState.OrbitalVelocity.sqrMagnitude
+                                           - vesselState.BodyGravParameter / Math.Max(1e-9, rNow.magnitude);
+                        commandedThrottle = energyNow < _solution.TerminalSpecificEnergy ? 1.0 : 0.0;
+                    }
                     _phase = PoweredGuidancePhase.PoweredGuidance;
                     string guidanceStatus = isExpired ? "PSG guidance overrun" :
                         IsSolutionStale(vesselState.UniversalTime) ? "PSG guidance stale" : "PSG guidance";

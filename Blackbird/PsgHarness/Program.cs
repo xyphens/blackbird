@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Blackbird.FuelSim;
 using Blackbird.Guidance;
 using Blackbird.Mathematics;
@@ -18,7 +18,7 @@ namespace Blackbird.PsgHarness
         // RSS Earth (Principia sol_gravity_model): GM matches the in-game log; J2 = -sqrt(5)*C-bar(2,0)
         // with C-bar(2,0) = -4.8416945732e-04; Re = geopotential reference_radius (equatorial).
         private const double EarthMu = 398600435436096.0;
-        private const double EarthMeanRadius = 6371000.0;     // KSP body Radius (mean) — used for altitudes
+        private const double EarthMeanRadius = 6371000.0;     // KSP body Radius (mean) â€” used for altitudes
         private const double EarthJ2 = 1.082636e-03;
         private const double EarthRefRadius = 6378136.3;       // equatorial reference_radius
 
@@ -37,6 +37,9 @@ namespace Blackbird.PsgHarness
             RunRssBootStallReplay();
             RunBootConvergenceSweep();
             RunTerminalSteeringGateReplay();
+            RunPlanConstraintExperiment();
+            // last: documents the OPEN tanker-corner contract gap; red here must not mask the checks above
+            RunTankerCornerReplay();
             //ReplayLoggedFalconHeavySolve();
 
             Console.WriteLine("Scenario: stock Kerbin, equatorial 81 km insertion");
@@ -134,7 +137,7 @@ namespace Blackbird.PsgHarness
 
             // This is the single number flight applies in BOTH places: the optimizer target bias
             // (TerminalJ2PeriapsisOffset) and the propagate-Pe cutoff (IsPsgTerminalComplete). They share this
-            // propagation, so they stay consistent — disagreement between them was the perpetual-burn bug.
+            // propagation, so they stay consistent â€” disagreement between them was the perpetual-burn bug.
             double flightBias = kepPe - j2Pe;
 
             Console.WriteLine("  osculating Pe (two-body):      " + (oscPe / 1000.0).ToString("F2") + " km");
@@ -297,7 +300,7 @@ namespace Blackbird.PsgHarness
         // Replays the EXACT logged PsgProblem from the 2026-06-27 RSS ascent that bailed (psg-failure-bailout):
         // a 45 km / 2-phase state (booster 45 MN, TWR 1.76, then upper 11.8 MN) targeting ~209 km circular. In
         // flight the boot SQP stalled ("PSG boot did not satisfy constraints pf~0.19 @terminal"). This is a
-        // FEASIBLE state (booster TWR>1), so a failure here is the optimizer/seed, not the craft — it lets us
+        // FEASIBLE state (booster TWR>1), so a failure here is the optimizer/seed, not the craft â€” it lets us
         // iterate the boot fix offline instead of burning 20-minute live launches.
         private static void RunRssBootStallReplay()
         {
@@ -343,7 +346,7 @@ namespace Blackbird.PsgHarness
             Console.WriteLine();
         }
 
-        // Terminal-steering-gate replay — the regression guard for the end-of-burn pitch spike. Replays the
+        // Terminal-steering-gate replay â€” the regression guard for the end-of-burn pitch spike. Replays the
         // logged 2026-06-28 18:36:53 circularization: clean steering glides <= 0.11 deg/s, then in the last ~1 s
         // the orbit error -> 0 makes the terminal thrust direction ill-conditioned and successive solves command
         // ~39 deg/s swings (the +25 deg pitch-up). The gate must reject those (unflyable) and hold the last clean
@@ -379,7 +382,7 @@ namespace Blackbird.PsgHarness
             const int lastClean = 6;
             Vector3d cleanRef = s[lastClean].Dir;
 
-            // Worst clean glide rate (deg/s) over the clean run — the gate cap must stay above this.
+            // Worst clean glide rate (deg/s) over the clean run â€” the gate cap must stay above this.
             double maxCleanRate = 0.0;
             for (int i = 1; i <= lastClean; i++)
                 maxCleanRate = Math.Max(maxCleanRate, Vector3d.Angle(s[i - 1].Dir, s[i].Dir) / (s[i].T - s[i - 1].T));
@@ -390,7 +393,7 @@ namespace Blackbird.PsgHarness
                 rawMax = Math.Max(rawMax, Vector3d.Angle(cleanRef, s[i].Dir));
 
             // Representative heavy-upper-stage slew cap (deg/s): well above the 0.11 clean glide, well below the
-            // ~39 spike. Derived as the midpoint in log-space of those two — not eyeballed to a round number.
+            // ~39 spike. Derived as the midpoint in log-space of those two â€” not eyeballed to a round number.
             double capDegPerSec = Math.Sqrt(maxCleanRate * (rawMax / (s[lastClean + 1].T - s[lastClean].T)));
             double capRad = MathHelpers.Deg2Rad(capDegPerSec);
 
@@ -434,7 +437,7 @@ namespace Blackbird.PsgHarness
             Console.WriteLine();
         }
 
-        // Convergence-robustness sweep — the regression guard for the boot-stall class. The bug only bit because
+        // Convergence-robustness sweep â€” the regression guard for the boot-stall class. The bug only bit because
         // every prior PSG scenario fed a PLANE-MATCHED state; a real launch arrives off the target plane (RAAN
         // miss). Take the feasible 45 km ascent and rotate the TARGET plane away from the craft's reachable plane
         // (0..45 deg) across two booster TWRs, and assert the boot reaches orbit at every feasible combo. A stall
@@ -580,14 +583,14 @@ namespace Blackbird.PsgHarness
 
         // Guards the terminal-cut decision (DecideTerminalCut + TerminalShapeBandMeters): energy+mean-radius
         // alone completed a 89x322 km orbit against a ~200 km circular target (2026-07-05 flight, e=0.018,
-        // real Pe read 18 km) — the banded real-Pe term must BLOCK that cut while still passing the validated
+        // real Pe read 18 km) â€” the banded real-Pe term must BLOCK that cut while still passing the validated
         // converged insertions in RSS (osc-circular family) and stock (J2=0, floor band), and must not
         // recreate the 06-24 hard-Pe runaway (the block is grace-bounded in GetCommand, decision-only here).
         private static void RunTerminalShapeGateCheck()
         {
             Console.WriteLine("Terminal shape gate (banded real-Pe blocks SMA-right/eccentric cuts):");
 
-            // Inclined basis from the logged RSS insertion state (~29 deg) — the equator maximizes the J2
+            // Inclined basis from the logged RSS insertion state (~29 deg) â€” the equator maximizes the J2
             // radial breathing (~2x the inclined value), which misrepresents the flights being guarded.
             Vector3d pole = new Vector3d(0.0, 1.0, 0.0);
             Vector3d rLog = new Vector3d(4616976.15665178, 2999292.9189727, 3559341.11249668);
@@ -607,7 +610,7 @@ namespace Blackbird.PsgHarness
 
                 J2Propagator.RadiusExtremes(r, v, EarthMu, EarthJ2, EarthRefRadius, pole, 7000.0, 10.0, out double minR, out double maxR);
                 double band = PoweredAscentGuidance.TerminalShapeBandMeters(EarthJ2, EarthRefRadius, rPe);
-                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, band);
+                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, targetPeRadius, band);
 
                 bool oldGateWouldCut = energy >= targetEnergy && 0.5 * (minR + maxR) >= targetRadius;
                 bool ok = cut == PoweredAscentGuidance.TerminalCutDecision.BlockedOnShape && oldGateWouldCut;
@@ -625,14 +628,14 @@ namespace Blackbird.PsgHarness
 
                 J2Propagator.RadiusExtremes(r, v, EarthMu, EarthJ2, EarthRefRadius, pole, 7000.0, 10.0, out double minR, out double maxR);
                 double band = PoweredAscentGuidance.TerminalShapeBandMeters(EarthJ2, EarthRefRadius, R);
-                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, band);
+                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, targetPeRadius, band);
 
                 bool ok = cut == PoweredAscentGuidance.TerminalCutDecision.Complete;
                 pass &= ok;
                 Console.WriteLine($"  (B) converged RSS insertion (real {(minR - EarthMeanRadius) / 1000.0:F0}x{(maxR - EarthMeanRadius) / 1000.0:F0} vs 185): {cut}  {(ok ? "[ok]" : "[FAIL]")}");
             }
 
-            // (C) Stock (J2=0): floor band keeps a sub-km-short Pe acceptable — no behavior regression.
+            // (C) Stock (J2=0): floor band keeps a sub-km-short Pe acceptable â€” no behavior regression.
             {
                 double rPe = KerbinRadius + 149200.0, rAp = KerbinRadius + 151000.0;
                 double a = 0.5 * (rPe + rAp);
@@ -643,14 +646,14 @@ namespace Blackbird.PsgHarness
 
                 J2Propagator.RadiusExtremes(r, v, KerbinMu, 0.0, KerbinRadius, pole, 7000.0, 10.0, out double minR, out double maxR);
                 double band = PoweredAscentGuidance.TerminalShapeBandMeters(0.0, KerbinRadius, rPe);
-                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, band);
+                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, targetPeRadius, band);
 
                 bool ok = cut == PoweredAscentGuidance.TerminalCutDecision.Complete && band == 5000.0;
                 pass &= ok;
                 Console.WriteLine($"  (C) stock 149.2x151 vs 150-circ: {cut}  band={band / 1000.0:F1} km (floor)  {(ok ? "[ok]" : "[FAIL]")}");
             }
 
-            // (D) Stock, shape wrong (100x201 vs 150-circ, same energy): must block — the guard is not J2-only.
+            // (D) Stock, shape wrong (100x201 vs 150-circ, same energy): must block â€” the guard is not J2-only.
             {
                 double rPe = KerbinRadius + 100000.0, rAp = KerbinRadius + 201000.0;
                 double a = 0.5 * (rPe + rAp);
@@ -661,7 +664,7 @@ namespace Blackbird.PsgHarness
 
                 J2Propagator.RadiusExtremes(r, v, KerbinMu, 0.0, KerbinRadius, pole, 7000.0, 10.0, out double minR, out double maxR);
                 double band = PoweredAscentGuidance.TerminalShapeBandMeters(0.0, KerbinRadius, rPe);
-                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, band);
+                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, targetPeRadius, band);
 
                 bool ok = cut == PoweredAscentGuidance.TerminalCutDecision.BlockedOnShape;
                 pass &= ok;
@@ -766,6 +769,405 @@ namespace Blackbird.PsgHarness
                     guidance.InertialDirection.y.ToString("F3") + ", " +
                     guidance.InertialDirection.z.ToString("F3") + ")");
             }
+        }
+
+        // Experiment (2026-07-06): the SAME SLS vehicle+target Ap/Pe inserts 208x208 when the target is
+        // entered MANUALLY but corners and fails when a target VESSEL supplies the plan - the problem
+        // delta is the plane/LAN constraint set. Solves the logged tanker problems under three target
+        // variants to isolate which constraint drives the deep-loft corner family. Report-only.
+        private static void RunPlanConstraintExperiment()
+        {
+            Console.WriteLine("Plan-constraint experiment (target-vessel plane/LAN vs manual-altitude target):");
+
+            PsgBodyModel body = PsgBodyModel.Create(EarthMu, EarthMeanRadius, new Vector3d(0.0, 7.292115373194e-05, 0.0));
+            Vector3d planNormal = new Vector3d(0.459485685423086, -0.880320842543612, 0.117932688744817);
+            const double TargetRadius = 6575005.49765707;
+            const double TargetInc = 28.3094222154018;
+            const double TargetLan = 187.142664646703;
+
+            var variants = new[]
+            {
+                new { Name = "as-flown (plane+LAN)", Normal = planNormal,    UseLan = true },
+                new { Name = "plane only (no LAN) ", Normal = planNormal,    UseLan = false },
+                new { Name = "manual (no plane)   ", Normal = Vector3d.zero, UseLan = false },
+            };
+
+            // mid-ascent commit state (01:10:31, S-II burning at 100 km): the loft apex forms in the next ~80 s
+            {
+                Vector3d r = new Vector3d(5337564.46791572, 3098185.41129199, 1945111.67908336);
+                Vector3d v = new Vector3d(700.58604779469, 759.99918177163, 2192.2039373647);
+                Vector3d dir = new Vector3d(-0.185571512360378, -0.0931427675536498, 0.978206337462976);
+                double ut = 131374008.350667;
+
+                Console.WriteLine("  mid-ascent state (S-II at 100 km, 720 t, 2 phases):");
+                foreach (var variant in variants)
+                {
+                    PoweredStageInfo[] stages =
+                    {
+                        MakeStage(3, 0, 720.009254496737, 261.811705060441, 5893.88831317825, 436.000007191041, 0.166666671170829, 332.397716994046),
+                        MakeStage(2, 1, 217.477259259444, 95.9713052855988, 1178.77799031252, 436.000007191041, 0.166666671170829, 440.730101291816),
+                    };
+                    PsgTarget target = PsgTarget.Create(EarthMu, TargetRadius, TargetRadius, TargetRadius,
+                        variant.Normal, TargetInc, TargetLan, variant.UseLan, false);
+                    PsgProblem problem = PsgProblem.Create(
+                        PsgInitialState.Create(r, v, 719981.686830521, ut), body, target, PsgPhase.FromPoweredStages(stages), dir);
+                    DescribeVariantSolve(variant.Name, problem, ut);
+                }
+            }
+
+            // the terminal-corner state (01:15:41): does the corner exit become a sane burn without plane/LAN?
+            {
+                Vector3d r = new Vector3d(3866635.33450038, 2918174.29254932, 4463888.72628849);
+                Vector3d v = new Vector3d(-5494.8344325083, -1300.50982323931, 5332.19966426059);
+                Vector3d dir = new Vector3d(0.514193280261268, -0.819481695495133, 0.253090934809168);
+                double ut = 131374606.408057;
+
+                Console.WriteLine("  corner state (S4B descending at 216 km, 144 t, 1 phase):");
+                foreach (var variant in variants)
+                {
+                    PoweredStageInfo[] stages =
+                    {
+                        MakeStage(2, 0, 144.202789664603, 94.3854238324912, 1178.77799031252, 436.000007191041, 0.166666671170829, 180.699068409475),
+                    };
+                    PsgTarget target = PsgTarget.Create(EarthMu, TargetRadius, TargetRadius, TargetRadius,
+                        variant.Normal, TargetInc, TargetLan, variant.UseLan, false);
+                    PsgProblem problem = PsgProblem.Create(
+                        PsgInitialState.Create(r, v, 144158.620715141, ut), body, target, PsgPhase.FromPoweredStages(stages), dir);
+                    DescribeVariantSolve(variant.Name, problem, ut);
+                }
+            }
+
+            Console.WriteLine();
+        }
+
+        private static void DescribeVariantSolve(string name, PsgProblem problem, double ut0)
+        {
+            if (problem == null || !problem.IsValid)
+            {
+                Console.WriteLine($"    {name}: problem invalid: {(problem != null ? problem.ReasonUnavailable : "null")}");
+                return;
+            }
+
+            DateTime t0 = DateTime.UtcNow;
+            PsgOptimizationResult result = new PsgOptimizer().Solve(problem, null);
+            double sec = (DateTime.UtcNow - t0).TotalSeconds;
+
+            if (!result.Success || result.Solution == null)
+            {
+                Console.WriteLine($"    {name}: FAILED iters={result.Iterations} viol={result.ConstraintViolation:E1} ({sec:F0}s)");
+                return;
+            }
+
+            PsgSolution s = result.Solution;
+            double maxAlt = double.MinValue, maxDe = double.MinValue, maxOffPrograde = 0.0;
+            foreach (PsgSolutionPoint pt in s.Points)
+            {
+                maxAlt = Math.Max(maxAlt, pt.RelativePosition.magnitude - EarthMeanRadius);
+                double energy = 0.5 * pt.RelativeVelocity.sqrMagnitude - EarthMu / pt.RelativePosition.magnitude;
+                maxDe = Math.Max(maxDe, energy - s.TerminalSpecificEnergy);
+                if (pt.Throttle > 0.05)
+                {
+                    maxOffPrograde = Math.Max(maxOffPrograde, AngleDeg(pt.InertialThrustDirection, pt.RelativeVelocity));
+                }
+            }
+
+            PsgSolutionPoint terminal = s.Points[s.Points.Length - 1];
+            OrbitSummary o = OrbitSummary.FromState(EarthMu, EarthMeanRadius, terminal.RelativePosition, terminal.RelativeVelocity);
+            double burnedTons = (s.Points[0].MassKg - terminal.MassKg) / 1000.0;
+
+            Console.WriteLine($"    {name}: tgo={s.TimeToGo(ut0),5:F0}s burn={burnedTons,6:F1}t maxAlt={maxAlt / 1000.0,6:F1}km maxDE={maxDe,8:F0} offPrograde<={maxOffPrograde,5:F1}deg end={o.PeriapsisAlt / 1000.0:F1}x{o.ApoapsisAlt / 1000.0:F1}km ({sec:F0}s)");
+        }
+
+        // Replays the EXACT logged 2026-07-06 01:15:41 tanker problem: S4B + 77 t payload, descending at
+        // -188 m/s through 216 km on the loft downleg, measured energy just short of the 204-circ target,
+        // real orbit ~50 x 367. Every flight dies here identically. Three experiments:
+        //   (A) one cold solve - what does the plan actually command (throttle/pitch/energy trace)?
+        //   (B) fly that plan open-loop to its end - does executing it reach the target at all?
+        //   (C) closed-loop as flown (re-solve every 5 s, fly only the head) - does Ap diverge offline
+        //       the way it does in flight, and what do the old/new terminal gates each cut at?
+        private static void RunTankerCornerReplay()
+        {
+            Console.WriteLine("Tanker terminal-corner replay (logged 2026-07-06 01:15:41, S4B descending, energy near target):");
+
+            PsgBodyModel body = PsgBodyModel.Create(EarthMu, EarthMeanRadius, new Vector3d(0.0, 7.292115373194e-05, 0.0));
+
+            Vector3d r0 = new Vector3d(3866635.33450038, 2918174.29254932, 4463888.72628849);
+            Vector3d v0 = new Vector3d(-5494.8344325083, -1300.50982323931, 5332.19966426059);
+            double m0 = 144158.620715141;
+            double ut0 = 131374606.408057;
+            Vector3d thrustDir0 = new Vector3d(0.514193280261268, -0.819481695495133, 0.253090934809168);
+
+            const double DryMassKg = 94385.4238324912;
+            const double ThrustN = 1178777.99031252;
+            const double FlowKgPerSec = 275.69243311882;
+
+            Vector3d normal = new Vector3d(0.459485685423086, -0.880320842543612, 0.117932688744817);
+            PsgTarget target = PsgTarget.Create(EarthMu, 6575005.49765707, 6575005.49765707, 6575005.49765707,
+                normal, 28.3094222154018, 187.142664646703, true, false); // flight target: no attachment-radius pin
+
+            PsgProblem problem = MakeTankerProblem(body, target, r0, v0, m0, ut0, thrustDir0, DryMassKg, FlowKgPerSec);
+            if (problem == null || !problem.IsValid)
+            {
+                Console.WriteLine("  problem invalid: " + (problem != null ? problem.ReasonUnavailable : "null"));
+                return;
+            }
+
+            // (A) the plan itself
+            DateTime t0 = DateTime.UtcNow;
+            PsgOptimizationResult result = new PsgOptimizer().Solve(problem, null);
+            Console.WriteLine($"  (A) cold solve: success={result.Success} iters={result.Iterations} viol={result.ConstraintViolation:E1} {(DateTime.UtcNow - t0).TotalSeconds:F1}s");
+            if (result.Solution == null)
+            {
+                Console.WriteLine("  no solution; cannot continue");
+                return;
+            }
+
+            PsgSolution plan = result.Solution;
+            double targetEnergy = plan.TerminalSpecificEnergy;
+            Console.WriteLine($"      planned tgo={plan.TimeToGo(ut0):F1}s  terminal energy={plan.TerminalSpecificEnergy:F0}");
+            Console.WriteLine("      t+      thl  prograde   pitch        dE        Pe x Ap (km)");
+            double maxPlanDe = double.NegativeInfinity;
+            bool thrustReverses = false;
+            foreach (PsgSolutionPoint p in plan.Points)
+            {
+                double rr = p.RelativePosition.magnitude;
+                double energy = 0.5 * p.RelativeVelocity.sqrMagnitude - EarthMu / rr;
+                double de = energy - targetEnergy;
+                maxPlanDe = Math.Max(maxPlanDe, de);
+                double prograde = AngleDeg(p.InertialThrustDirection, p.RelativeVelocity);
+                if (prograde > 90.0) thrustReverses = true;
+                double pitch = 90.0 - AngleDeg(p.InertialThrustDirection, p.RelativePosition);
+                OrbitSummary o = OrbitSummary.FromState(EarthMu, EarthMeanRadius, p.RelativePosition, p.RelativeVelocity);
+                Console.WriteLine($"      {p.UniversalTime - ut0,6:F1}  {p.Throttle,4:F2}  {prograde,7:F1}  {pitch,6:F1}  {de,10:F0}  {o.PeriapsisAlt / 1000.0,7:F1} x {o.ApoapsisAlt / 1000.0,7:F1}");
+            }
+            Console.WriteLine($"      max mid-plan energy overshoot: {maxPlanDe:F0} J/kg   thrust reverses: {thrustReverses}");
+
+            // (B) open-loop: integrate the same two-body physics flying this one plan to its end
+            {
+                Vector3d r = r0; Vector3d v = v0; double m = m0; double t = ut0;
+                while (t < plan.FinalUniversalTime - 1e-6)
+                {
+                    double dt = Math.Min(0.25, plan.FinalUniversalTime - t);
+                    IntegrateStep(ref r, ref v, ref m, ref t, dt, plan, ThrustN, FlowKgPerSec, DryMassKg);
+                }
+                OrbitSummary o = OrbitSummary.FromState(EarthMu, EarthMeanRadius, r, v);
+                double energy = 0.5 * v.sqrMagnitude - EarthMu / r.magnitude;
+                Console.WriteLine($"  (B) open-loop fly of plan A to its end: {o.PeriapsisAlt / 1000.0:F1} x {o.ApoapsisAlt / 1000.0:F1} km  dE={energy - targetEnergy:F0}  mass={m:F0} kg (dry {DryMassKg:F0})");
+            }
+
+            // interlock unit behavior: dormant mid-plan, armed near plan end, armed on plan-end recede,
+            // and fail-open (armed) on degenerate inputs
+            bool interlockOk =
+                !PoweredAscentGuidance.ShouldEvaluateTerminalGate(60.0, 1000.0, 1000.0)
+                && PoweredAscentGuidance.ShouldEvaluateTerminalGate(60.0, 1020.0, 1000.0)
+                && PoweredAscentGuidance.ShouldEvaluateTerminalGate(8.0, 1000.0, 1000.0)
+                && PoweredAscentGuidance.ShouldEvaluateTerminalGate(60.0, double.NaN, 1000.0);
+            Console.WriteLine($"      interlock decision table: {(interlockOk ? "[ok]" : "[FAIL]")}");
+
+            // (C) closed-loop with production gate semantics: flight cadence (5 s, 0.5 s inside the last
+            // 10 s), interlock + DecideTerminalCut + 30 s shape grace. The shipping contract: the cut must
+            // be the Complete branch AT the plan's terminal orbit - we do not accept a cut on any orbit
+            // other than the one the plan intends.
+            bool closedLoopPass;
+            string oldGateCut = null;
+            {
+                Vector3d pole = new Vector3d(0.0, 1.0, 0.0);
+                Vector3d r = r0; Vector3d v = v0; double m = m0; double t = ut0;
+                Vector3d dirGuess = thrustDir0;
+                PsgSolution warm = result.Solution;
+                PsgSolution current = result.Solution;
+                double minPlanFinalUt = current.FinalUniversalTime;
+                double shapeBlockStartUt = double.NaN;
+                double energyCrossUt = double.NaN;
+                string cutTag = null;
+                OrbitSummary cutOrbit = null;
+                double cutMassKg = 0.0;
+                double cutT = double.NaN;
+                bool flamedOut = false;
+                double targetRadius = 6575005.49765707;
+                double lastPrintT = double.NegativeInfinity;
+                int solveFailures = 0;
+
+                Console.WriteLine("  (C) closed-loop, production gate semantics:");
+                Console.WriteLine("      t+      alt km  vspd    Pe x Ap (km)          dE     planTgo  armed");
+
+                for (int guard = 0; guard < 2000 && cutTag == null && !flamedOut; guard++)
+                {
+                    PsgProblem stepProblem = MakeTankerProblem(body, target, r, v, m, t, dirGuess, DryMassKg, FlowKgPerSec);
+                    PsgOptimizationResult stepResult = new PsgOptimizer().Solve(stepProblem, warm);
+                    if (stepResult.Solution == null || !stepResult.Success)
+                    {
+                        solveFailures++;
+                        if (solveFailures <= 4)
+                        {
+                            Console.WriteLine($"      solve FAILED at t+{t - ut0:F1}s (#{solveFailures}): iters={stepResult.Iterations} viol={stepResult.ConstraintViolation:E1} | {Truncate(stepResult.Status, 90)}");
+                        }
+                    }
+                    if (stepResult.Solution != null && stepResult.Success)
+                    {
+                        current = stepResult.Solution;
+                        warm = stepResult.Solution;
+                    }
+                    if (MathHelpers.IsFinite(current.FinalUniversalTime))
+                    {
+                        minPlanFinalUt = Math.Min(minPlanFinalUt, current.FinalUniversalTime);
+                    }
+
+                    double tgo = current.TimeToGo(t);
+                    bool armed = PoweredAscentGuidance.ShouldEvaluateTerminalGate(tgo, current.FinalUniversalTime, minPlanFinalUt);
+                    double energy = 0.5 * v.sqrMagnitude - EarthMu / r.magnitude;
+                    OrbitSummary o = OrbitSummary.FromState(EarthMu, EarthMeanRadius, r, v);
+
+                    if (t - lastPrintT >= 10.0 - 1e-9)
+                    {
+                        double vspd = Vector3d.Dot(v, r.normalized);
+                        Console.WriteLine($"      {t - ut0,6:F1}  {(r.magnitude - EarthMeanRadius) / 1000.0,7:F1}  {vspd,6:F0}  {o.PeriapsisAlt / 1000.0,7:F1} x {o.ApoapsisAlt / 1000.0,7:F1}  {energy - current.TerminalSpecificEnergy,10:F0}  {tgo,7:F1}  {armed,5}");
+                        lastPrintT = t;
+                    }
+
+                    // what the pre-interlock energy gate would have done (regression documentation)
+                    if (double.IsNaN(energyCrossUt) && energy >= current.TerminalSpecificEnergy)
+                    {
+                        energyCrossUt = t;
+                        oldGateCut = $"{o.PeriapsisAlt / 1000.0:F1} x {o.ApoapsisAlt / 1000.0:F1} km at t+{t - ut0:F0}s (plan had {tgo:F0}s to go)";
+                    }
+
+                    if (armed)
+                    {
+                        J2Propagator.RadiusExtremes(r, v, EarthMu, 0.0, EarthRefRadius, pole, 6000.0, 20.0, out double minR, out double maxR);
+                        double band = PoweredAscentGuidance.TerminalShapeBandMeters(0.0, EarthRefRadius, r.magnitude);
+                        var cut = PoweredAscentGuidance.DecideTerminalCut(
+                            energy, current.TerminalSpecificEnergy, minR, maxR, targetRadius, targetRadius, targetRadius, band);
+
+                        if (cut == PoweredAscentGuidance.TerminalCutDecision.Complete)
+                        {
+                            cutTag = "psg-energy-complete";
+                        }
+                        else if (cut == PoweredAscentGuidance.TerminalCutDecision.BlockedOnShape)
+                        {
+                            if (double.IsNaN(shapeBlockStartUt)) shapeBlockStartUt = t;
+                            else if (t - shapeBlockStartUt >= 30.0) cutTag = "psg-shape-grace";
+                        }
+                    }
+                    else
+                    {
+                        shapeBlockStartUt = double.NaN;
+                    }
+
+                    if (cutTag != null)
+                    {
+                        cutOrbit = o;
+                        cutMassKg = m;
+                        cutT = t - ut0;
+                        break;
+                    }
+
+                    double interval = tgo <= 10.0 ? 0.5 : 5.0;
+                    double flyUntil = t + interval;
+                    while (t < flyUntil - 1e-9 && !flamedOut)
+                    {
+                        IntegrateStep(ref r, ref v, ref m, ref t, Math.Min(0.25, flyUntil - t), current, ThrustN, FlowKgPerSec, DryMassKg);
+                        if (m <= DryMassKg + 0.5) flamedOut = true;
+                    }
+
+                    Vector3d flownDir = current.InertialGuidance(t).InertialDirection;
+                    if (flownDir.sqrMagnitude > 0.0) dirGuess = flownDir;
+                }
+
+                Console.WriteLine("      pre-interlock energy gate would have cut: " + (oldGateCut ?? "never"));
+                if (cutTag != null)
+                {
+                    Console.WriteLine($"      gate cut [{cutTag}] at t+{cutT:F1}s: {cutOrbit.PeriapsisAlt / 1000.0:F2} x {cutOrbit.ApoapsisAlt / 1000.0:F2} km, propellant left {(cutMassKg - DryMassKg) / 1000.0:F1} t");
+                }
+                else
+                {
+                    Console.WriteLine("      NO CUT (flamedOut=" + flamedOut + ")");
+                }
+
+                // the shipping contract: Complete-branch cut, on the plan's own terminal orbit (204.0 km
+                // circular) within the gate's design band (5 km floor, BOTH apsides), with propellant
+                // remaining - not a grace bailout, not a truncated maneuver
+                double targetAltKm = (targetRadius - EarthMeanRadius) / 1000.0;
+                closedLoopPass = cutTag == "psg-energy-complete"
+                                 && cutOrbit != null
+                                 && Math.Abs(cutOrbit.ApoapsisAlt / 1000.0 - targetAltKm) <= 5.0
+                                 && Math.Abs(cutOrbit.PeriapsisAlt / 1000.0 - targetAltKm) <= 5.0
+                                 && cutMassKg > DryMassKg + 1000.0
+                                 && oldGateCut != null;
+            }
+
+            bool pass = interlockOk && closedLoopPass;
+            Console.WriteLine(pass
+                ? "  [PASS] interlock lets the plan finish; gate cuts Complete on the plan's terminal orbit"
+                : "  [FAIL] tanker corner: closed loop did not deliver the plan's terminal orbit");
+            Console.WriteLine();
+            if (!pass) throw new Exception("Tanker terminal-corner regression.");
+        }
+
+        private static PsgProblem MakeTankerProblem(
+            PsgBodyModel body, PsgTarget target, Vector3d r, Vector3d v, double massKg, double ut,
+            Vector3d thrustDir, double dryMassKg, double flowKgPerSec)
+        {
+            double burnTime = Math.Max(1.0, (massKg - dryMassKg) / flowKgPerSec);
+            PsgPhase[] phases = PsgPhase.FromPoweredStages(new[]
+            {
+                MakeStage(2, 0, massKg / 1000.0, dryMassKg / 1000.0, 1178.77799031252, 436.000007191041, 0.166666671170829, burnTime)
+            });
+
+            PsgInitialState initial = PsgInitialState.Create(r, v, massKg, ut);
+            return PsgProblem.Create(initial, body, target, phases, thrustDir);
+        }
+
+        // One RK4 step flying the solution's guidance: two-body gravity + thrust along the commanded
+        // direction, full throttle past the plan's end (the flight behavior at PoweredAscentGuidance:297).
+        private static void IntegrateStep(
+            ref Vector3d r, ref Vector3d v, ref double m, ref double t, double dt,
+            PsgSolution solution, double thrustN, double flowKgPerSec, double dryMassKg)
+        {
+            PsgGuidanceVector guidance = solution.InertialGuidance(t);
+            Vector3d dir = guidance != null && guidance.IsValid ? guidance.InertialDirection : v.normalized;
+            double throttle = guidance != null && guidance.IsValid ? guidance.Throttle : 0.0;
+            if (solution.TimeToGo(t) <= 0.0)
+            {
+                // mirror flight: past the plan's end push only while energy is short of the target
+                double energyNow = 0.5 * v.sqrMagnitude - EarthMu / r.magnitude;
+                throttle = energyNow < solution.TerminalSpecificEnergy ? 1.0 : 0.0;
+            }
+            if (m <= dryMassKg) throttle = 0.0;
+
+            double accelThrust = thrustN * throttle / m;
+
+            Vector3d k1v = Accel(r, dir, accelThrust);
+            Vector3d k1r = v;
+            Vector3d k2v = Accel(r + 0.5 * dt * k1r, dir, accelThrust);
+            Vector3d k2r = v + 0.5 * dt * k1v;
+            Vector3d k3v = Accel(r + 0.5 * dt * k2r, dir, accelThrust);
+            Vector3d k3r = v + 0.5 * dt * k2v;
+            Vector3d k4v = Accel(r + dt * k3r, dir, accelThrust);
+            Vector3d k4r = v + dt * k3v;
+
+            r += dt / 6.0 * (k1r + 2.0 * k2r + 2.0 * k3r + k4r);
+            v += dt / 6.0 * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
+            m = Math.Max(dryMassKg, m - flowKgPerSec * throttle * dt);
+            t += dt;
+        }
+
+        private static Vector3d Accel(Vector3d r, Vector3d thrustDir, double thrustAccel)
+        {
+            double rm = r.magnitude;
+            return -EarthMu / (rm * rm * rm) * r + thrustAccel * thrustDir;
+        }
+
+        private static double AngleDeg(Vector3d a, Vector3d b)
+        {
+            double d = Vector3d.Dot(a.normalized, b.normalized);
+            return Math.Acos(Math.Max(-1.0, Math.Min(1.0, d))) * 180.0 / Math.PI;
+        }
+
+        private static string Truncate(string s, int maxLength)
+        {
+            if (string.IsNullOrEmpty(s)) return string.Empty;
+            return s.Length <= maxLength ? s : s.Substring(0, maxLength);
         }
 
         // FuelSim replaces stock DeltaVStageInfo, which mis-attributes shared/incompatible fuel and

@@ -33,7 +33,8 @@ namespace Blackbird.Psg
             Vector3d targetOrbitNormal,
             double inclinationDeg,
             double lanDeg,
-            bool useLanConstraint)
+            bool useLanConstraint,
+            bool useAttachmentRadius = true)
         {
             if (!MathHelpers.IsFinite(bodyGravParameter) || bodyGravParameter <= 0.0)
             {
@@ -75,7 +76,7 @@ namespace Blackbird.Psg
                 TargetOrbitNormal = normal,
                 TargetSpecificEnergy = specificEnergy,
                 TargetAngularMomentumVector = normal * angularMomentumMagnitude,
-                UseAttachmentRadius = true,
+                UseAttachmentRadius = useAttachmentRadius,
                 UseLanConstraint = useLanConstraint,
                 UseArgpConstraint = false
             };

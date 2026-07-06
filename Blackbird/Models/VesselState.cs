@@ -66,12 +66,15 @@ namespace Blackbird.Models
         private const double FuelSimRefreshSeconds = 0.5;
         private const double FuelSimDivergenceTolerance = 0.01;
 
+        private const double FuelSimDivergenceLogIntervalSeconds = 10.0;
+
         private static readonly BlackbirdLog FuelSimLog = new BlackbirdLog(LogContext.Psg);
         private static Guid _fuelSimVesselId;
         private static int _fuelSimStage;
         private static double _fuelSimUt;
         private static PoweredStageInfo[] _fuelSimStages;
-        private static string _fuelSimDivergenceSignature = string.Empty;
+        private static double _fuelSimDivergenceLogUt = double.NegativeInfinity;
+        private static string _fuelSimPartsSignature = string.Empty;
 
         public static VesselState FromVessel(Vessel vessel)
         {
@@ -153,6 +156,14 @@ namespace Blackbird.Models
 
             try
             {
+                // One routing snapshot per vessel/stage config so a pad check shows what the sim can reach.
+                string partsSignature = vessel.id + ":" + vessel.currentStage;
+                if (partsSignature != _fuelSimPartsSignature)
+                {
+                    FuelSimLog.Write("[fuelsim-parts] " + FuelSim.StagePropellantSimulator.DescribeParts(vessel));
+                    _fuelSimPartsSignature = partsSignature;
+                }
+
                 stages = BuildStagesFromFuelSim(vessel, stockStages);
                 if (stages.Length == 0 && stockStages.Length > 0)
                 {
@@ -263,12 +274,14 @@ namespace Blackbird.Models
                 }
             }
 
+            // The numbers change every refresh while burning, so gate on time, not content.
             string signature = sb.ToString();
-            if (signature.Length > 0 && signature != _fuelSimDivergenceSignature) {
+            double now = Planetarium.GetUniversalTime();
+            if (signature.Length > 0 && now - _fuelSimDivergenceLogUt >= FuelSimDivergenceLogIntervalSeconds)
+            {
                 FuelSimLog.Write("[fuelsim-divergence] " + signature);
+                _fuelSimDivergenceLogUt = now;
             }
-
-            _fuelSimDivergenceSignature = signature;
         }
 
         // Reads KSP's stage-resolved delta-v model so powered guidance can build PSG phases.
