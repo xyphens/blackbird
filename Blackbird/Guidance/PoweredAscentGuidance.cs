@@ -509,7 +509,11 @@ namespace Blackbird.Guidance
             if (vesselState.UniversalTime - _lastSolveRequestUt < interval) return;
             double j2Bias = TerminalJ2PeriapsisOffset(vesselState, ascentProfile);
 
-            PsgTarget target = PsgTarget.FromPlan(vesselState, launchPlan, ascentProfile, j2Bias);
+            // used when PSG is responsible for steering
+            //PsgTarget target = PsgTarget.FromPlan(vesselState, launchPlan, ascentProfile, j2Bias);
+            // used when launch plan is responsible for steering
+            PsgTarget target = PsgTarget.FromProfile(vesselState, ascentProfile, null, Vector3d.zero, j2Bias);
+
 
             if (target == null || !target.IsValid)
             {
