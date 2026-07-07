@@ -333,7 +333,7 @@ namespace Blackbird.Guidance
                     // with pitch (2026-07-06: plan-targeted flights missed LAN/inc; manual flights flew clean).
                     GetPitchHeadingFromInertial(vesselState, guidance.InertialDirection, out double psgPitch, out _);
 
-                    double heldHeading = profileHeadingDeg;
+                    //double heldHeading = profileHeadingDeg;
 
                     //Vector3d headingRelPos = vesselState.Position - vesselState.Body.position;
                     //Vector3d planeNormal = launchPlan != null && launchPlan.TargetOrbitNormal.sqrMagnitude > 0.0
@@ -341,6 +341,12 @@ namespace Blackbird.Guidance
                     //    : Vector3d.Cross(headingRelPos, vesselState.OrbitalVelocity);
                     //double heldHeading = PlaneFollowingHeadingDeg(
                     //    headingRelPos, vesselState.Body.transform.up, planeNormal, profileHeadingDeg);
+
+                    Vector3d headingRelPos = vesselState.Position - vesselState.Body.position;
+                    Vector3d planeNormal = Vector3d.Cross(headingRelPos, vesselState.OrbitalVelocity);
+                    double heldHeading = PlaneFollowingHeadingDeg(
+                        headingRelPos, vesselState.Body.transform.up, planeNormal, profileHeadingDeg);
+
                     Vector3d heldDirection = GetSurfaceCommandDirection(vesselState, heldHeading, psgPitch);
 
                     
