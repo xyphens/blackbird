@@ -240,8 +240,8 @@ namespace Blackbird.Rendezvous
         public void WarpToIgnition(double ignitionUt)
         {
             if (bbState.InterceptPhase == InterceptPhase.Executing && !CoastingToIgnition) return;
-            double now = Planetarium.GetUniversalTime();
-            double dt = ignitionUt - now;
+
+            double dt = ignitionUt - Planetarium.GetUniversalTime();
             double lead = ComputeIgnitionWarpLeadSeconds();
             if (!MathHelpers.IsFinite(dt) || dt <= lead) return;
 
@@ -258,7 +258,7 @@ namespace Blackbird.Rendezvous
             Vessel active = FlightGlobals.ActiveVessel;
             if (active == null || !_executor.HasInterceptPlan) return WarpLeadMinSeconds;
             double padding = OrientPaddingSeconds + BurnSettleGate.StabilizeDwellSeconds;
-            double slew = AttitudeControl.EstimateSlewTimeSeconds(active, bbState.InterceptSolution.DeltaV, padding);
+            double slew = AttitudeControl.EstimateSlewTimeSeconds(active, bbState.InterceptSolution.DeltaV, padding, false);
             double halfBurn = HalfBurnSeconds(active, bbState.InterceptSolution.DeltaVMagnitude);
             double auto = MathHelpers.Clamp(slew + halfBurn, WarpLeadMinSeconds, WarpLeadMaxSeconds);
             return Math.Max(Math.Max(0.0, WarpLeadInputSeconds), auto);

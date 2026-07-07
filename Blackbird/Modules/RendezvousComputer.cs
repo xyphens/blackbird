@@ -221,16 +221,12 @@ namespace Blackbird.Modules
                      && (_handler.CoastingToIgnition
                          || (bbState.InterceptPhase == InterceptPhase.Idle && _handler.HasInterceptPlan)))
             {
-                // Hohmann ignites at a future departure UT, so warp to that window: the frozen ignition while
-                // coasting (post-Execute), otherwise the previewed plan's.
 
-                double ignitionUt = _handler.CoastingToIgnition
-                    ? _handler.PlannedIgnitionUt
-                    : bbState.InterceptSolution.IgnitionUt;
+                // ignition universal start time
+                double ignitionUt = _handler.CoastingToIgnition ? _handler.PlannedIgnitionUt : bbState.InterceptSolution.IgnitionUt;
                 double dtToIgnition = ignitionUt - Planetarium.GetUniversalTime();
 
-                GUI.enabled = (bbState.InterceptPhase != InterceptPhase.Executing || _handler.CoastingToIgnition)
-                              && dtToIgnition > 10.0;
+                GUI.enabled = (bbState.InterceptPhase != InterceptPhase.Executing || _handler.CoastingToIgnition) && dtToIgnition > 10.0;
                 if (GUILayout.Button($"Warp to transfer ignition ({FormatTime(dtToIgnition)})")) _handler.WarpToIgnition(ignitionUt);
                 GUI.enabled = true;
             }

@@ -74,12 +74,11 @@ namespace Blackbird.Modules
                 GUILayout.Label($"Docking unavailable: {cantRunReason}");
             }
 
-            bool assumeEnabled = alreadyRunning || (bbState.DockingMode == DockingControlMode.Off && _handler.HasTarget);
-
             GUILayout.BeginHorizontal();
             GUI.enabled = canRun;
             if (GUILayout.Button("Run Docking Guidance", GUILayout.Height(30))) _handler.RunDockingGuidance();
-            GUI.enabled = assumeEnabled;
+            // allow canceling/stopping if docking is enabled at all
+            GUI.enabled = bbState.DockingEnabled == true;
             if (GUILayout.Button("Stop Docking Guidance", GUILayout.Height(30))) _handler.StopDockingGuidance();
             if (GUILayout.Button("Assume Control", GUILayout.Height(30))) _handler.AssumeControl();
             GUI.enabled = true;

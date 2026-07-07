@@ -1,5 +1,7 @@
 ﻿using Blackbird.Mathematics;
 using System;
+using System.Collections.Generic;
+using System.Security.Cryptography;
 using UnityEngine;
 
 namespace Blackbird.Guidance
@@ -120,10 +122,9 @@ namespace Blackbird.Guidance
                 if (headingDeg < 0.0) headingDeg += 360.0;
             }
         }
-        // Holds the craft's CURRENT attitude, killing all rotation (incl. roll). This is the analog of
-        // MechJeb's attitudeTo(QuaternionD.LookRotation(transform.up, -transform.forward), INERTIAL): the
-        // requested attitude is the current one, so the position error is ~0 and the inner rate loop drives
-        // the angular velocity to zero. Re-captured every call (like MechJeb), so it brakes a tumble to a stop.
+
+
+        // Holds the craft's CURRENT attitude, killing all rotation (incl. roll)
         public void DriveHoldAttitude(Vessel vessel, FlightCtrlState state)
         {
             if (vessel == null || state == null) return;
@@ -139,6 +140,7 @@ namespace Blackbird.Guidance
             ApplyActuation(state, actuation);
         }
 
+        // PI = Proportional-Integral
         private Vector3d UpdatePredictionPI(
             Vessel vessel,
             QuaternionD requestedAttitude,
@@ -269,17 +271,13 @@ namespace Blackbird.Guidance
         }
         private static void ApplyActuation(FlightCtrlState state, Vector3d actuation)
         {
-            bool userCommandingPitch =
-                !Mathf.Approximately(state.pitch, state.pitchTrim);
+            bool userCommandingPitch = !Mathf.Approximately(state.pitch, state.pitchTrim);
 
-            bool userCommandingYaw =
-                !Mathf.Approximately(state.yaw, state.yawTrim);
+            bool userCommandingYaw = !Mathf.Approximately(state.yaw, state.yawTrim);
 
-            bool userCommandingRoll =
-                !Mathf.Approximately(state.roll, state.rollTrim);
+            bool userCommandingRoll = !Mathf.Approximately(state.roll, state.rollTrim);
 
-            if (!userCommandingRoll)
-                state.roll = Mathf.Clamp((float)actuation.y, -1.0f, 1.0f);
+            if (!userCommandingRoll) state.roll = Mathf.Clamp((float)actuation.y, -1.0f, 1.0f);
 
             if (!userCommandingPitch && !userCommandingYaw)
             {
@@ -349,6 +347,12 @@ namespace Blackbird.Guidance
                         continue;
                     }
 
+                    if (module is ModuleRCS rcs)
+                    {
+                        torque += RcsPotentialTorque(vessel, part, rcs);
+                        continue; // do not use KSP's torque for rcs (skip below)
+                    }
+
                     if (module is ITorqueProvider torqueProvider)
                     {
                         torqueProvider.GetPotentialTorque(
@@ -363,20 +367,77 @@ namespace Blackbird.Guidance
             return torque;
         }
 
+        public static Vector3d RcsAttitudeTorque(
+            IList<Vector3d> thrusterPositions,   // world
+            IList<Vector3d> thrusterThrusts,     // world thrust vectors (direction * thrust magnitude)
+            Vector3d centerOfMass,               // world
+            Vector3d controlRight, Vector3d controlUp, Vector3d controlForward,  // control-frame axes (world, orthonormal)
+            bool enablePitch, bool enableRoll, bool enableYaw)
+        {
+            Vector3d pos = Vector3d.zero, neg = Vector3d.zero;
+            int n = thrusterPositions.Count;
+            for (int i = 0; i < n; i++) {
+                Vector3d tqWorld = Vector3d.Cross(thrusterPositions[i] - centerOfMass, thrusterThrusts[i]);
+                // world to local torque
+                Vector3d tq = new Vector3d(Vector3d.Dot(tqWorld, controlRight), Vector3d.Dot(tqWorld, controlUp), Vector3d.Dot(tqWorld, controlForward));
+
+                pos += new Vector3d(Math.Max(0.0, tq.x), Math.Max(0.0, tq.y), Math.Max(0.0, tq.z));
+                neg += new Vector3d(Math.Max(0.0, -tq.x), Math.Max(0.0, -tq.y), Math.Max(0.0, -tq.z));
+            }
+
+            Vector3d authority = new Vector3d(
+                Math.Max(pos.x, neg.x), Math.Max(pos.y, neg.y), Math.Max(pos.z, neg.z));
+            return Vector3d.Scale(authority,
+                new Vector3d(enablePitch ? 1.0 : 0.0, enableRoll ? 1.0 : 0.0, enableYaw ? 1.0 : 0.0));
+        }
+
+        private static Vector3d RcsPotentialTorque(Vessel vessel, Part part, ModuleRCS rcs)
+        {
+            // note: we may want to include RCS torque calcs even if !rcs_active
+            if (part.ShieldedFromAirstream || !rcs.rcsEnabled || !rcs.isEnabled || rcs.isJustForShow || rcs.flameout || !rcs.rcs_active)
+            {
+                return Vector3d.zero;
+            }
+
+            Transform frame = vessel.ReferenceTransform;
+            if (frame == null || rcs.thrusterTransforms == null) return Vector3d.zero;
+
+            Vector3d com = vessel.CoMD;
+            var positions = new List<Vector3d>(rcs.thrusterTransforms.Count);
+            var thrusts = new List<Vector3d>(rcs.thrusterTransforms.Count);
+
+            for (int i = 0; i < rcs.thrusterTransforms.Count; i++) {
+                Transform t = rcs.thrusterTransforms[i];
+                if (t == null || !t.gameObject.activeInHierarchy) continue;
+
+                Vector3d dir = rcs.useZaxis ? -(Vector3d)t.forward : -(Vector3d)t.up;
+                double power = rcs.thrusterPower * rcs.thrustPercentage * 0.01; //  why 0.01?
+
+                if (FlightInputHandler.fetch != null && FlightInputHandler.fetch.precisionMode)
+                {
+                    if (rcs.useLever)
+                    {
+                        float lever = rcs.GetLeverDistance(t, (Vector3d)dir, (Vector3d)com);
+                        if (lever > 1.0f) power /= lever;
+                    } else
+                    {
+                        power *= rcs.precisionFactor;
+                    }
+                }
+
+                positions.Add((Vector3d)t.position);
+                thrusts.Add(dir * power);
+            }
+
+            return RcsAttitudeTorque(positions, thrusts, com,
+                                    (Vector3d)frame.right, (Vector3d)frame.up, (Vector3d)frame.forward,
+                                    rcs.enablePitch, rcs.enableRoll, rcs.enableYaw);
+        }
+
         // Estimates how long (seconds) it would take the attitude controller to swing the craft's nose
         // from its current facing to a target world-frame direction, then settle — so callers can size a
         // warp lead / pre-orient window for any maneuver that must fire pointed a particular way.
-        //
-        // Model (deliberately conservative, so it never under-predicts the lead needed):
-        //  - angular acceleration alpha = available control torque / moment of inertia, evaluated on the
-        //    WORST of the pitch and yaw axes (the two that swing the nose), so a weak axis dominates;
-        //  - the same Soften factor and MaxStoppingTime rate cap the live controller uses, so the estimate
-        //    tracks real slew behavior rather than an idealized bang-bang;
-        //  - a rate-limited profile: triangular (accel to midpoint, decel) when the peak rate stays under
-        //    the cap, otherwise trapezoidal (accel to the cap, cruise, decel);
-        //  - plus the caller's padding (settle dwell + safety margin).
-        // Returns just paddingSeconds for a negligible rotation, and a torque-free fallback
-        // (angleRad + padding) when torque/MOI are unavailable.
+
         public static double EstimateSlewTimeSeconds(
             Vessel vessel,
             Vector3d targetWorldDirection,

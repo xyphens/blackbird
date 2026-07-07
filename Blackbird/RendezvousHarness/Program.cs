@@ -1,5 +1,6 @@
 using System;
 using Blackbird.Docking;
+using Blackbird.Guidance;
 using Blackbird.Mathematics;
 using Blackbird.Modules;
 using Blackbird.Rendezvous;
@@ -67,6 +68,7 @@ namespace Blackbird.RendezvousHarness
             CheckThrustEnvelope();
             CheckDockingSchedule();
             CheckBurnSettleGate();
+            CheckRcsAttitudeTorque();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -2290,6 +2292,65 @@ namespace Blackbird.RendezvousHarness
                 AssertTrue("armed burn holds through small drift", holdsThroughDrift);
                 AssertTrue("large excursion forces re-orient", !dropsOnExcursion);
             }
+        }
+
+        // Honest RCS attitude torque (AttitudeControl.RcsAttitudeTorque) on a deliberately subpar layout:
+        // thrusters offset from CoM, two opposing pairs, a single-thruster starved axis, and a radial thruster
+        // that produces only translation. Every expected value is hand-derived (torque = (pos-CoM) x thrust,
+        // resolved onto the control axes, positive/negative authority bucketed then Max'd). This is the piece
+        // whose stock-KSP equivalent MechJeb abandoned; the checks pin the geometry, the CoM-relative lever, the
+        // control-frame projection, the enable mask, and — critically — that opposing thrusters do NOT inflate.
+        private static void CheckRcsAttitudeTorque()
+        {
+            Console.WriteLine("Case: RCS attitude torque (per-thruster, netted authority)");
+
+            // Control frame == world so torque lands directly on (pitch=x, roll=y, yaw=z); CoM at origin.
+            Vector3d R = new Vector3d(1, 0, 0), U = new Vector3d(0, 1, 0), F = new Vector3d(0, 0, 1);
+            Vector3d com = Vector3d.zero;
+
+            // T1/T2: opposing pitch pair (+2 / -2 about x). T3/T4: opposing roll pair (+1 / -1 about y).
+            // T5: single yaw thruster (+0.5 about z) -> starved axis, no -z partner. T6: radial -> pure
+            // translation, zero torque. Naive |sum| would report x=4, y=2; the correct netted authority is x=2, y=1.
+            Vector3d[] pos = {
+                new Vector3d(0,  1, 0), new Vector3d(0, -1, 0),
+                new Vector3d(0, 0,  1), new Vector3d(0, 0, -1),
+                new Vector3d(1, 0, 0),  new Vector3d(0.5, 0, 0),
+            };
+            Vector3d[] thr = {
+                new Vector3d(0, 0, 2), new Vector3d(0, 0, 2),
+                new Vector3d(1, 0, 0), new Vector3d(1, 0, 0),
+                new Vector3d(0, 0.5, 0), new Vector3d(3, 0, 0),
+            };
+
+            Vector3d authority = AttitudeControl.RcsAttitudeTorque(pos, thr, com, R, U, F, true, true, true);
+            Console.WriteLine("  (naive |sum| would be (4.000, 2.000, 0.500) — opposing pairs must NOT inflate)");
+            AssertVec("netted", authority, new Vector3d(2, 1, 0.5));
+
+            // CoM-relative lever: shifting CoM AND every thruster by the same offset must leave torque unchanged.
+            // Catches a missing (pos - CoM) subtraction (torque about origin != torque about CoM once shifted).
+            Vector3d off = new Vector3d(5, -3, 2);
+            Vector3d[] posShift = new Vector3d[pos.Length];
+            for (int i = 0; i < pos.Length; i++) posShift[i] = pos[i] + off;
+            Vector3d shifted = AttitudeControl.RcsAttitudeTorque(posShift, thr, com + off, R, U, F, true, true, true);
+            AssertVec("com-relative", shifted, new Vector3d(2, 1, 0.5));
+
+            // Control frame rotated +90 deg about world Z (local +X -> world +Y): the same thrusters must project
+            // onto the rotated axes, swapping the pitch/roll slots. Proves the axis mapping is frame-driven, not fixed.
+            Vector3d Rr = new Vector3d(0, 1, 0), Ur = new Vector3d(-1, 0, 0), Fr = new Vector3d(0, 0, 1);
+            Vector3d rotated = AttitudeControl.RcsAttitudeTorque(pos, thr, com, Rr, Ur, Fr, true, true, true);
+            AssertVec("rotated-frame", rotated, new Vector3d(1, 2, 0.5));
+
+            // Enable mask: a disabled axis contributes zero even though thrusters for it exist.
+            Vector3d masked = AttitudeControl.RcsAttitudeTorque(pos, thr, com, R, U, F, true, false, true);
+            AssertVec("roll-disabled", masked, new Vector3d(2, 0, 0.5));
+
+            // Fully starved axis: remove the lone yaw thruster and its authority must collapse to exactly zero.
+            Vector3d[] noYawPos = { pos[0], pos[1], pos[2], pos[3], pos[5] };
+            Vector3d[] noYawThr = { thr[0], thr[1], thr[2], thr[3], thr[5] };
+            Vector3d starved = AttitudeControl.RcsAttitudeTorque(noYawPos, noYawThr, com, R, U, F, true, true, true);
+            AssertVec("yaw-starved", starved, new Vector3d(2, 1, 0));
+
+            Console.WriteLine();
         }
 
         private static void AssertTrue(string label, bool condition)
