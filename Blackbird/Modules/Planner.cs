@@ -54,21 +54,16 @@ namespace Blackbird.Modules
             Vessel vessel = FlightGlobals.ActiveVessel;
             if (vessel == null || !bbState.PlannerVisible) { GUI.DragWindow(); return; }
 
-            Vessel targetVessel = null;
-            ITargetable target = FlightGlobals.fetch.VesselTarget;
-
-            if (target != null) targetVessel = (Vessel) target;
-
             
-            if (targetVessel != null && !ReferenceEquals(vessel, targetVessel) && vessel.id != targetVessel.id)
+            if (bbState.TargetVessel != null && !ReferenceEquals(vessel, bbState.TargetVessel) && vessel.id != bbState.TargetVessel.id)
             {
-                GUILayout.Label($"Target: {targetVessel.vesselName}");
+                GUILayout.Label($"Target: {bbState.TargetVessel.vesselName}");
 
-                GUILayout.Label($"Apoapsis: {FormatKm(targetVessel.orbit.ApA)}km", GUILayout.Width(175));
-                GUILayout.Label($"Periapsis: {FormatKm(targetVessel.orbit.PeA)}km", GUILayout.Width(175));
-                GUILayout.Label($"Orbital Inc.: {Math.Round(targetVessel.orbit.inclination, 4)}°", GUILayout.Width(175));
+                GUILayout.Label($"Apoapsis: {FormatKm(bbState.TargetVessel.orbit.ApA)}km", GUILayout.Width(175));
+                GUILayout.Label($"Periapsis: {FormatKm(bbState.TargetVessel.orbit.PeA)}km", GUILayout.Width(175));
+                GUILayout.Label($"Orbital Inc.: {Math.Round(bbState.TargetVessel.orbit.inclination, 4)}°", GUILayout.Width(175));
 
-                if (bbState.LaunchPlan == null) GeneratePlan(vessel, targetVessel);
+                if (bbState.LaunchPlan == null) GeneratePlan(vessel, bbState.TargetVessel);
                 DisplayLaunchPlanCandidates();
             }
             else
@@ -81,7 +76,7 @@ namespace Blackbird.Modules
             // -- USER INPUTS / EDITS --
             // Live countdown to the selected candidate's absolute launch UT (the stored seconds-to-launch is a
             // stale snapshot from plan time).
-            if (targetVessel != null)
+            if (bbState.TargetVessel != null)
             {
                 double selectedLaunchUt = bbState.SelectedLaunchCandidate?.LaunchUt ?? double.NaN;
                 string _ltFullText = !double.IsNaN(selectedLaunchUt)
@@ -115,7 +110,7 @@ namespace Blackbird.Modules
             GUI.enabled = canCommit;
 
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Accept Plan")) CommitPlanInputs(vessel, targetVessel);
+            if (GUILayout.Button("Accept Plan")) CommitPlanInputs(vessel, bbState.TargetVessel);
             GUI.enabled = _launchHandler != null;
             if (GUILayout.Button("Reset Plan")) _launchHandler.Reset();
             GUILayout.EndHorizontal();

@@ -1,9 +1,10 @@
-﻿using UnityEngine;
+﻿using Blackbird.Docking;
 using Blackbird.Guidance;
-using KSP.UI.Screens;
 using Blackbird.Modules;
 using Blackbird.Rendezvous;
-using Blackbird.Docking;
+using CommNet.Network;
+using KSP.UI.Screens;
+using UnityEngine;
 
 namespace Blackbird
 {
@@ -20,6 +21,8 @@ namespace Blackbird
         private ApplicationLauncherButton _toolbarButton;
         private Texture2D _toolbarIcon;
         private bool _toolbarIconOwned;
+
+        private ModuleDockingNode _lastNamedPort;
 
         private SharedState _bbState = new SharedState();
 
@@ -72,14 +75,57 @@ namespace Blackbird
             // "Guidance running" mirror for the UI; control arbitration is via ActiveModule, not this flag.
             _bbState.GuidanceEnabled = _launchHandler.State == LaunchGuidanceState.GuidingAscent;
 
+            // update cached target info
             ITargetable target = FlightGlobals.fetch != null ? FlightGlobals.fetch.VesselTarget : null;
-            // A targeted docking port is a ModuleDockingNode, not a Vessel; resolve to its vessel so the
-            // rendezvous stages still get a target (the docking stage reads the port itself from the target).
+            ModuleDockingNode targetPort = target as ModuleDockingNode;
             Vessel targetVessel = target as Vessel;
-            if (targetVessel == null && target is ModuleDockingNode targetNode) targetVessel = targetNode.vessel;
+            if (targetVessel == null && targetPort != null) targetVessel = targetPort.vessel;
+
+            // Latch the target port so KSP's range demotion (port -> parent vessel at ~180 m) doesn't drop it.
+            // Re-latch whenever a port is live (same or new); keep through demotion; release on a real change.
+            if (targetPort != null)
+            {
+                _bbState.TargetDockingPort = targetPort;
+            }
+            else
+            {
+                bool demotedToOwnVessel = _bbState.TargetDockingPort != null
+                                          && targetVessel != null
+                                          && targetVessel == _bbState.TargetDockingPort.vessel;
+                if (!demotedToOwnVessel) _bbState.TargetDockingPort = null;   // operator cleared / switched away
+            }
+
+            _bbState.HaveTarget = targetVessel != null;
+            _bbState.TargetVessel = targetVessel;
+
+            // Recompute display names only when the latched port actually changes (GetName() can allocate).
+            if (_bbState.TargetDockingPort != _lastNamedPort)
+            {
+                if (_bbState.TargetDockingPort != null)
+                {
+                    Vessel pv = _bbState.TargetDockingPort.vessel;
+                    _bbState.TargetName = pv != null ? pv.vesselName : "none";
+                    _bbState.TargetDockingPortName = _bbState.TargetDockingPort.GetName();
+                }
+                else
+                {
+                    _bbState.TargetName = "none";
+                    _bbState.TargetDockingPortName = "none";
+                }
+                _lastNamedPort = _bbState.TargetDockingPort;
+            }
+
+            // own docking port info
+            if (activeVessel != null)
+            {
+                Part refPart = activeVessel.GetReferenceTransformPart();
+                _bbState.ControllingFromDockingPort = refPart != null && refPart.Modules.Contains("ModuleDockingNode");
+            }
+
             _rendezvousHandler.Update(activeVessel, targetVessel);
             _dockingHandler.Update(activeVessel);
         }
+
         private void OnFlyByWire(FlightCtrlState state)
         {
             if (_flyByWireVessel == null) return;

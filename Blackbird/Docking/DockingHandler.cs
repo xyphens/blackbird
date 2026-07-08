@@ -15,7 +15,6 @@ namespace Blackbird.Docking
         private readonly DockingAutopilot _autopilot;
 
         private SharedState bbState;
-
         public DockingHandler()
         {
             _autopilot = new DockingAutopilot(_rcs, _attitude);
@@ -61,13 +60,11 @@ namespace Blackbird.Docking
         // --- per-tick cache ------------------------------------------------------------------------------
         private Vessel _vessel;
         private VesselState _vs;
-        private ITargetable _targetObject;
-        private Vessel _targetVessel;
 
         // --- metrics (for the UI) ------------------------------------------------------------------------
-        public bool HasTarget { get; private set; }
-        public string TargetName { get; private set; } = "";
-        public string TargetPortName { get; private set; } = "";
+        //public bool HasTarget { get; private set; }
+        //public string TargetName { get; private set; } = "";
+        //public string TargetPortName { get; private set; } = "";
         public double PortDistanceMeters { get; private set; } = double.NaN;
         public double ClosingRateSigned { get; private set; } = double.NaN;   // + = getting closer, - = moving away
         public double RcsFuelPercent { get; private set; } = double.NaN;
@@ -84,7 +81,7 @@ namespace Blackbird.Docking
             bbState.DockingMode = DockingControlMode.Guidance; 
             bbState.DockingEnabled = true;
             bbState.ActiveModule = BlackbirdModule.Docking;
-            _autopilot.Engage(); 
+            _autopilot.Engage(bbState); 
         }
         // Take manual control: claim the authority (Docking) so rendezvous/ascent self-stop, switch to Manual,
         // and stop the docking autopilot. Stock control still passes through when no panel button is held.
@@ -127,15 +124,9 @@ namespace Blackbird.Docking
             _vessel = active;
             if (active == null || bbState == null)
             {
-
-                HasTarget = false;
                 _vs = null;
                 return;
             }
-
-            _targetObject = active.targetObject;
-            _targetVessel = _targetObject != null ? _targetObject.GetVessel() : null;
-            HasTarget = _targetObject != null && _targetVessel != null;
 
             UpdateMetrics();
 
@@ -149,8 +140,8 @@ namespace Blackbird.Docking
             }
 
             bool actuating = bbState.DockingMode == DockingControlMode.Guidance
-                             || (KeepPointed && HasTarget)
-                             || (AlignToPort && HasTarget)
+                             || (KeepPointed && bbState.HaveTarget)
+                             || (AlignToPort && bbState.HaveTarget)
                              || _resetOrientation
                              || ManualInputFresh();
             if (!actuating)
@@ -166,7 +157,7 @@ namespace Blackbird.Docking
 
             if (bbState.DockingMode == DockingControlMode.Guidance)
             {
-                _autopilot.OnFixedUpdate(active, _vs);
+                _autopilot.OnFixedUpdate(active, _vs, bbState);
                 // The autopilot turns Off on capture or target loss; hand control back to the operator.
                 if (_autopilot.CurrentStep == DockingSteps.Off)
                 {
@@ -193,9 +184,9 @@ namespace Blackbird.Docking
             {
                 if (_vs != null)
                 {
-                    Vector3d baseVel = HasTarget ? TrajectoryProvider.GetVelocity(_targetVessel) : _vs.OrbitalVelocity;
+                    Vector3d baseVel = bbState.HaveTarget ? TrajectoryProvider.GetVelocity(bbState.TargetVessel) : _vs.OrbitalVelocity;
                     _rcs.SetTargetWorldVelocity(baseVel);
-                    _rcs.Drive(state, _vs, vessel);
+                    _rcs.Drive(state, _vs, vessel, bbState);
                 }
 
                 _attitude.DriveHoldAttitude(vessel, state);
@@ -207,7 +198,7 @@ namespace Blackbird.Docking
             {
                 // Vector3d facing = HasTarget ? PointAtTargetDirection() : (Vector3d)vessel.ReferenceTransform.up;
                 // use the closest main body as "up" if no target
-                Vector3d facing = HasTarget ? PointAtTargetDirection() : PointAtWorldDirection();
+                Vector3d facing = bbState.HaveTarget ? PointAtTargetDirection() : PointAtWorldDirection();
 
                 if (facing.sqrMagnitude > 0.0)
                 {
@@ -217,7 +208,7 @@ namespace Blackbird.Docking
                 }
                 else _resetOrientation = false;
             }
-            else if (AlignToPort && HasTarget)
+            else if (AlignToPort && bbState.HaveTarget)
             {
                 // align nose to docking port
                 Vector3d facing = PointAlongDockingAxis();
@@ -226,7 +217,7 @@ namespace Blackbird.Docking
                 // lateral alignment on docking port's axis
                 if (_vs != null && !(_manualTranslate.sqrMagnitude > 0.0 && ManualInputFresh())) DriveLateralCenter(state, vessel);
             }
-            else if (KeepPointed && HasTarget)
+            else if (KeepPointed && bbState.HaveTarget)
             {
                 Vector3d facing = PointAtTargetDirection();
                 // had a 90.0 rollDeg lock here but not sure what that was for
@@ -245,7 +236,7 @@ namespace Blackbird.Docking
                                + -(Vector3d)rt.forward * _manualTranslate.y     // dorsal up (+) / down (-)
                                + (Vector3d)rt.up * _manualTranslate.z;          // nose-forward (+) / back (-)
                 _rcs.SetWorldVelocityError(dir * ManualTranslateError);
-                _rcs.Drive(state, _vs, vessel);
+                _rcs.Drive(state, _vs, vessel, bbState);
             }
 
             // Manual rotation (only when nothing else is driving the attitude): bias the nose. Signs verify
@@ -273,8 +264,8 @@ namespace Blackbird.Docking
         // aligns when you're already on the centerline). Zero if no target / transforms unavailable.
         private Vector3d PointAtTargetDirection()
         {
-            if (!HasTarget || _vessel == null || _vessel.ReferenceTransform == null) return Vector3d.zero;
-            Transform tt = _targetObject.GetTransform();
+            if (!bbState.HaveTarget || _vessel == null || _vessel.ReferenceTransform == null) return Vector3d.zero;
+            Transform tt = bbState.TargetObject.GetTransform();
             if (tt == null) return Vector3d.zero;
             Vector3d los = (Vector3d)tt.position - (Vector3d)_vessel.ReferenceTransform.position;
             return los.sqrMagnitude > 1e-9 ? los.normalized : Vector3d.zero;
@@ -282,16 +273,16 @@ namespace Blackbird.Docking
 
         private Vector3d PointAlongDockingAxis()
         {
-            if (!HasTarget || !(_targetObject is ModuleDockingNode)) return Vector3d.zero;
-            Transform tt = _targetObject.GetTransform();
+            if (!bbState.HaveTarget || !(bbState.TargetObject is ModuleDockingNode)) return Vector3d.zero;
+            Transform tt = bbState.TargetObject.GetTransform();
             return tt != null ? (-(Vector3d)tt.forward).normalized : Vector3d.zero;
         }
 
         private void DriveLateralCenter(FlightCtrlState state, Vessel vessel)
         {
-            if (!HasTarget || !(_targetObject is ModuleDockingNode) || vessel.ReferenceTransform == null) return;
+            if (bbState.TargetDockingPort == null || vessel.ReferenceTransform == null) return;
 
-            Transform tt = _targetObject.GetTransform();
+            Transform tt = bbState.TargetDockingPort.GetTransform();
             if (tt == null) return;
 
             double speedLimit = 0.5;
@@ -309,9 +300,9 @@ namespace Blackbird.Docking
                 correction = -lateral.normalized * speed; // move towards centerline
             }
 
-            Vector3d targetVel = TrajectoryProvider.GetVelocity(_targetVessel);
+            Vector3d targetVel = TrajectoryProvider.GetVelocity(bbState.TargetVessel);
             _rcs.SetTargetWorldVelocity(targetVel + correction);
-            _rcs.Drive(state, _vs, vessel);
+            _rcs.Drive(state, _vs, vessel, bbState);
         }
 
         private Vector3d PointAtWorldDirection()
@@ -325,23 +316,19 @@ namespace Blackbird.Docking
         {
             RcsFuelPercent = RcsMonopropPercent(_vessel);
 
-            if (!HasTarget || _vessel == null || _vessel.ReferenceTransform == null)
+            if (bbState.TargetVessel == null || bbState.TargetObject == null || _vessel == null || _vessel.ReferenceTransform == null)
             {
-                TargetName = "";
-                TargetPortName = "";
                 PortDistanceMeters = double.NaN;
                 ClosingRateSigned = double.NaN;
                 return;
             }
 
-            Transform tt = _targetObject.GetTransform();
-            TargetName = _targetVessel.vesselName;
-            TargetPortName = _targetObject.GetName();
+            Transform tt = bbState.TargetObject.GetTransform();
 
             Vector3d toTarget = (Vector3d)tt.position - (Vector3d)_vessel.ReferenceTransform.position;
             PortDistanceMeters = toTarget.magnitude;
 
-            Vector3d relVel = TrajectoryProvider.GetVelocity(_vessel) - TrajectoryProvider.GetVelocity(_targetVessel);
+            Vector3d relVel = TrajectoryProvider.GetVelocity(_vessel) - TrajectoryProvider.GetVelocity(bbState.TargetVessel);
             ClosingRateSigned = toTarget.sqrMagnitude > 1e-9
                 ? Vector3d.Dot(relVel, toTarget.normalized)   // + = closing, - = receding
                 : 0.0;

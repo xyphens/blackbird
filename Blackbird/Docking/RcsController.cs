@@ -2,6 +2,7 @@
 using Blackbird.Guidance;
 using Blackbird.Mathematics;
 using Blackbird.Models;
+using Blackbird.Modules;
 using Blackbird.Trajectory;
 using UnityEngine;
 
@@ -92,13 +93,10 @@ namespace Blackbird.Docking
             }
         }
 
-        public void Drive(FlightCtrlState ctrlState, VesselState vs, Vessel v)
+        public void Drive(FlightCtrlState ctrlState, VesselState vs, Vessel v, SharedState s)
         {
             SetParameters();
             State = vs;
-
-            ITargetable target = FlightGlobals.fetch != null ? FlightGlobals.fetch.VesselTarget : null;
-            Vessel targetVessel = target as Vessel;
 
             switch (TranslationType)
             {
@@ -106,10 +104,10 @@ namespace Blackbird.Docking
                     worldVelocityDelta = State.OrbitalVelocity - targetVelocity; // du: think we want to pull OV from Principia?
                     break;
                 case TranslationTypes.TARGET_RELATIVE_VELOCITY:
-                    if (FlightGlobals.fetch != null && FlightGlobals.fetch.VesselTarget != null)
+                    if (s.TargetVessel != null)
                     {
                         Vector3d myVesselVel = TrajectoryProvider.GetOrbitalVelocity(v);
-                        Vector3d targetVesselVel = TrajectoryProvider.GetOrbitalVelocity(targetVessel);
+                        Vector3d targetVesselVel = TrajectoryProvider.GetOrbitalVelocity(s.TargetVessel);
                         Vector3d relativeVelocity = myVesselVel - targetVesselVel;
                         // our velocity - our target's vessel - the velocity we want
                         worldVelocityDelta = relativeVelocity - targetVelocity;

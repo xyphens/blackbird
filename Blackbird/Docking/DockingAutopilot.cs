@@ -1,8 +1,9 @@
-using System;
 using Blackbird.Guidance;
 using Blackbird.Logging;
 using Blackbird.Models;
+using Blackbird.Modules;
 using Blackbird.Trajectory;
+using System;
 using UnityEngine;
 
 namespace Blackbird.Docking
@@ -42,10 +43,10 @@ namespace Blackbird.Docking
 
         public DockingSteps Step = DockingSteps.Off;
 
+        private SharedState bbState;
+
         // --- injected per tick + owned actuators -----------------------------------------------------
         private Vessel v;
-        private Vessel targetVessel;
-        private ITargetable targetObject;
         private VesselState vs;
         private readonly RcsController rcs;
         private readonly AttitudeControl attitude;
@@ -83,7 +84,7 @@ namespace Blackbird.Docking
         // Start a docking run: the next OnFixedUpdate (Step == Starting) captures bounding boxes and picks
         // the entry step. RCS is forced on by the caller before VesselState is built so the thrust table is
         // populated from the first tick.
-        public void Engage()
+        public void Engage(SharedState s)
         {
             Step = DockingSteps.Starting;
         }
@@ -96,22 +97,22 @@ namespace Blackbird.Docking
 
         // State-machine tick (call from Update/FixedUpdate). Injects the live state, recomputes the geometry,
         // and advances the schedule (Starting -> one-time Init, otherwise DockingSchedule.Advance).
-        public void OnFixedUpdate(Vessel vessel, VesselState vesselState)
+        public void OnFixedUpdate(Vessel vessel, VesselState vesselState, SharedState s)
         {
             v = vessel;
             vs = vesselState;
-            targetObject = vessel != null ? vessel.targetObject : null;
-            targetVessel = targetObject != null ? targetObject.GetVessel() : null;
+            bbState = s;
 
             // not eligible for any docking maneuvers
-            if (v == null || vs == null || targetObject == null || targetVessel == null)
+            if (v == null || vs == null || !bbState.HaveTarget)
             {
                 EndDocking();
                 return;
             }
 
-            if (!PortTargeted())
+            if (bbState.TargetDockingPort == null)
             {
+                // no docking port selected, default to approach
                 Step = DockingSteps.ClosingRange;
                 return;
             }
@@ -132,7 +133,7 @@ namespace Blackbird.Docking
         // approach adjustment. RCS-only — no main engine.
         public void Drive(FlightCtrlState state, bool lockRoll)
         {
-            if (state == null || v == null || vs == null || targetVessel == null) return;
+            if (state == null || v == null || vs == null || bbState == null || !bbState.HaveTarget) return;
             if (Step == DockingSteps.Off || Step == DockingSteps.Starting) return;
             if (Step == DockingSteps.ClosingRange) { GetToDockingRange(state); return; }
 
@@ -147,18 +148,19 @@ namespace Blackbird.Docking
 
             // Translate: command the target's (measured) velocity plus the approach adjustment; the RCS PID
             // nulls the residual. Measured velocity (not orbit.GetVel) keeps it Principia-consistent.
-            Vector3d targetVel = TrajectoryProvider.GetVelocity(targetVessel);
+            Vector3d targetVel = TrajectoryProvider.GetVelocity(bbState.TargetVessel);
             rcs.SetTargetWorldVelocity(targetVel + plan.Adjustment);
-            rcs.Drive(state, vs, v);
+            rcs.Drive(state, vs, v, bbState);
         }
 
         // only available/active when we don't have a docking port targeted
         private void GetToDockingRange(FlightCtrlState state)
         {
-            Vector3d los = (Vector3d)targetObject.GetTransform().position - (Vector3d)v.ReferenceTransform.position;
+            
+            Vector3d los = (Vector3d)bbState.TargetObject.GetTransform().position - (Vector3d)v.ReferenceTransform.position;
             double range = los.magnitude;
             Vector3d losDir = range > 1e-6 ? los / range : Vector3d.zero;
-            Vector3d targetVel = TrajectoryProvider.GetVelocity(targetVessel);
+            Vector3d targetVel = TrajectoryProvider.GetVelocity(bbState.TargetVessel);
 
             // point at target so forward/after RCS actuators do the closing
             if (losDir.sqrMagnitude > 0.0) attitude.DriveInertial(v, state, losDir, 0.0);
@@ -176,7 +178,7 @@ namespace Blackbird.Docking
                 status = string.Format("Closing to docking range: {0:F0} m at {1:F2} m/s", range, closeSpeed);
             }
 
-            rcs.Drive(state, vs, v);
+            rcs.Drive(state, vs, v, bbState);
         }
 
         // Available linear acceleration (m/s^2) in a world-frame travel direction: the RCS thrust available
@@ -198,11 +200,12 @@ namespace Blackbird.Docking
             try
             {
                 vesselBoundingBox = DockingGeometry.GetBoundingBox(v);
-                targetBoundingBox = DockingGeometry.GetBoundingBox(targetVessel);
+                targetBoundingBox = DockingGeometry.GetBoundingBox(bbState.TargetVessel);
                 vesselBoundingSize = vesselBoundingBox.size.magnitude;
 
                 RefreshSizes();
-                acquireRange = targetObject is ModuleDockingNode node ? node.acquireRange * 0.5 : 0.25;
+                
+                acquireRange = bbState.TargetDockingPort != null ? bbState.TargetDockingPort.acquireRange * 0.5 : 0.25;
             }
             catch (Exception ex)
             {
@@ -222,7 +225,7 @@ namespace Blackbird.Docking
         // the targeted port), the docking axis, and the along-axis / lateral split.
         private void UpdateDistance()
         {
-            Transform targetTransform = targetObject.GetTransform();
+            Transform targetTransform = bbState.TargetObject.GetTransform();
             Vector3d separation = v.ReferenceTransform.position - targetTransform.position;   // target -> chaser
             Vector3d dockingAxis = CanAlign() ? -targetTransform.forward : -targetTransform.up;
 
@@ -234,10 +237,8 @@ namespace Blackbird.Docking
         // The target exposes a docking orientation (i.e. it's a port we can align to) rather than just a point.
         private bool CanAlign()
         {
-            return targetObject != null && targetObject.GetTargetingMode() == VesselTargetModes.DirectionVelocityAndOrientation;
+            return bbState.TargetObject != null && bbState.TargetObject.GetTargetingMode() == VesselTargetModes.DirectionVelocityAndOrientation;
         }
-
-        private bool PortTargeted() => targetObject != null && targetObject is ModuleDockingNode;
 
         private DockingGeom Geom()
         {

@@ -12,6 +12,7 @@ namespace Blackbird.Modules
         private SharedState bbState;
         private static readonly int WindowId = "Blackbird.DockingComputer".GetHashCode();
         private Rect _windowRect = new Rect(600, 200, 320, 430);
+        private GUIStyle _warnStyle, _errorStyle;
 
         private const float BtnW = 60f;
         private const float BtnH = 34f;
@@ -33,6 +34,9 @@ namespace Blackbird.Modules
         public void Draw()
         {
             if (bbState == null || !bbState.DockingVisible) return;
+            if (_warnStyle == null) _warnStyle = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.yellow }, wordWrap = true };
+            if (_errorStyle == null) _errorStyle = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.red }, wordWrap = true };
+
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Docking Computer");
         }
         private void DrawContents(int _)
@@ -47,9 +51,21 @@ namespace Blackbird.Modules
             }
 
             // --- readouts ---
-            GUILayout.Label(_handler.HasTarget
-                ? $"Target: {_handler.TargetName} ({_handler.TargetPortName})"
-                : "Target: No target selected");
+            if (bbState.HaveTarget)
+            {
+                GUILayout.Label($"Target: {bbState.TargetName}");
+                if (bbState.TargetDockingPort != null)
+                {
+                    GUILayout.Label($"Target docking port: {bbState.TargetDockingPortName}");
+                } else
+                {
+                    GUILayout.Label($"Warning: no docking port selected", _warnStyle);
+                }
+            } else
+            {
+                GUILayout.Label($"Error: no target selected", _errorStyle);
+            }
+
             GUILayout.Label($"Docking status: {DockingStatusText()}");
             GUILayout.Label($"Docking port distance: {FormatDistance(_handler.PortDistanceMeters)}");
             GUILayout.Label($"Rel velocity: {FormatClosing(_handler.ClosingRateSigned)}");
@@ -80,12 +96,12 @@ namespace Blackbird.Modules
             // --- autopilot toggle buttons (see the state logic in the header of DockingHandler) ---
             bool alreadyRunning = bbState.DockingMode == DockingControlMode.Guidance;
 
-            bool canRun = _handler.HasTarget && !alreadyRunning && bbState.CanClaimControl(BlackbirdModule.Docking);
+            bool canRun = bbState.HaveTarget && !alreadyRunning && bbState.CanClaimControl(BlackbirdModule.Docking);
 
             if (!canRun && !alreadyRunning)
             {
                 string cantRunReason = "unavailable";
-                if (!_handler.HasTarget)
+                if (!bbState.HaveTarget)
                     cantRunReason = "no target selected";
                 else if (bbState.ActiveModule == BlackbirdModule.LaunchGuidance)
                     cantRunReason = "ascent guidance is running";

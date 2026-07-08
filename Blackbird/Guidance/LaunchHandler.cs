@@ -186,10 +186,6 @@ namespace Blackbird.Guidance
             }
 
             WarpToUT(_targetUt - WarpStopLeadTimeSeconds, vessel);
-
-            //SetSafeWarpRate(_targetUt - WarpStopLeadTimeSeconds, bbState.IsRSS);
-
-            // SetSafeWarpRate(secondsRemaining, bbState.IsRSS);
         }
 
         public void SetGuidanceMode(GuidanceMode gMode, Vessel vessel = null)

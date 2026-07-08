@@ -69,14 +69,15 @@ namespace Blackbird.Modules
         public BlackbirdModule ActiveModule { get; set; }
 
         // True when `module` may take control: nothing else owns it (idle/user) or it already does.
-        public bool CanClaimControl(BlackbirdModule module) =>
-            ActiveModule == BlackbirdModule.None || ActiveModule == module;
+        public bool CanClaimControl(BlackbirdModule module) => ActiveModule == BlackbirdModule.None || ActiveModule == module;
+        // return target port or fallback to target vessel.  useful for docking.
+        public ITargetable TargetObject => TargetDockingPort != null ? (ITargetable)TargetDockingPort : TargetVessel;
 
         public bool PlannerVisible = false;
         public bool RendezvousVisible = false;
         public bool GuidanceVisible = false;
         public bool DockingVisible = false;
-        // planner
+        // game module state
         public bool PlannerEnabled { get; set; } = false;
         public bool IsRO { get; set; } = false;
         public bool IsRSS { get; set; } = false;
@@ -129,10 +130,21 @@ namespace Blackbird.Modules
             set { if (Enum.IsDefined(typeof(InterceptMethod), value)) InterceptMethod = (InterceptMethod)value; }
 
         }
+
         // docking
         public DockingMethod DockingMethod { get; set; } = DockingMethod.Automatic;
         public DockingControlMode DockingMode { get; set; } = DockingControlMode.Off;
         public bool DockingEnabled { get; set; } = false;
+
+        // target state / docking port
+        public Vessel TargetVessel;
+        public ModuleDockingNode TargetDockingPort;
+        public ModuleDockingNode vesselDockingPort;
+
+        public bool ControllingFromDockingPort = false;
+        public bool HaveTarget = false;
+        public string TargetDockingPortName = "none";
+        public string TargetName = "no target";
 
         public void Reset()
         {
@@ -155,6 +167,15 @@ namespace Blackbird.Modules
             InterceptSolution = new InterceptSolution();
             InterceptCandidates = new List<InterceptSolution>();
             SelectedInterceptCandidateIndex = -1;
+
+            // reset info/context
+            TargetVessel = null;
+            TargetDockingPort = null;
+            vesselDockingPort = null;
+            ControllingFromDockingPort = false;
+            HaveTarget = false;
+            TargetDockingPortName = "none";
+            TargetName = "no target";
         }
     }
 }
