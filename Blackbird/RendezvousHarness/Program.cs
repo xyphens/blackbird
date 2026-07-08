@@ -69,6 +69,9 @@ namespace Blackbird.RendezvousHarness
             CheckDockingSchedule();
             CheckBurnSettleGate();
             CheckRcsAttitudeTorque();
+            CheckGravityCompensatedDelivered();
+            CheckSlewTimeEstimate();
+            CheckFinalApproachAutoParkHonorsClosestApproach();
 
             Console.WriteLine();
             if (_failures == 0)
@@ -2351,6 +2354,185 @@ namespace Blackbird.RendezvousHarness
             AssertVec("yaw-starved", starved, new Vector3d(2, 1, 0));
 
             Console.WriteLine();
+        }
+
+        // Intercept `delivered` must measure ENGINE ΔV, not the raw orbital-velocity change (which carries
+        // gravity). Driven through the executor with a frozen position so the point-mass gravity vector the
+        // fix integrates exactly equals the gravity the harness applies — so `delivered` should equal the
+        // engine ΔV to the m/s regardless of how radial the axis is. Two scenarios:
+        //  - radial-outward axis with gravity pointing straight back down it (TWR<1, gravity > thrust): the RAW
+        //    metric goes negative and never reaches the target; only gravity comp lets the burn complete.
+        //  - prograde axis (gravity perpendicular): comp subtracts ~0, so the fix is inert — the guarantee that
+        //    it can't regress the stock / other-vessel burns that already worked.
+        private static void CheckGravityCompensatedDelivered()
+        {
+            Console.WriteLine("Case: intercept delivered ΔV is gravity-compensated (engine ΔV, not orbital)");
+
+            double mu = EarthMu, r = EarthRadius + 200000.0;
+            double vc = Math.Sqrt(mu / r);
+            double g = mu / (r * r);
+            Console.WriteLine(string.Format("    r={0:F0} km  g={1:F2} m/s^2  a_thrust=8.00 (TWR<1: gravity outmuscles thrust)",
+                r / 1000.0, g));
+
+            Vector3d pos = new Vector3d(r, 0, 0);
+            Vector3d vel = new Vector3d(0, vc, 0);   // circular, prograde = +Y; radial-out = +X; gravity = -X
+
+            // Adversarial: radial-out burn, gravity fully opposed. Raw metric goes negative -> never completes.
+            RunGravityBurn("radial (opposed)", mu, pos, vel, new Vector3d(1, 0, 0), gravityOpposes: true);
+
+            // Control: prograde burn, gravity perpendicular. Comp is inert; raw metric would also have worked.
+            RunGravityBurn("prograde (inert)", mu, pos, vel, new Vector3d(0, 1, 0), gravityOpposes: false);
+
+            Console.WriteLine();
+        }
+
+        // Drives one intercept burn (injected Phasing plan, ignites now) with a frozen position, applying the
+        // commanded engine thrust plus a constant point-mass gravity to the active velocity each tick, then
+        // checks: the burn completes, the delivered/cut happened at the true engine ΔV, and the raw
+        // (uncompensated) metric behaves as predicted (negative when opposed, ~planned when perpendicular).
+        private static void RunGravityBurn(string label, double mu, Vector3d pos, Vector3d vel, Vector3d axisRaw, bool gravityOpposes)
+        {
+            const double planned = 130.0;
+            const double aThrust = 8.0;   // ~TWR 0.85: below local g, so an opposed axis can't ever cut on the raw metric
+            const double dt = 0.02;
+
+            Vector3d axis = axisRaw.normalized;
+
+            SimWorld seed = new SimWorld(mu, pos, vel, pos + new Vector3d(0, 1000, 0), vel, Vector3d.Cross(pos, vel).normalized);
+            InjectWorld world = new InjectWorld(seed);
+
+            TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
+            state.InterceptMethod = InterceptMethod.Phasing;   // Phasing reuses the injected plan verbatim, ignites immediately
+            state.InterceptSolution = new InterceptSolution
+            {
+                Success = true,
+                Status = InterceptStatus.Ok,
+                DeltaV = axis * planned,
+                DeltaVMagnitude = planned,
+                TotalDeltaVMagnitude = planned,
+                IgnitionUt = 0.0,
+                ArrivalUt = 1000.0,
+                TimeOfFlight = 1000.0,
+                PredictedClosestApproach = 0.0,
+                TransferDepartureVelocity = vel + axis * planned,
+                TransferArrivalVelocity = Vector3d.zero,
+                SamplesEvaluated = 0
+            };
+            ex.ForceExecute(RendezvousMethod.Intercept);
+
+            // Constant point-mass gravity (position is frozen), identical to what the fix integrates internally.
+            Vector3d gravity = (-mu / (pos.magnitude * pos.magnitude * pos.magnitude)) * pos;
+            Vector3d startVel = world.ActiveVelocity;
+            Vector3d appliedEngine = Vector3d.zero;
+
+            int ticks = 0;
+            while (state.InterceptPhase == InterceptPhase.Executing && ticks++ < 200000)
+            {
+                RendezvousCommand cmd = ex.Update(world);
+                if (state.InterceptPhase != InterceptPhase.Executing) break;
+                if (cmd.HasBurn)
+                {
+                    Vector3d e = cmd.ThrustDirection.normalized * (cmd.Throttle * aThrust * dt);
+                    appliedEngine += e;
+                    world.AddVelocity(e);
+                }
+                world.AddVelocity(gravity * dt);   // gravity acts every tick, thrusting or not
+                world.Advance(dt);
+            }
+
+            double engineDelivered = Vector3d.Dot(appliedEngine, axis);
+            double rawDelivered = Vector3d.Dot(world.ActiveVelocity - startVel, axis);   // what the OLD metric reported
+
+            AssertTrue(label + ": completes", state.InterceptPhase == InterceptPhase.Idle && ticks < 200000);
+            AssertScalarTol(label + ": cut at engine ΔV", engineDelivered, planned, 1.0);
+            if (gravityOpposes)
+                AssertTrue(label + ": raw metric never reaches target (<0)", rawDelivered < 0.0);
+            else
+                AssertScalarTol(label + ": comp inert (raw ~ planned)", rawDelivered, planned, 2.0);
+
+            Console.WriteLine(string.Format("    {0}: {1:F1}s burn  engineΔV={2:F2}  rawMetric={3:F2}",
+                label, ticks * dt, engineDelivered, rawDelivered));
+        }
+
+        // Slew-time estimate (AttitudeControl.SlewTimeSeconds): already-pointed returns just padding; a weak
+        // craft's 180° is bounded by the rate floor (not the tens-of-minutes cruise-runaway it was); estimate
+        // grows monotonically as authority drops; a strong craft turns in seconds; padding is additive.
+        private static void CheckSlewTimeEstimate()
+        {
+            Console.WriteLine("Case: slew-time estimate (rate floor bounds weak craft; scales with authority)");
+
+            const double halfTurn = Math.PI;   // 180°
+
+            // Already pointed (below the 1e-3 rad short-circuit): only the padding is returned, no slew charged.
+            AssertScalarTol("already-pointed = padding", AttitudeControl.SlewTimeSeconds(1e-4, 0.01, 3.0), 3.0, 1e-9);
+
+            // Weak craft, 180°: WITHOUT the floor omegaMax≈alpha so cruise = angle/alpha ≈ π/0.001 ≈ 3140 s.
+            // The floor caps that term, so the real estimate is a few minutes, not ~52 min.
+            double weak180 = AttitudeControl.SlewTimeSeconds(halfTurn, 0.001, 0.0);
+            double unflooredCruise = halfTurn / (0.001 * 2.0 * 0.5);   // π / (alpha·MaxStoppingTime·Soften), no floor
+            AssertTrue("weak 180° bounded by rate floor (< 300 s)", weak180 < 300.0);
+            AssertTrue("floor cuts the cruise runaway (>10x)", unflooredCruise > 10.0 * weak180);
+            Console.WriteLine(string.Format("    weak 180°: floored={0:F0}s vs unfloored-cruise≈{1:F0}s", weak180, unflooredCruise));
+
+            // Monotonic: less authority -> longer estimate.
+            double s01 = AttitudeControl.SlewTimeSeconds(halfTurn, 0.01, 0.0);
+            double s001 = AttitudeControl.SlewTimeSeconds(halfTurn, 0.001, 0.0);
+            double s0005 = AttitudeControl.SlewTimeSeconds(halfTurn, 0.0005, 0.0);
+            AssertTrue("weaker craft flips slower (monotonic)", s01 < s001 && s001 < s0005);
+
+            // Strong craft, small angle: seconds.
+            AssertTrue("strong craft 30° turns in seconds", AttitudeControl.SlewTimeSeconds(Math.PI / 6.0, 0.5, 0.0) < 5.0);
+
+            // Padding is purely additive.
+            AssertScalarTol("padding additive", AttitudeControl.SlewTimeSeconds(halfTurn, 0.01, 4.0), s01 + 4.0, 1e-9);
+        }
+
+        // Case: Final Approach auto-park honors the "Closest approach" box. Same flyby geometry, closing speed
+        // pre-set to SafeClosingSpeed so FA's closing burn finishes on tick 1 and it drops into the brake phase.
+        // With the box set it must route to the CA brake (holds "for closest approach"); without it, the distance
+        // brake ("brake at X m"). Before the fix FA hardcoded the distance brake and ignored the box entirely.
+        private static void CheckFinalApproachAutoParkHonorsClosestApproach()
+        {
+            Console.WriteLine("Case: FA auto-park routes to CA-brake when 'Closest approach' is set");
+
+            const double a = 5.0, park = 100.0, gap = 6900.0;
+            double closing = Math.Sqrt(a * gap);   // == SafeClosingSpeed(gap) with FlipSlewTime=0, so FA closing is done tick 1
+            StaticWorld world = new StaticWorld
+            {
+                Mu = KerbinMu, ReferenceNormal = new Vector3d(0, 0, 1),
+                BodyRadius = KerbinRadius, AtmosphereDepth = 70000.0,
+                TargetPosition = new Vector3d(park + gap, 0, 0), ActivePosition = Vector3d.zero,
+                TargetVelocity = new Vector3d(0, 100.0, 0), ActiveVelocity = new Vector3d(closing, 100.0, 0)
+            };
+
+            TerminalRendezvousExecutor ca = NewExecutor(out _);
+            ca.ParkingDistanceEnabled = true;
+            ca.MatchAtClosestApproach = true;
+            ca.ParkingDistanceMeters = park;
+            ca.BrakingDecelMetersPerSecondSquared = a;
+            ca.ForceExecute(RendezvousMethod.FinalApproach);
+            RendezvousCommand caCmd = ca.Update(world, 50.0, 60.0);
+            AssertTrue("FA+CA -> closest-approach brake (holding)",
+                caCmd.Status.Contains("closest approach") && caCmd.Throttle == 0.0);
+
+            TerminalRendezvousExecutor dist = NewExecutor(out _);
+            dist.ParkingDistanceEnabled = true;
+            dist.MatchAtClosestApproach = false;
+            dist.ParkingDistanceMeters = park;
+            dist.BrakingDecelMetersPerSecondSquared = a;
+            dist.ForceExecute(RendezvousMethod.FinalApproach);
+            RendezvousCommand distCmd = dist.Update(world, 50.0, 60.0);
+            AssertTrue("FA without CA -> distance brake (holding)",
+                distCmd.Status.Contains("brake at") && distCmd.Throttle == 0.0);
+
+            Console.WriteLine("    CA: \"" + caCmd.Status + "\"");
+            Console.WriteLine("    dist: \"" + distCmd.Status + "\"");
+        }
+
+        private static void AssertScalarTol(string label, double actual, double expected, double tol)
+        {
+            double err = Math.Abs(actual - expected);
+            Report(label, err <= tol, expected.ToString("F3"), actual.ToString("F3"), err.ToString("F3"));
         }
 
         private static void AssertTrue(string label, bool condition)

@@ -9,6 +9,10 @@ namespace Blackbird.Rendezvous
     // Rendezvous execution state machine. Each method (Intercept / MatchVelocity / CloseApproach) runs independently via Execute(method)
     public sealed class TerminalRendezvousExecutor
     {
+        // factor gravity into maneuver dV
+        private Vector3d _burnGravityDeltaV;    // integrated G dV since ignition removed from `delivered`
+        private double _lastBurnUt;             // per frame gravity integral timestamp
+
         // --- intercept tuning (public so callers/tests can adjust) ---
         public int InterceptArrivalSamples = 60;          // Lambert solves per plan
         public double InterceptBudgetMilliseconds = 20.0; // wall-clock cap per plan
@@ -187,6 +191,8 @@ namespace Blackbird.Rendezvous
             _maxDeliveredDv = 0.0;
             _lastProgressDelivered = 0.0;
             _lastProgressUt = ut;
+            _burnGravityDeltaV = Vector3d.zero;
+            _lastBurnUt = ut;
         }
 
         // Abort: no further commands until Reset().
@@ -459,27 +465,27 @@ namespace Blackbird.Rendezvous
                 _maxDeliveredDv = 0.0;
                 _lastProgressDelivered = 0.0;
                 _lastProgressUt = world.UniversalTime;
+                _burnGravityDeltaV = Vector3d.zero;
+                _lastBurnUt = world.UniversalTime;
                 _burnArmed = true;
             }
 
             // Hohmann departs in the future. Keep the delivered-ΔV baseline pinned to now so the coast/orient
-            // isn't counted as burn progress, then orient only when the burn is near: coast (no RCS) when far
-            // out, slew at the orient window, fine-correct in the last seconds. Avoids burning RCS for an hour
-            // holding a stale attitude.
+            // isn't counted as burn progress, then orient only when the burn is near
             if (bbState.InterceptMethod == InterceptMethod.Hohmann && world.UniversalTime < _burnIgnitionUt)
             {
                 _burnStartVelocity = world.ActiveVelocity;
                 _maxDeliveredDv = 0.0;
                 _lastProgressDelivered = 0.0;
                 _lastProgressUt = world.UniversalTime;
+                _burnGravityDeltaV = Vector3d.zero;
+                _lastBurnUt = world.UniversalTime;
 
                 double timeToIgnition = _burnIgnitionUt - world.UniversalTime;
                 if (timeToIgnition > HohmannPreOrientWindowSeconds)
                     return Idle(string.Format("intercept: coasting to ignition in {0:F0}s", timeToIgnition));
 
-                // Re-solve the burn from the (fresh) measured state to the J2 target at the FIXED arrival, for
-                // departure at the FIXED ignition — only the vector/magnitude move, so it can't chase a moving
-                // target. Throttled; frozen once inside the commit zone; a stale/absurd solve keeps the prior.
+                // Re-solve the burn from the (fresh) measured state to the J2 target at the fixed arrival
                 bool committed = timeToIgnition <= HohmannFinalOrientSeconds;
                 if (!committed && world.UniversalTime - _lastReSolveUt >= HohmannReSolveIntervalSeconds)
                 {
@@ -492,8 +498,18 @@ namespace Blackbird.Rendezvous
                     string.Format("intercept: {0}, ignition in {1:F0}s", orientPhase, timeToIgnition));
             }
 
-            // Delivered ΔV along the fixed planned-ΔV axis since ignition.
-            double delivered = Vector3d.Dot(world.ActiveVelocity - _burnStartVelocity, _plannedDvUnit);
+            // Delivered ΔV along the fixed planned-ΔV axis since ignition w/ gravity compensate
+            //double delivered = Vector3d.Dot(world.ActiveVelocity - _burnStartVelocity, _plannedDvUnit);
+            double dtGrav = world.UniversalTime - _lastBurnUt;
+            if (dtGrav > 0.0 && dtGrav < 1.0)
+            {
+                double r = world.ActivePosition.magnitude;
+                if (r > 0.0) _burnGravityDeltaV += (-world.Mu / (r * r * r)) * world.ActivePosition * dtGrav;
+            }
+            _lastBurnUt = world.UniversalTime;
+
+            double delivered = Vector3d.Dot(world.ActiveVelocity - _burnStartVelocity - _burnGravityDeltaV, _plannedDvUnit);
+
             if (delivered > _maxDeliveredDv) _maxDeliveredDv = delivered;
 
             // Progress for the stall cutoff uses a deadband: a flooring engine adds a hair of delivered ΔV
@@ -653,8 +669,8 @@ namespace Blackbird.Rendezvous
                         ? (-relVel).normalized
                         : (relPos.magnitude > 1e-6 ? relPos / relPos.magnitude : Vector3d.zero);
                     return Burn(holdDir, 0.0, string.Format(
-                        "match velocity: holding for closest approach ({0:F0} s, {1:F0} m, {2:F2} m/s)",
-                        timeToCa, relPos.magnitude, relSpeed));
+                        "match velocity: holding for closest approach (CA: {0:F0} s Burn: {1:F0} s, {2:F0} m, {3:F2} m/s)",
+                        timeToCa, igniteLead, relPos.magnitude, relSpeed));
                 }
 
                 _mvTerminalBraking = true;   // centered ignition reached — kill velocity to completion
@@ -752,7 +768,10 @@ namespace Blackbird.Rendezvous
                 }
             }
 
-            if (autoPark) return BrakeAtTerminalDistance(world, out stageComplete);
+            if (autoPark)
+                return MatchAtClosestApproach
+                    ? BrakeAtClosestApproach(world, out stageComplete)    // "Closest approach" ticked: brake centered on the live CA
+                    : BrakeAtTerminalDistance(world, out stageComplete);  // else: brake to rest at the park distance
 
             stageComplete = true;
             return Idle(string.Format("final approach: done ({0:F2} m/s)", relVel.magnitude));
@@ -859,6 +878,9 @@ namespace Blackbird.Rendezvous
             _maxDeliveredDv = 0.0;
             _lastProgressDelivered = 0.0;
             _lastProgressUt = 0.0;
+
+            _burnGravityDeltaV = Vector3d.zero;
+            _lastBurnUt = 0.0;
 
             _matchArmed = false;
             _mvTerminalBraking = false;

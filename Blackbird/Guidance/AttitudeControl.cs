@@ -462,10 +462,21 @@ namespace Blackbird.Guidance
             double alpha = Math.Min(alphaPitch, alphaYaw);    // worst nose-swing axis -> conservative
             if (!MathHelpers.IsFinite(alpha) || alpha <= 0.0) return angleRad + paddingSeconds;
 
-            // Conservative accel/rate cap, matching the live controller's softening and stopping time.
+            return SlewTimeSeconds(angleRad, alpha, paddingSeconds);
+        }
+
+        // Accel/cruise/decel slew-time model (KSP-free, harness-drivable): seconds to rotate angleRad given
+        // alpha rad/s^2 of angular authority, then settle, plus padding. Rate is capped like the live controller
+        // (Soften, MaxStoppingTime) and floored at PI/MinFlipTime so a weak craft can't balloon to tens of minutes.
+        public static double SlewTimeSeconds(double angleRad, double alpha, double paddingSeconds)
+        {
+            if (angleRad <= 1e-3) return paddingSeconds;
+            if (!MathHelpers.IsFinite(alpha) || alpha <= 0.0) return angleRad + paddingSeconds;
+
             double alphaEff = alpha * Soften;
-            double omegaMax = alpha * MaxStoppingTime * Soften;
-            if (alphaEff <= 0.0 || omegaMax <= 0.0) return angleRad + paddingSeconds;
+            // floor the rate so weak craft don't balloon to tens of minutes (matches the live controller)
+            double omegaMax = Math.Max(alpha * MaxStoppingTime * Soften, Math.PI / MinFlipTime);
+            if (alphaEff <= 0.0) return angleRad + paddingSeconds;
 
             double slew;
             double trianglePeak = Math.Sqrt(alphaEff * angleRad);   // peak rate of a pure accel/decel

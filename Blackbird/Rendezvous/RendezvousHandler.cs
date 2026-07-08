@@ -415,10 +415,16 @@ namespace Blackbird.Rendezvous
                     && MathHelpers.IsFinite(vs.TotalMass) && vs.TotalMass > 0.0)
                     _executor.BrakingDecelMetersPerSecondSquared = vs.AvailableThrust / vs.TotalMass;
 
-                // worst-case time to flip vessel 180°
-                if (active?.ReferenceTransform != null)
-                    _executor.FlipSlewTimeSeconds = AttitudeControl.EstimateSlewTimeSeconds(
-                        active, -(Vector3d)active.ReferenceTransform.up, 0.0, false);
+                // determine how long it will take to orient to new direction based on our current direction (not the flat 180 degree charge)
+                if (active?.ReferenceTransform != null) {
+                    Vector3d brakeDir = HasRelative && Relative.RelativeVelocityWorld.sqrMagnitude > 1e-6
+                                        ? Relative.RelativeVelocityWorld
+                                        : -(Vector3d)active.ReferenceTransform.up;
+                    _executor.FlipSlewTimeSeconds = AttitudeControl.EstimateSlewTimeSeconds(active, brakeDir, 0.0, false);
+                }
+                //if (active?.ReferenceTransform != null)
+                //    _executor.FlipSlewTimeSeconds = AttitudeControl.EstimateSlewTimeSeconds(
+                //        active, -(Vector3d)active.ReferenceTransform.up, 0.0, false);
             }
 
 
