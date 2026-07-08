@@ -28,7 +28,7 @@ namespace Blackbird.Docking
 
         private TranslationTypes TranslationType;
 
-        private readonly bool efficientTranslation = false; // conserve fuel, should be an input
+        private readonly bool efficientTranslation = true; // conserve fuel, should be an input; was FALSE before
         private readonly double minRcsTranslationMagnitude = 0.05; // don't use RCS if required thrust is below this
         // Controller time constant (MechJeb's "Tf"): the single knob the PID gains are derived from.
         // MUST default to 1.0 (MechJeb's default) — SetParameters floors it at 0.02, so a 0 default would
@@ -141,17 +141,11 @@ namespace Blackbird.Docking
                     }
                 }
 
-                Vector3d omega = Vector3d.zero;
-
-                if (TranslationType == TranslationTypes.TARGET_WORLD_VELOCITY)
-                {
-                    omega = Quaternion.Inverse(v.GetTransform().rotation) * (v.acceleration - vs.GravityForce);
-                } else if (TranslationType == TranslationTypes.TARGET_RELATIVE_VELOCITY 
-                    || TranslationType == TranslationTypes.WORLD_VELOCITY_ERROR)
-                {
-                    omega = (worldVelocityDelta - lastWorldVelocityDelta) / TimeWarp.fixedDeltaTime;
-                    lastWorldVelocityDelta = worldVelocityDelta;
-                }
+                // Derivative term = measured rate of change of the velocity error (Principia-consistent). The old
+                // TARGET_WORLD_VELOCITY path used v.acceleration - GravityForce, which under Principia is a phantom
+                // ~g (Principia's v.acceleration carries no gravity) that saturates the command and fires all RCS.
+                Vector3d omega = (worldVelocityDelta - lastWorldVelocityDelta) / TimeWarp.fixedDeltaTime;
+                lastWorldVelocityDelta = worldVelocityDelta;
 
                 rcs = pid.ComputeAction(rcs, omega);
                 lastTranslation = rcs;

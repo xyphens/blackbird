@@ -14,7 +14,18 @@ namespace Blackbird.Docking
         BackingUp,            // in front but too close / off-axis: back up to the start distance
         MovingToStart,        // centre onto the docking axis at the start distance
         Docking,              // final straight-in approach to contact
+        ClosingRange,         // close distance to target when no docking port selected
         Off
+    }
+
+    // geometric threshold for advances a step; enables live readouts
+    public struct StepGate
+    {
+        public string Label;    // what the step is waiting on
+        public double Current;  // live metric value
+        public double Target;   // threshold it must cross
+        public bool Rising;     // true: advances when Current > Target; false: when Current < Target
+        public bool Met => Rising ? Current > Target : Current < Target;
     }
 
     // Pure geometry the schedule reasons over (all world-frame except the scalar separations). Filled by
@@ -64,6 +75,27 @@ namespace Blackbird.Docking
         {
             double s = Math.Sqrt(2.0 * Math.Abs(distance) * Math.Max(0.0, accel));
             return ClampSpeed(s, speedLimit);
+        }
+
+        public static StepGate Gate(DockingSteps step, DockingGeom g, DockingConfig c)
+        {
+            switch (step)
+            {
+                case DockingSteps.WrongSideBackingUp:
+                    return new StepGate { Label = "back-off clearance", Current = -g.ZSep, Target = c.SafeDistance, Rising = true };
+                case DockingSteps.WrongSideLateral:
+                    return new StepGate { Label = "lateral clearance", Current = g.LateralMag, Target = c.SafeDistance, Rising = true };
+                case DockingSteps.WrongSideSwitchSides:
+                    return new StepGate { Label = "cross to front", Current = g.ZSep, Target = 0.0, Rising = true };
+                case DockingSteps.BackingUp:
+                    return new StepGate { Label = "back to start distance", Current = g.ZSep, Target = c.TargetSize, Rising = true };
+                case DockingSteps.MovingToStart:
+                    return new StepGate { Label = "center on axis", Current = g.LateralMag, Target = c.DockingCorridorRadius, Rising = false };
+                case DockingSteps.Docking:
+                    return new StepGate { Label = "range to port", Current = g.ZSep, Target = c.AcquireRange, Rising = false };
+                default:
+                    return new StepGate { Label = "-", Current = 0.0, Target = 0.0, Rising = false };
+            }
         }
 
         // Clamp a signed speed to +/- the user limit (0 = no limit).

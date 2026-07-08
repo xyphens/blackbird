@@ -56,6 +56,11 @@ namespace Blackbird.Docking
         public double RcsFuelPercent { get; private set; } = double.NaN;
         public DockingSteps DockingStep => _autopilot.CurrentStep;
         public string GuidanceStatus => bbState.DockingMode == DockingControlMode.Guidance ? _autopilot.status : "not running";
+        public double OrientationErrorDeg => _autopilot.OrientationErrorDeg;
+        public double AxialSepMeters => _autopilot.ZSep;
+        public double LateralSepMeters => _autopilot.LateralMeters;
+        public StepGate CurrentGate => _autopilot.CurrentGate;
+        public StepGate GateFor(DockingSteps step) => _autopilot.GateFor(step);
 
         public bool ResettingOrientation => _resetOrientation;
 

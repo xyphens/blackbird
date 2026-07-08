@@ -18,6 +18,12 @@ namespace Blackbird.Modules
 
         private DockingHandler _handler;
 
+        private static readonly DockingSteps[] _dockingStepDisplay =
+        {
+            DockingSteps.WrongSideBackingUp, DockingSteps.WrongSideLateral, DockingSteps.WrongSideSwitchSides,
+            DockingSteps.BackingUp, DockingSteps.MovingToStart, DockingSteps.Docking
+        };
+
         public void Init(DockingHandler handler, SharedState s)
         {
             _handler = handler;
@@ -49,6 +55,22 @@ namespace Blackbird.Modules
             GUILayout.Label($"Rel velocity: {FormatClosing(_handler.ClosingRateSigned)}");
             GUILayout.Label($"RCS fuel available: {FormatPercent(_handler.RcsFuelPercent)}");
             GUILayout.Label($"Guidance status: {_handler.GuidanceStatus}");
+
+            if (bbState.DockingMode == DockingControlMode.Guidance && _handler.DockingStep != DockingSteps.Off && _handler.DockingStep != DockingSteps.ClosingRange)
+            {
+                StepGate gate = _handler.CurrentGate;
+                double oe = _handler.OrientationErrorDeg;
+                GUILayout.Label($"  waiting on {gate.Label}: {gate.Current:F1} {(gate.Rising ? "→ > " : "→ < ")}{gate.Target:F1} m");
+                GUILayout.Label($"  axial {_handler.AxialSepMeters:F1} m   lateral {_handler.LateralSepMeters:F1} m   facing {(double.IsNaN(oe) ? "--" : oe.ToString("F1") + "°")} off");
+
+                // full step table: each step's gate against the current geometry; ▶ marks the active step.
+                foreach (DockingSteps s in _dockingStepDisplay)
+                {
+                    StepGate g = _handler.GateFor(s);
+                    GUILayout.Label($"    {(s == _handler.DockingStep ? "▶" : " ")} {s}: {g.Current:F1} {(g.Rising ? ">" : "<")} {g.Target:F1} {(g.Met ? "OK" : "")}");
+                }
+
+            }
 
             GUILayout.Space(8);
 
