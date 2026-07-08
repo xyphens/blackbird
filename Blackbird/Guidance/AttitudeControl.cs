@@ -228,6 +228,7 @@ namespace Blackbird.Guidance
 
                 double rollError = distance * Mathf.Rad2Deg;
 
+                // suppress roll while pointing error > LockRollErrorPadding (0.5 degrees) if lockRoll is enabled
                 if (lockRoll && rollError > LockRollErrorPadding)
                 {
                     targetOmega[1] = 0.0;

@@ -24,10 +24,6 @@ namespace Blackbird.Modules
         private static readonly int WindowId = "Blackbird.RendezvousComputer".GetHashCode();
         private Rect _windowRect = new Rect(950, 200, 360, 380);
 
-        // Above this, a single-rev intercept is almost certainly the wrong tool (too far / wrong phase).
-        // todo: remove - pointless warning (user can read dV)
-        private const double HighDeltaVWarnMetersPerSecond = 300.0;
-
         private string _faError;
 
         private bool _faWillDeorbit = false;
@@ -146,15 +142,7 @@ namespace Blackbird.Modules
             // Intercept plan preview (computed whenever idle/coast, before any method is chosen).
             if (_handler.HasInterceptPlan && bbState.InterceptPhase == InterceptPhase.Idle)
             {
-                
                 GUILayout.Label($"Plan: ΔV {bbState.InterceptSolution.DeltaVMagnitude:F1} m/s for {bbState.InterceptSolution.PredictedClosestApproach:F0} m encounter (arriving in {FormatTime(bbState.InterceptSolution.TimeOfFlight)})");
-
-                // A single-rev intercept across a big phase gap is legitimately huge (can even escape).
-                // Warn before the user commits — the cheap move from a close flyby is Match Velocity.
-                if (bbState.InterceptSolution.DeltaVMagnitude > HighDeltaVWarnMetersPerSecond)
-                {
-                    GUILayout.Label("  WARNING: very large ΔV - you are likely too far / wrong phase for a direct intercept.  Wait for a closer pass, or match velocity instead.");
-                }
             }
 
             bbState._interceptMethod = Helpers.Dropdown.SelectBox(bbState._interceptMethod, bbState.InterceptMethods, this);
@@ -269,19 +257,20 @@ namespace Blackbird.Modules
             // closest approach when the sub-box is checked (which greys the distance input — the CA is the mark).
             // FA ALWAYS consumes the distance as its don't-overburn margin, so the input also shows for FA.
             ParkingDistanceEnabled = GUILayout.Toggle(ParkingDistanceEnabled, " Match velocities at distance", GUILayout.Width(200));
-            if (ParkingDistanceEnabled || bbState.RendezvousMethod == RendezvousMethod.FinalApproach)
+            if (bbState.RendezvousMethod == RendezvousMethod.FinalApproach)
             {
-                GUILayout.BeginHorizontal();
-                GUI.enabled = !MatchAtClosestApproach;
-                GUILayout.Label("Park at distance:", GUILayout.Width(160));
-                ParkingDistance = GUILayout.TextField(ParkingDistance, GUILayout.Width(60));
-                GUILayout.Label("m");
-                GUI.enabled = true;
-                GUILayout.EndHorizontal();
-
-                // The CA trigger is an MV concept; keep the sub-box tied to the MV toggle, not FA.
                 if (ParkingDistanceEnabled)
+                {
                     MatchAtClosestApproach = GUILayout.Toggle(MatchAtClosestApproach, " Closest approach", GUILayout.Width(200));
+
+                    GUILayout.BeginHorizontal();
+                    GUI.enabled = !MatchAtClosestApproach;
+                    GUILayout.Label("Park at distance:", GUILayout.Width(160));
+                    ParkingDistance = GUILayout.TextField(ParkingDistance, GUILayout.Width(60));
+                    GUILayout.Label("m");
+                    GUI.enabled = true;
+                    GUILayout.EndHorizontal();
+                }
             }
 
             if (bbState.RendezvousMethod == RendezvousMethod.FinalApproach)

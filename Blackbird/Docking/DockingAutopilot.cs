@@ -7,32 +7,29 @@ using UnityEngine;
 
 namespace Blackbird.Docking
 {
-    // KSP-coupled docking autopilot (re-derived from MechJeb's MechJebModuleDockingAutopilot). It is the thin
-    // wrapper over the pure DockingSchedule: each tick it reads the live port geometry off the transforms,
-    // advances the schedule, and actuates — attitude via AttitudeControl, translation via RcsController.
-    //
-    // Standalone by design (no rendezvous-stage assumption): it reads the chaser's OWN selected target
-    // (vessel.targetObject — a docking port when the operator targets one, which is an ITargetable, NOT a
-    // Vessel), derives the target vessel/port transform from it, and runs the full back-up -> side-switch ->
-    // move-to-start -> dock sequence. The caller just feeds it the vessel + a fresh VesselState each tick.
     public class DockingAutopilot
     {
         // --- user-facing tunables --------------------------------------------------------------------
-        public double speedLimit = 1.0;       // cap on every commanded approach speed (m/s)
-        public double roll = 0.0;             // forced roll (deg) when forceRoll is set
-        public bool forceRoll = false;        // hold a specific roll about the docking axis
+        public double dockSpeedLimit = 1.0;       // cap on every maneuver
+
+        // approaching
+        public double approachSpeedLimitMs = 5.0; // cap on the "get closer" sub routine
+        public double approachLandingDistance = 150; // where we consider "close enough"
+
+        //public bool forceRoll = false;        // hold a specific roll about the docking axis
         public bool overrideStartDistance = false;
         public bool overrideTargetSize = false;
 
         private const double DockingCorridorRadius = 1.0;   // lateral tolerance to count as "on the axis"
 
-        // approaching
-        public double approachSpeedLimitMs = 5.0;
-        public double approachLandingDistance = 150;
-
         // --- derived sizes (refreshed each tick; bounding boxes captured once at Init) ----------------
-        private double safeDistance = 10.0; // what is this?
-        private double targetSize = 5.0; // what is this?
+
+        public bool OverrideStartDistance = false; // dufixme: not implemented
+        public double StartDistanceOverride = 0.0;
+
+        private double startDistance = 10.0; // docking AP will back up to this distance when enabled every time
+        private double targetSize = 5.0; // re-calculated unless overridden
+
         private double acquireRange = 0.25;
         private double vesselBoundingSize = 0.0;
         private Box3d vesselBoundingBox;
@@ -82,7 +79,6 @@ namespace Blackbird.Docking
 
         public StepGate GateFor(DockingSteps step) => DockingSchedule.Gate(step, Geom(), Config());
         public StepGate CurrentGate => GateFor(Step);
-
 
         // Start a docking run: the next OnFixedUpdate (Step == Starting) captures bounding boxes and picks
         // the entry step. RCS is forced on by the caller before VesselState is built so the thrust table is
@@ -134,7 +130,7 @@ namespace Blackbird.Docking
         // Actuation tick (call from OnFlyByWire). Plans this tick's approach, points at the port (or holds
         // attitude while backing up), and drives RCS translation to match the target velocity plus the
         // approach adjustment. RCS-only — no main engine.
-        public void Drive(FlightCtrlState state)
+        public void Drive(FlightCtrlState state, bool lockRoll)
         {
             if (state == null || v == null || vs == null || targetVessel == null) return;
             if (Step == DockingSteps.Off || Step == DockingSteps.Starting) return;
@@ -146,7 +142,7 @@ namespace Blackbird.Docking
             // Attitude: face the port along the docking axis, or hold current attitude while backing up.
             Vector3d facing = plan.Align ? zAxis : (Vector3d)v.ReferenceTransform.up;
             //attitude.DriveInertial(v, state, facing, forceRoll ? roll : 0.0);
-            attitude.DriveInertial(v, state, facing, forceRoll ? roll : 0.0, lockRoll: !forceRoll);
+            attitude.DriveInertial(v, state, facing, 0.0, lockRoll);
             state.mainThrottle = 0.0f;
 
             // Translate: command the target's (measured) velocity plus the approach adjustment; the RCS PID
@@ -156,6 +152,7 @@ namespace Blackbird.Docking
             rcs.Drive(state, vs, v);
         }
 
+        // only available/active when we don't have a docking port targeted
         private void GetToDockingRange(FlightCtrlState state)
         {
             Vector3d los = (Vector3d)targetObject.GetTransform().position - (Vector3d)v.ReferenceTransform.position;
@@ -171,14 +168,6 @@ namespace Blackbird.Docking
             if (remaining <= 0.0) {
                 rcs.SetTargetWorldVelocity(targetVel); // match velocity and await port selection
                 status = "In docking range - select a docking port to continue";
-                //ITargetable target = FlightGlobals.fetch != null ? FlightGlobals.fetch.VesselTarget : null;
-                //if (target == null || !(target is ModuleDockingNode targetNode))
-                //{
-                //    status = "In docking range - select a docking port to continue";
-                //} else
-                //{
-                //    status = "In docking range - ready to start docking";
-                //}
             } else
             {
                 double decel = Math.Max(0.01, AccelInDirection(-losDir));
@@ -226,7 +215,7 @@ namespace Blackbird.Docking
         private void RefreshSizes()
         {
             targetSize = targetBoundingBox.size.magnitude;
-            safeDistance = vesselBoundingSize + targetSize + 0.5;
+            startDistance = OverrideStartDistance ? StartDistanceOverride : vesselBoundingSize + targetSize + 0.5;
         }
 
         // Recompute the docking geometry from the live transforms: separation (chaser control-transform to
@@ -265,11 +254,11 @@ namespace Blackbird.Docking
         {
             return new DockingConfig
             {
-                SafeDistance = safeDistance,
+                StartDistance = startDistance,
                 TargetSize = targetSize,
                 AcquireRange = acquireRange,
                 DockingCorridorRadius = DockingCorridorRadius,
-                SpeedLimit = speedLimit,
+                SpeedLimit = dockSpeedLimit,
                 VesselBoundingSize = vesselBoundingSize
             };
         }

@@ -60,7 +60,7 @@ namespace Blackbird.Modules
             {
                 StepGate gate = _handler.CurrentGate;
                 double oe = _handler.OrientationErrorDeg;
-                GUILayout.Label($"  waiting on {gate.Label}: {gate.Current:F1} {(gate.Rising ? "→ > " : "→ < ")}{gate.Target:F1} m");
+                GUILayout.Label($"  waiting on {gate.Label}: {gate.Current:F1} m {(gate.Rising ? "→ > " : "→ < ")}{gate.Target:F1} m");
                 GUILayout.Label($"  axial {_handler.AxialSepMeters:F1} m   lateral {_handler.LateralSepMeters:F1} m   facing {(double.IsNaN(oe) ? "--" : oe.ToString("F1") + "°")} off");
 
                 // full step table: each step's gate against the current geometry; ▶ marks the active step.
@@ -69,7 +69,6 @@ namespace Blackbird.Modules
                     StepGate g = _handler.GateFor(s);
                     GUILayout.Label($"    {(s == _handler.DockingStep ? "▶" : " ")} {s}: {g.Current:F1} {(g.Rising ? ">" : "<")} {g.Target:F1} {(g.Met ? "OK" : "")}");
                 }
-
             }
 
             GUILayout.Space(8);
@@ -106,6 +105,10 @@ namespace Blackbird.Modules
             GUI.enabled = true;
             GUILayout.EndHorizontal();
 
+            GUILayout.Space(BtnW);
+
+            _handler.LockRoll = GUILayout.Toggle(_handler.LockRoll, " Lock Roll");
+
             GUI.DragWindow();
         }
 
@@ -114,8 +117,11 @@ namespace Blackbird.Modules
         // buttons are disabled while "keep pointed at target" is on; everything is disabled while guidance runs.
         private void DrawControlGrid()
         {
-            bool manualEnabled = bbState.DockingMode != DockingControlMode.Guidance;
-            bool noseEnabled = manualEnabled && !_handler.KeepPointed;
+            bool manualEnabled = bbState.DockingMode != DockingControlMode.Guidance 
+                                && !_handler.KeepPointed 
+                                && !_handler.AlignToPort 
+                                && !_handler.ResetOrientation;
+            bool canThrottle = bbState.DockingMode != DockingControlMode.Guidance;
 
             var translate = Vector3.zero;   // x = right, y = dorsal-up, z = nose-forward
             var rotate = Vector2.zero;      // x = pitch, y = yaw
@@ -124,11 +130,9 @@ namespace Blackbird.Modules
             // Row 1: [nose left] [slew up] [nose right]
             GUILayout.BeginHorizontal();
             GUILayout.Space(BtnW);
-            GUI.enabled = noseEnabled;
-            if (Held("Nose ◄")) rotate.y -= 1f;     // yaw left
             GUI.enabled = manualEnabled;
+            if (Held("Nose ◄")) rotate.y -= 1f;     // yaw left
             if (Held("Up")) translate.y += 1f;            // slew up
-            GUI.enabled = noseEnabled;
             if (Held("Nose ►")) rotate.y += 1f;      // yaw right
             GUI.enabled = true;
             GUILayout.EndHorizontal();
@@ -136,33 +140,53 @@ namespace Blackbird.Modules
             // Row 2: [slew left] [throttle fwd] [kill] [throttle back] [slew right]
             GUILayout.BeginHorizontal();
             GUI.enabled = manualEnabled;
-            if (Held("Left")) translate.x -= 1f;          // slew left
-            if (Held("+")) translate.z += 1f;             // throttle forward (toward port)
-            if (Held("KILL")) kill = true;                // null velocity + roll
-            if (Held("−")) translate.z -= 1f;        // throttle back
-            if (Held("Right")) translate.x += 1f;         // slew right
+            if (Held("Left")) translate.x -= 1f;           // slew left
+            GUI.enabled = canThrottle;
+            if (Held("+")) translate.z += 1f;              // throttle forward (toward port)
+            GUI.enabled = true;
+            if (Held("KILL")) kill = true;                 // null velocity + roll; always enabled
+            GUI.enabled = canThrottle;
+            if (Held("−")) translate.z -= 1f;              // throttle back
+            GUI.enabled = manualEnabled;
+            if (Held("Right")) translate.x += 1f;          // slew right
             GUI.enabled = true;
             GUILayout.EndHorizontal();
 
             // Row 3: [nose up] [slew down] [nose down]
             GUILayout.BeginHorizontal();
             GUILayout.Space(BtnW);
-            GUI.enabled = noseEnabled;
-            if (Held("Nose ▲")) rotate.x += 1f;      // pitch up
             GUI.enabled = manualEnabled;
+            if (Held("Nose ▲")) rotate.x += 1f;      // pitch up
             if (Held("Down")) translate.y -= 1f;          // slew down
-            GUI.enabled = noseEnabled;
             if (Held("Nose ▼")) rotate.x -= 1f;      // pitch down
             GUI.enabled = true;
             GUILayout.EndHorizontal();
 
-            _handler.KeepPointed = GUILayout.Toggle(_handler.KeepPointed, " Keep pointed at target");
+            GUILayout.Space(8);
 
-            // Reset Orientation: roll/point the craft to a known attitude ("real up") so the craft-local
-            // translation buttons become predictable. Latches until aligned; click again to cancel.
+            string assistStr = "Inactive";
+
+            if (_handler.KeepPointed)
+            {
+                assistStr = "track heading";
+            } else if (_handler.AlignToPort)
+            {
+                assistStr = "aligning ports";
+            } else if (_handler.ResetOrientation)
+            {
+                assistStr = "re-orienting";
+            }
+
+            GUILayout.Label($"Dock assist: {assistStr}");
+
+            GUILayout.Space(4);
+
+            // only one of these can be enabled at a time
             GUI.enabled = manualEnabled;
-            if (GUILayout.Button(_handler.ResettingOrientation ? "Resetting orientation..." : "Reset Orientation"))
-                _handler.ResetOrientation();
+            _handler.KeepPointed = GUILayout.Toggle(_handler.KeepPointed, " Keep pointed at target");
+            _handler.AlignToPort = GUILayout.Toggle(_handler.AlignToPort, " Align with docking port");
+            _handler.ResetOrientation = GUILayout.Toggle(_handler.ResetOrientation, " Reset Orientation");
+
             GUI.enabled = true;
 
             // Hand the combined held-button state to the handler (only meaningful in manual modes).

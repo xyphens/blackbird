@@ -7,14 +7,7 @@ using UnityEngine;
 
 namespace Blackbird.Docking
 {
-    // Standalone docking module handler: owns the docking autopilot AND the manual RCS fine-tuning controls,
-    // sharing one RcsController + AttitudeControl between them. Ticked from BlackBird (Update + OnFlyByWire),
-    // independent of the rendezvous handler. Three control modes:
-    //   Neutral  - idle; manual translation available, no autopilot. (No guidance committed yet.)
-    //   Manual   - operator drives via the panel's translation/rotation buttons (the operator "assumed control").
-    //   Guidance - the docking autopilot flies it.
-    // Manual translation reuses the proven RcsController by commanding a small relative-velocity nudge in the
-    // craft's local axes, so we never re-derive FlightCtrlState translation signs.
+    // owns docking autopilot and manual RCS controls
     public sealed class DockingHandler
     {
         private readonly RcsController _rcs = new RcsController();
@@ -28,15 +21,39 @@ namespace Blackbird.Docking
             _autopilot = new DockingAutopilot(_rcs, _attitude);
         }
 
+        private bool _keepPointed;
+        private bool _alignToPort;
+        // latched one-shot: roll/point to a known attitude
+        private bool _resetOrientation;
+        private bool _lockRoll;
 
-        public bool KeepPointed = false;
+        public bool KeepPointed
+        {
+            get => _keepPointed;
+            set { _keepPointed = value; if (value) _alignToPort = false; }
+        }
+
+        public bool AlignToPort
+        {
+            get => _alignToPort;
+            set { _alignToPort = value; if (value) _keepPointed = false; }
+        }
+        public bool ResetOrientation
+        {
+            get => _resetOrientation;
+            set { _resetOrientation = value; if (value) _resetOrientation = false; }
+        }
+        public bool LockRoll
+        {
+            get => _lockRoll;
+            set { _lockRoll = value; if (value) _lockRoll = false; }
+        }
 
         // --- manual input, set by the UI each draw while a button is held; consumed (with a freshness window
         // so it can't stick if the GUI stops drawing) on the fly-by-wire pass ----------------------------
         private Vector3 _manualTranslate;   // craft-local: x = right, y = dorsal-up, z = nose-forward, each -1..1
         private Vector2 _manualRotate;      // x = pitch, y = yaw, each -1..1
         private bool _manualKill;
-        private bool _resetOrientation;     // latched one-shot: roll/point to a known attitude so the craft frame is predictable
         private double _manualInputUt = double.NegativeInfinity;
         private const double ManualInputFreshSeconds = 0.2;
         private const double ManualTranslateError = 5.0;    // velocity-error magnitude per held button; large to saturate RCS
@@ -62,8 +79,6 @@ namespace Blackbird.Docking
         public StepGate CurrentGate => _autopilot.CurrentGate;
         public StepGate GateFor(DockingSteps step) => _autopilot.GateFor(step);
 
-        public bool ResettingOrientation => _resetOrientation;
-
         // UI gates (the panel mirrors the enable/disable logic; these just enact the transitions).
         public void RunDockingGuidance() { 
             bbState.DockingMode = DockingControlMode.Guidance; 
@@ -87,10 +102,6 @@ namespace Blackbird.Docking
             bbState.DockingEnabled = false;
             _autopilot.Disengage();
         }
-
-        // One-shot orientation reset: point at the port (if targeted) and roll to "real up" so the craft's
-        // local translation axes become predictable. Latched; auto-clears when aligned. Click again to cancel.
-        public void ResetOrientation() { _resetOrientation = !_resetOrientation; }
 
         // Combined held-button state from the panel (one call per draw).
         public void SetManualInput(Vector3 translate, Vector2 rotate, bool kill)
@@ -139,6 +150,7 @@ namespace Blackbird.Docking
 
             bool actuating = bbState.DockingMode == DockingControlMode.Guidance
                              || (KeepPointed && HasTarget)
+                             || (AlignToPort && HasTarget)
                              || _resetOrientation
                              || ManualInputFresh();
             if (!actuating)
@@ -171,7 +183,7 @@ namespace Blackbird.Docking
 
             if (bbState.DockingMode == DockingControlMode.Guidance)
             {
-                _autopilot.Drive(state);
+                _autopilot.Drive(state, LockRoll);
                 return;
             }
 
@@ -200,15 +212,25 @@ namespace Blackbird.Docking
                 if (facing.sqrMagnitude > 0.0)
                 {
                     // claude claims the "90.0" will only work if used near equator, otherwise i need to do some kind of vector transform
-                    _attitude.DriveInertial(vessel, state, facing, 90.0);
+                    _attitude.DriveInertial(vessel, state, facing, 90.0, LockRoll);
                     if (OrientationAligned(vessel, facing)) _resetOrientation = false;
                 }
                 else _resetOrientation = false;
             }
+            else if (AlignToPort && HasTarget)
+            {
+                // align nose to docking port
+                Vector3d facing = PointAlongDockingAxis();
+                if (facing.sqrMagnitude > 0.0) _attitude.DriveInertial(vessel, state, facing, 0.0, LockRoll);
+
+                // lateral alignment on docking port's axis
+                if (_vs != null && !(_manualTranslate.sqrMagnitude > 0.0 && ManualInputFresh())) DriveLateralCenter(state, vessel);
+            }
             else if (KeepPointed && HasTarget)
             {
                 Vector3d facing = PointAtTargetDirection();
-                if (facing.sqrMagnitude > 0.0) _attitude.DriveInertial(vessel, state, facing, 90.0);
+                // had a 90.0 rollDeg lock here but not sure what that was for
+                if (facing.sqrMagnitude > 0.0) _attitude.DriveInertial(vessel, state, facing, 0.0, LockRoll);
             }
 
             if (!ManualInputFresh()) return;   // no buttons held -> release (don't burn RCS idling)
@@ -257,6 +279,41 @@ namespace Blackbird.Docking
             Vector3d los = (Vector3d)tt.position - (Vector3d)_vessel.ReferenceTransform.position;
             return los.sqrMagnitude > 1e-9 ? los.normalized : Vector3d.zero;
         }
+
+        private Vector3d PointAlongDockingAxis()
+        {
+            if (!HasTarget || !(_targetObject is ModuleDockingNode)) return Vector3d.zero;
+            Transform tt = _targetObject.GetTransform();
+            return tt != null ? (-(Vector3d)tt.forward).normalized : Vector3d.zero;
+        }
+
+        private void DriveLateralCenter(FlightCtrlState state, Vessel vessel)
+        {
+            if (!HasTarget || !(_targetObject is ModuleDockingNode) || vessel.ReferenceTransform == null) return;
+
+            Transform tt = _targetObject.GetTransform();
+            if (tt == null) return;
+
+            double speedLimit = 0.5;
+            double closeLateralTime = 5.0;
+
+            Vector3d axis = ((Vector3d)tt.forward).normalized;
+            Vector3d sep = (Vector3d)vessel.ReferenceTransform.position - (Vector3d)tt.position; // port
+            Vector3d lateral = Vector3d.Exclude(axis, sep); // off-centerline
+
+            Vector3d correction = Vector3d.zero;
+            double lateralMag = lateral.magnitude;
+            if (lateralMag > 1e-3)
+            {
+                double speed = Math.Min(speedLimit, lateralMag / closeLateralTime);
+                correction = -lateral.normalized * speed; // move towards centerline
+            }
+
+            Vector3d targetVel = TrajectoryProvider.GetVelocity(_targetVessel);
+            _rcs.SetTargetWorldVelocity(targetVel + correction);
+            _rcs.Drive(state, _vs, vessel);
+        }
+
         private Vector3d PointAtWorldDirection()
         {
             if (_vessel == null || _vessel.mainBody == null) return Vector3d.zero;

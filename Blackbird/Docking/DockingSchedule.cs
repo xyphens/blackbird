@@ -43,7 +43,7 @@ namespace Blackbird.Docking
     // the wrapper); kept pure so the harness can drive the schedule with hand-set values.
     public struct DockingConfig
     {
-        public double SafeDistance;            // clearance distance for backing-up / side-switch (bbox-derived)
+        public double StartDistance;            // clearance distance for backing-up / side-switch (bbox-derived)
         public double TargetSize;              // target bounding size; start distance for the final approach
         public double AcquireRange;            // port magnetic-capture range; closing inside this = docked
         public double DockingCorridorRadius;   // lateral tolerance to count as "on the axis"
@@ -82,9 +82,9 @@ namespace Blackbird.Docking
             switch (step)
             {
                 case DockingSteps.WrongSideBackingUp:
-                    return new StepGate { Label = "back-off clearance", Current = -g.ZSep, Target = c.SafeDistance, Rising = true };
+                    return new StepGate { Label = "back-off clearance", Current = -g.ZSep, Target = c.StartDistance, Rising = true };
                 case DockingSteps.WrongSideLateral:
-                    return new StepGate { Label = "lateral clearance", Current = g.LateralMag, Target = c.SafeDistance, Rising = true };
+                    return new StepGate { Label = "lateral clearance", Current = g.LateralMag, Target = c.StartDistance, Rising = true };
                 case DockingSteps.WrongSideSwitchSides:
                     return new StepGate { Label = "cross to front", Current = g.ZSep, Target = 0.0, Rising = true };
                 case DockingSteps.BackingUp:
@@ -140,9 +140,9 @@ namespace Blackbird.Docking
                 case DockingSteps.Starting:
                     return PickEntryStep(g, c);
                 case DockingSteps.WrongSideBackingUp:
-                    return -g.ZSep > c.SafeDistance ? DockingSteps.WrongSideLateral : step;
+                    return -g.ZSep > c.StartDistance ? DockingSteps.WrongSideLateral : step;
                 case DockingSteps.WrongSideLateral:
-                    return g.LateralMag > c.SafeDistance ? DockingSteps.WrongSideSwitchSides : step;
+                    return g.LateralMag > c.StartDistance ? DockingSteps.WrongSideSwitchSides : step;
                 case DockingSteps.WrongSideSwitchSides:
                     return g.ZSep > 0.0 ? DockingSteps.BackingUp : step;
                 case DockingSteps.BackingUp:
@@ -154,7 +154,7 @@ namespace Blackbird.Docking
                     if (g.ZSep < c.AcquireRange) return DockingSteps.Off;   // close enough to latch
                     if (g.LateralMag > c.DockingCorridorRadius)
                     {
-                        // Drifted out of the corridor: back up / switch sides if behind, re-centre if barely
+                        // Drifted out of the corridor: back up / switch sides if behind, re-center if barely
                         // in front (MechJeb's zSep<1 guard), else keep closing.
                         if (g.ZSep < 0.0) return DockingSteps.WrongSideBackingUp;
                         if (g.ZSep < 1.0) return DockingSteps.MovingToStart;
@@ -178,36 +178,36 @@ namespace Blackbird.Docking
             switch (step)
             {
                 case DockingSteps.WrongSideBackingUp:
-                    z = MaxSpeed(c.SafeDistance + g.ZSep + 2.0, accelInDir(-g.ZAxis), c.SpeedLimit);
-                    if (g.LateralMag < c.SafeDistance) lat *= -1;
-                    else if (g.LateralMag < c.SafeDistance * 2.0) lat = 0;
+                    z = MaxSpeed(c.StartDistance + g.ZSep + 2.0, accelInDir(-g.ZAxis), c.SpeedLimit);
+                    if (g.LateralMag < c.StartDistance) lat *= -1;
+                    else if (g.LateralMag < c.StartDistance * 2.0) lat = 0;
                     align = false;
                     status = string.Format("Backing up (wrong side) at {0:F2} m/s, lateral {1:F2} m/s", z, lat);
                     break;
 
                 case DockingSteps.WrongSideLateral:
                     z = 0;
-                    lat = -MaxSpeed(c.SafeDistance - g.LateralMag + 2.0, accelInDir(-g.LateralDir), c.SpeedLimit);
+                    lat = -MaxSpeed(c.StartDistance - g.LateralMag + 2.0, accelInDir(-g.LateralDir), c.SpeedLimit);
                     status = string.Format("Moving off the docking axis at {0:F2} m/s", lat);
                     break;
 
                 case DockingSteps.WrongSideSwitchSides:
                     z = -MaxSpeed(-g.ZSep + c.TargetSize, accelInDir(-g.ZAxis), c.SpeedLimit);
-                    if (g.LateralMag < c.SafeDistance) lat *= -1;
-                    else if (g.LateralMag < c.SafeDistance * 2.0) lat = 0;
+                    if (g.LateralMag < c.StartDistance) lat *= -1;
+                    else if (g.LateralMag < c.StartDistance * 2.0) lat = 0;
                     status = string.Format("Switching to the correct side at {0:F2} m/s, lateral {1:F2} m/s", z, lat);
                     break;
 
                 case DockingSteps.BackingUp:
-                    if (g.LateralMag < c.SafeDistance) lat *= -1;
-                    else if (g.LateralMag < c.SafeDistance * 2.0) lat = 0;
+                    if (g.LateralMag < c.StartDistance) lat *= -1;
+                    else if (g.LateralMag < c.StartDistance * 2.0) lat = 0;
                     z = -MaxSpeed(1.0 + c.TargetSize - g.ZSep, accelInDir(-g.ZAxis), c.SpeedLimit);
                     align = false;
                     status = string.Format("Backing up at {0:F2} m/s", z);
                     break;
 
                 case DockingSteps.MovingToStart:
-                    if (g.ZSep < c.SafeDistance) z *= -1;
+                    if (g.ZSep < c.StartDistance) z *= -1;
                     else z = 0;
                     status = string.Format("Aligning docking ports ({0:F2} m/s)", z);
                     break;
