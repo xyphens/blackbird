@@ -29,23 +29,23 @@ namespace Blackbird.Docking
         public bool KeepPointed
         {
             get => _keepPointed;
-            set { _keepPointed = value; if (value) _alignToPort = false; }
+            set { _keepPointed = value; if (value) { _alignToPort = false; _resetOrientation = false; } UpdateAssistClaim(); }
         }
 
         public bool AlignToPort
         {
             get => _alignToPort;
-            set { _alignToPort = value; if (value) _keepPointed = false; }
+            set { _alignToPort = value; if (value) { _keepPointed = false; _resetOrientation = false; } UpdateAssistClaim(); }
         }
         public bool ResetOrientation
         {
             get => _resetOrientation;
-            set { _resetOrientation = value; if (value) _resetOrientation = false; }
+            set { _resetOrientation = value; if (value) { _keepPointed = false; _alignToPort = false; } UpdateAssistClaim(); }
         }
         public bool LockRoll
         {
             get => _lockRoll;
-            set { _lockRoll = value; if (value) _lockRoll = false; }
+            set { _lockRoll = value; }
         }
 
         // --- manual input, set by the UI each draw while a button is held; consumed (with a freshness window
@@ -81,6 +81,9 @@ namespace Blackbird.Docking
             bbState.DockingMode = DockingControlMode.Guidance; 
             bbState.DockingEnabled = true;
             bbState.ActiveModule = BlackbirdModule.Docking;
+            AlignToPort = false;
+            KeepPointed = false;
+            ResetOrientation = false;
             _autopilot.Engage(bbState); 
         }
         // Take manual control: claim the authority (Docking) so rendezvous/ascent self-stop, switch to Manual,
@@ -89,6 +92,9 @@ namespace Blackbird.Docking
             bbState.ActiveModule = BlackbirdModule.Docking;
             bbState.DockingMode = DockingControlMode.Manual;
             bbState.DockingEnabled = true;
+            AlignToPort = false;
+            KeepPointed = false;
+            ResetOrientation = false;
             _autopilot.Disengage();
         }
 
@@ -98,6 +104,21 @@ namespace Blackbird.Docking
             bbState.DockingMode = DockingControlMode.Off;
             bbState.DockingEnabled = false;
             _autopilot.Disengage();
+        }
+
+        private void UpdateAssistClaim()
+        {
+            bool wantAssist = _alignToPort || _keepPointed || _resetOrientation;
+            if (wantAssist && bbState.CanClaimControl(BlackbirdModule.Docking))
+            {
+                bbState.ActiveModule = BlackbirdModule.Docking;
+                bbState.DockingMode = DockingControlMode.Manual;
+            }
+            else if (!wantAssist && bbState.DockingMode != DockingControlMode.Guidance)
+            {
+                bbState.ActiveModule = BlackbirdModule.None;
+                bbState.DockingMode = DockingControlMode.Off;
+            }
         }
 
         // Combined held-button state from the panel (one call per draw).

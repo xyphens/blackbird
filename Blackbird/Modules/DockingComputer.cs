@@ -94,11 +94,12 @@ namespace Blackbird.Modules
             GUILayout.Space(6);
 
             // --- autopilot toggle buttons (see the state logic in the header of DockingHandler) ---
-            bool alreadyRunning = bbState.DockingMode == DockingControlMode.Guidance;
+            bool guidanceRunning = bbState.DockingMode == DockingControlMode.Guidance;
 
-            bool canRun = bbState.HaveTarget && !alreadyRunning && bbState.CanClaimControl(BlackbirdModule.Docking);
+            // can use helpers if we have a target, aren't in guidance mode and Docking module is active
+            bool canRun = bbState.HaveTarget && !guidanceRunning && bbState.CanClaimControl(BlackbirdModule.Docking);
 
-            if (!canRun && !alreadyRunning)
+            if (!canRun && !guidanceRunning)
             {
                 string cantRunReason = "unavailable";
                 if (!bbState.HaveTarget)
@@ -115,15 +116,12 @@ namespace Blackbird.Modules
             GUI.enabled = canRun;
             if (GUILayout.Button("Run Docking Guidance", GUILayout.Height(30))) _handler.RunDockingGuidance();
             // allow canceling/stopping if docking is enabled at all
-            GUI.enabled = bbState.DockingEnabled == true;
+            // this has been extremely frustrating, so im just going to keep these buttons enabled forever
+            //GUI.enabled = bbState.DockingEnabled == true;
             if (GUILayout.Button("Stop Docking Guidance", GUILayout.Height(30))) _handler.StopDockingGuidance();
             if (GUILayout.Button("Assume Control", GUILayout.Height(30))) _handler.AssumeControl();
             GUI.enabled = true;
             GUILayout.EndHorizontal();
-
-            GUILayout.Space(BtnW);
-
-            _handler.LockRoll = GUILayout.Toggle(_handler.LockRoll, " Lock Roll");
 
             GUI.DragWindow();
         }
@@ -202,8 +200,9 @@ namespace Blackbird.Modules
             _handler.KeepPointed = GUILayout.Toggle(_handler.KeepPointed, " Keep pointed at target");
             _handler.AlignToPort = GUILayout.Toggle(_handler.AlignToPort, " Align with docking port");
             _handler.ResetOrientation = GUILayout.Toggle(_handler.ResetOrientation, " Reset Orientation");
-
+            
             GUI.enabled = true;
+            _handler.LockRoll = GUILayout.Toggle(_handler.LockRoll, " Lock Roll");
 
             // Hand the combined held-button state to the handler (only meaningful in manual modes).
             if (manualEnabled) _handler.SetManualInput(translate, rotate, kill);

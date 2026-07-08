@@ -1980,7 +1980,7 @@ namespace Blackbird.RendezvousHarness
 
             DockingConfig c = new DockingConfig
             {
-                SafeDistance = 20.0, TargetSize = 5.0, AcquireRange = 0.3,
+                StartDistance = 20.0, TargetSize = 5.0, AcquireRange = 0.3,
                 DockingCorridorRadius = 1.0, SpeedLimit = 1.0, VesselBoundingSize = 4.0
             };
             Vector3d axis = new Vector3d(1, 0, 0);

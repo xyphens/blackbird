@@ -659,7 +659,7 @@ namespace Blackbird.PsgHarness
 
                 J2Propagator.RadiusExtremes(r, v, EarthMu, EarthJ2, EarthRefRadius, pole, 7000.0, 10.0, out double minR, out double maxR);
                 double band = PoweredAscentGuidance.TerminalShapeBandMeters(EarthJ2, EarthRefRadius, rPe);
-                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, targetPeRadius, band);
+                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, band);
 
                 bool oldGateWouldCut = energy >= targetEnergy && 0.5 * (minR + maxR) >= targetRadius;
                 bool ok = cut == PoweredAscentGuidance.TerminalCutDecision.BlockedOnShape && oldGateWouldCut;
@@ -677,7 +677,7 @@ namespace Blackbird.PsgHarness
 
                 J2Propagator.RadiusExtremes(r, v, EarthMu, EarthJ2, EarthRefRadius, pole, 7000.0, 10.0, out double minR, out double maxR);
                 double band = PoweredAscentGuidance.TerminalShapeBandMeters(EarthJ2, EarthRefRadius, R);
-                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, targetPeRadius, band);
+                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, band);
 
                 bool ok = cut == PoweredAscentGuidance.TerminalCutDecision.Complete;
                 pass &= ok;
@@ -695,7 +695,7 @@ namespace Blackbird.PsgHarness
 
                 J2Propagator.RadiusExtremes(r, v, KerbinMu, 0.0, KerbinRadius, pole, 7000.0, 10.0, out double minR, out double maxR);
                 double band = PoweredAscentGuidance.TerminalShapeBandMeters(0.0, KerbinRadius, rPe);
-                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, targetPeRadius, band);
+                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, band);
 
                 bool ok = cut == PoweredAscentGuidance.TerminalCutDecision.Complete && band == 5000.0;
                 pass &= ok;
@@ -713,7 +713,7 @@ namespace Blackbird.PsgHarness
 
                 J2Propagator.RadiusExtremes(r, v, KerbinMu, 0.0, KerbinRadius, pole, 7000.0, 10.0, out double minR, out double maxR);
                 double band = PoweredAscentGuidance.TerminalShapeBandMeters(0.0, KerbinRadius, rPe);
-                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, targetPeRadius, band);
+                var cut = PoweredAscentGuidance.DecideTerminalCut(energy, targetEnergy, minR, maxR, targetRadius, targetPeRadius, band);
 
                 bool ok = cut == PoweredAscentGuidance.TerminalCutDecision.BlockedOnShape;
                 pass &= ok;
@@ -1086,7 +1086,7 @@ namespace Blackbird.PsgHarness
                         J2Propagator.RadiusExtremes(r, v, EarthMu, 0.0, EarthRefRadius, pole, 6000.0, 20.0, out double minR, out double maxR);
                         double band = PoweredAscentGuidance.TerminalShapeBandMeters(0.0, EarthRefRadius, r.magnitude);
                         var cut = PoweredAscentGuidance.DecideTerminalCut(
-                            energy, current.TerminalSpecificEnergy, minR, maxR, targetRadius, targetRadius, targetRadius, band);
+                            energy, current.TerminalSpecificEnergy, minR, maxR, targetRadius, targetRadius, band);
 
                         if (cut == PoweredAscentGuidance.TerminalCutDecision.Complete)
                         {
