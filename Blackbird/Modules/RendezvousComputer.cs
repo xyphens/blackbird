@@ -215,7 +215,7 @@ namespace Blackbird.Modules
                 double dtToIgnition = ignitionUt - Planetarium.GetUniversalTime();
 
                 GUI.enabled = (bbState.InterceptPhase != InterceptPhase.Executing || _handler.CoastingToIgnition) && dtToIgnition > 10.0;
-                if (GUILayout.Button($"Warp to transfer ignition ({FormatTime(dtToIgnition)})")) _handler.WarpToIgnition(ignitionUt);
+                if (GUILayout.Button($"Warp to transfer ignition ({FormatTime(dtToIgnition)})")) _handler.WarpToIgnition(ignitionUt, _warpLead);
                 GUI.enabled = true;
             }
             else
@@ -226,13 +226,13 @@ namespace Blackbird.Modules
                               && MathHelpers.IsFinite(_handler.LiveTimeToClosestApproachSeconds)
                               && _handler.LiveTimeToClosestApproachSeconds > 10.0;
 
-                if (GUILayout.Button("Warp to Next Approach")) _handler.WarpToApproach(deepest: false);
+                if (GUILayout.Button("Warp to Next Approach")) _handler.WarpToApproach(false, _warpLead);
 
                 GUI.enabled = bbState.InterceptPhase != InterceptPhase.Executing
                               && MathHelpers.IsFinite(_handler.LiveTimeToDeepestApproachSeconds)
                               && _handler.LiveDeepestPassIndex > 0
                               && _handler.LiveTimeToDeepestApproachSeconds > 10.0;
-                if (GUILayout.Button("Best Approach (24 hr)")) _handler.WarpToApproach(deepest: true);
+                if (GUILayout.Button("Best Approach (24 hr)")) _handler.WarpToApproach(true, _warpLead);
                 GUILayout.EndHorizontal();
 
                 GUI.enabled = true;

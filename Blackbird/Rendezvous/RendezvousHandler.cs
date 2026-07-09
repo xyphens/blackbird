@@ -76,7 +76,10 @@ namespace Blackbird.Rendezvous
         private const double WarpLeadMaxSeconds = 300.0;   // cap, so a huge slew estimate can't strand the warp
         private const double OrientPaddingSeconds = 3.0;   // safety margin on top of the estimated slew + dwell
         private double _warpTargetUt;
-        private double _warpLeadSeconds = WarpLeadMinSeconds;   // lead actually used for the active warp
+        // Lead actually used for the active warp = max(user's WarpLeadInputSeconds, computed auto). Derived, not
+        // the raw input: WarpLeadInputSeconds stays the pure UI value; this is recomputed per tick for a CA warp
+        // (so a stale spike can't latch it) and fixed at engage for a Hohmann ignition warp.
+        private double _effectiveWarpLead = WarpLeadMinSeconds;
         private bool _warpingToCa;                              // CA warp (re-targeted live) vs Hohmann ignition warp
         private bool _warpToDeepest;                            // which live event feeds the CA-warp retarget
         public bool Warping { get; private set; }
@@ -218,7 +221,7 @@ namespace Blackbird.Rendezvous
         // the moment a burn starts. deepest=true targets the deepest pass in the horizon; the choice is
         // remembered so the in-warp retarget follows the SAME event (the old retarget always chased the next
         // pass, which silently redirected a deepest-pass warp). No-op without a CA estimate.
-        public void WarpToApproach(bool deepest = false)
+        public void WarpToApproach(bool deepest, double warpLead)
         {
             if (bbState.InterceptPhase == InterceptPhase.Executing) return;
             double lead = ComputeWarpLeadSeconds();
@@ -228,8 +231,7 @@ namespace Blackbird.Rendezvous
                             : LiveTimeToClosestApproachSeconds;
 
             if (!MathHelpers.IsFinite(timeToCa) || timeToCa <= lead) return;
-
-            _warpLeadSeconds = lead;
+            _effectiveWarpLead = Math.Max(warpLead, lead);   // greater of user input and computed; input field left pure
             _warpTargetUt = Planetarium.GetUniversalTime() + timeToCa;
             _warpingToCa = true;
             Warping = true;
@@ -237,15 +239,14 @@ namespace Blackbird.Rendezvous
 
         // Warp to a planned transfer ignition UT (Hohmann departs in the future, not at the live CA),
         // stopping a lead short so the craft can orient; the coast-to-ignition gate fires the burn at ignition.
-        public void WarpToIgnition(double ignitionUt)
+        public void WarpToIgnition(double ignitionUt, double warpLead)
         {
             if (bbState.InterceptPhase == InterceptPhase.Executing && !CoastingToIgnition) return;
 
             double dt = ignitionUt - Planetarium.GetUniversalTime();
             double lead = ComputeIgnitionWarpLeadSeconds();
             if (!MathHelpers.IsFinite(dt) || dt <= lead) return;
-
-            _warpLeadSeconds = lead;
+            _effectiveWarpLead = Math.Max(warpLead, lead);   // fixed at engage for the Hohmann ignition warp
             _warpTargetUt = ignitionUt;
             _warpingToCa = false;
             Warping = true;
@@ -355,7 +356,9 @@ namespace Blackbird.Rendezvous
                 if (_warpingToCa && MathHelpers.IsFinite(liveTimeToEvent))
                 {
                     _warpTargetUt = now + liveTimeToEvent;
-                    _warpLeadSeconds = ComputeWarpLeadSeconds();
+                    // Refresh the effective lead each tick from the live inputs (ComputeWarpLeadSeconds already
+                    // floors on the user's WarpLeadInputSeconds); recomputed fresh, so a stale spike can't latch.
+                    _effectiveWarpLead = ComputeWarpLeadSeconds();
                 }
 
                 double secondsToWarpTarget = _warpTargetUt - now;
@@ -363,7 +366,7 @@ namespace Blackbird.Rendezvous
                 // Stop on a burn or at the lead; let the warp run through the Hohmann coast-to-ignition
                 // (Executing but not burning) toward the ignition window.
                 bool burning = bbState.InterceptPhase == InterceptPhase.Executing && !CoastingToIgnition;
-                if (burning || secondsToWarpTarget <= _warpLeadSeconds)
+                if (burning || secondsToWarpTarget <= _effectiveWarpLead)
                     StopWarp();
                 else
                     warp.BetterWarpToUt(_warpTargetUt, active);
