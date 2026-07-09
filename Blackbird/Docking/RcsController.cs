@@ -29,7 +29,7 @@ namespace Blackbird.Docking
 
         private TranslationTypes TranslationType;
 
-        private readonly bool efficientTranslation = false; // conserve fuel, should be an input; was FALSE before
+        private bool efficientTranslation = false; // conserve fuel, should be an input; was FALSE before
         private readonly double minRcsTranslationMagnitude = 0.05; // don't use RCS if required thrust is below this
         // Controller time constant (MechJeb's "Tf"): the single knob the PID gains are derived from.
         // MUST default to 1.0 (MechJeb's default) — SetParameters floors it at 0.02, so a 0 default would
@@ -93,10 +93,12 @@ namespace Blackbird.Docking
             }
         }
 
-        public void Drive(FlightCtrlState ctrlState, VesselState vs, Vessel v, SharedState s)
+        public void Drive(FlightCtrlState ctrlState, VesselState vs, Vessel v, SharedState s, bool et)
         {
             SetParameters();
             State = vs;
+
+            efficientTranslation = et;
 
             switch (TranslationType)
             {

@@ -25,6 +25,7 @@ namespace Blackbird.Docking
         // latched one-shot: roll/point to a known attitude
         private bool _resetOrientation;
         private bool _lockRoll;
+        private bool _efficientTranslation;
 
         public bool KeepPointed
         {
@@ -46,6 +47,11 @@ namespace Blackbird.Docking
         {
             get => _lockRoll;
             set { _lockRoll = value; }
+        }
+        public bool EfficientTranslation
+        {
+            get => _efficientTranslation;
+            set { _efficientTranslation = value; }
         }
 
         private const double CenterToleranceMeters = 0.5;   // on-centerline tolerance for dock-readiness
@@ -89,7 +95,7 @@ namespace Blackbird.Docking
             AlignToPort = false;
             KeepPointed = false;
             ResetOrientation = false;
-            _autopilot.Engage(bbState); 
+            _autopilot.Engage(bbState, EfficientTranslation); 
         }
         // Take manual control: claim the authority (Docking) so rendezvous/ascent self-stop, switch to Manual,
         // and stop the docking autopilot. Stock control still passes through when no panel button is held.
@@ -212,7 +218,7 @@ namespace Blackbird.Docking
                 {
                     Vector3d baseVel = bbState.HaveTarget ? TrajectoryProvider.GetVelocity(bbState.TargetVessel) : _vs.OrbitalVelocity;
                     _rcs.SetTargetWorldVelocity(baseVel);
-                    _rcs.Drive(state, _vs, vessel, bbState);
+                    _rcs.Drive(state, _vs, vessel, bbState, _efficientTranslation);
                 }
 
                 _attitude.DriveHoldAttitude(vessel, state);
@@ -275,7 +281,7 @@ namespace Blackbird.Docking
                                + -(Vector3d)rt.forward * _manualTranslate.y     // dorsal up (+) / down (-)
                                + (Vector3d)rt.up * _manualTranslate.z;          // nose-forward (+) / back (-)
                 _rcs.SetWorldVelocityError(dir * ManualTranslateError);
-                _rcs.Drive(state, _vs, vessel, bbState);
+                _rcs.Drive(state, _vs, vessel, bbState, _efficientTranslation);
             }
 
             // Manual rotation (only when nothing else is driving the attitude): bias the nose. Signs verify
@@ -354,7 +360,7 @@ namespace Blackbird.Docking
 
             Vector3d targetVel = TrajectoryProvider.GetVelocity(bbState.TargetVessel);
             _rcs.SetTargetWorldVelocity(targetVel + correction);
-            _rcs.Drive(state, _vs, vessel, bbState);
+            _rcs.Drive(state, _vs, vessel, bbState, _efficientTranslation);
         }
 
         private Vector3d PointAtWorldDirection()

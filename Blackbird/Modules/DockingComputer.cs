@@ -72,6 +72,12 @@ namespace Blackbird.Modules
             GUILayout.Label($"RCS fuel available: {FormatPercent(_handler.RcsFuelPercent)}");
             GUILayout.Label($"Guidance status: {_handler.GuidanceStatus}");
 
+            GUILayout.Space(8);
+
+            _handler.EfficientTranslation = GUILayout.Toggle(_handler.EfficientTranslation, " Use efficient RCS");
+
+            GUILayout.Space(8);
+
             if (bbState.DockingMode == DockingControlMode.Guidance && _handler.DockingStep != DockingSteps.Off && _handler.DockingStep != DockingSteps.ClosingRange)
             {
                 StepGate gate = _handler.CurrentGate;

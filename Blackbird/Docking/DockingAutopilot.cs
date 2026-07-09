@@ -25,6 +25,7 @@ namespace Blackbird.Docking
 
         // --- derived sizes (refreshed each tick; bounding boxes captured once at Init) ----------------
 
+        public bool EfficientTranslation = false;
         public bool OverrideStartDistance = false; // dufixme: not implemented
         public double StartDistanceOverride = 0.0;
         private const double MaxStandoffMeters = 20.0;   // reachable standoff; raw bbox (~57 m Starship) deadlocks BackingUp
@@ -86,9 +87,10 @@ namespace Blackbird.Docking
         // Start a docking run: the next OnFixedUpdate (Step == Starting) captures bounding boxes and picks
         // the entry step. RCS is forced on by the caller before VesselState is built so the thrust table is
         // populated from the first tick.
-        public void Engage(SharedState s)
+        public void Engage(SharedState s, bool et)
         {
             Step = DockingSteps.Starting;
+            EfficientTranslation = et;
         }
 
         public void Disengage()
@@ -152,7 +154,7 @@ namespace Blackbird.Docking
             // nulls the residual. Measured velocity (not orbit.GetVel) keeps it Principia-consistent.
             Vector3d targetVel = TrajectoryProvider.GetVelocity(bbState.TargetVessel);
             rcs.SetTargetWorldVelocity(targetVel + plan.Adjustment);
-            rcs.Drive(state, vs, v, bbState);
+            rcs.Drive(state, vs, v, bbState, EfficientTranslation);
         }
 
         // only available/active when we don't have a docking port targeted
@@ -186,7 +188,7 @@ namespace Blackbird.Docking
                 status = string.Format("Closing to docking range: {0:F0} m at {1:F2} m/s", range, closeSpeed);
             }
 
-            rcs.Drive(state, vs, v, bbState);
+            rcs.Drive(state, vs, v, bbState, EfficientTranslation);
         }
 
         // Available linear acceleration (m/s^2) in a world-frame travel direction: the RCS thrust available
