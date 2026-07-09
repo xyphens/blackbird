@@ -48,7 +48,7 @@ namespace Blackbird.Rendezvous
         private const double MatchStallSpeedFloor = 1.0;                   // ...and is already near nulled
 
         // --- final approach tuning ---
-        public double ParkingDistanceMeters = 100.0; // we will ALWAYS stop by at least this distance if MV is used
+        public double ParkingDistanceMeters = 200.0; // we will ALWAYS stop by at least this distance if MV is used
         public bool ParkingDistanceEnabled = false; // used to determine a) if E: MV should wait or b) if E: FA should flip + MV;  NOTE: does not determine if we use ParkingDistanceMeters or not, just whether we flip
         public bool MatchAtClosestApproach = false; // MV "Closest approach" sub-box: kill burn triggers on the live range-rate CA instead of the park distance
         private double burnMvAtDistance = 0.0;

@@ -48,6 +48,11 @@ namespace Blackbird.Docking
             set { _lockRoll = value; }
         }
 
+        private const double CenterToleranceMeters = 0.5;   // on-centerline tolerance for dock-readiness
+        // AlignToPort dock-readiness: true once the mating axis is aligned AND the chaser sits on the centerline.
+        public bool DockReady { get; private set; }
+        public string AlignAssistStatus { get; private set; } = "";
+
         // --- manual input, set by the UI each draw while a button is held; consumed (with a freshness window
         // so it can't stick if the GUI stops drawing) on the fly-by-wire pass ----------------------------
         private Vector3 _manualTranslate;   // craft-local: x = right, y = dorsal-up, z = nose-forward, each -1..1
@@ -231,12 +236,25 @@ namespace Blackbird.Docking
             }
             else if (AlignToPort && bbState.HaveTarget)
             {
-                // align nose to docking port
+                // align the mating axis to the docking port
                 Vector3d facing = PointAlongDockingAxis();
-                if (facing.sqrMagnitude > 0.0) _attitude.DriveInertial(vessel, state, facing, 0.0, LockRoll);
+                if (facing.sqrMagnitude > 0.0)
+                {
+                    _attitude.DriveInertial(vessel, state, facing, 0.0, LockRoll);
 
-                // lateral alignment on docking port's axis
-                if (_vs != null && !(_manualTranslate.sqrMagnitude > 0.0 && ManualInputFresh())) DriveLateralCenter(state, vessel);
+                    // Dock-ready = axis aligned to the mating corridor AND on the centerline. Report the phase so
+                    // the operator knows when it's safe to translate straight in.
+                    bool aligned = OrientationAligned(vessel, facing);
+                    double lateral = LateralOffsetMeters();
+                    DockReady = aligned && lateral <= CenterToleranceMeters;
+                    AlignAssistStatus = !aligned ? "aligning axis"
+                                      : DockReady ? "aligned & centered - translate in to dock"
+                                      : $"centering ({lateral:F1} m off-axis)";
+
+                    // center laterally only once the nose is on the mating axis
+                    if (aligned && _vs != null && !(_manualTranslate.sqrMagnitude > 0.0 && ManualInputFresh()))
+                        DriveLateralCenter(state, vessel);
+                }
             }
             else if (KeepPointed && bbState.HaveTarget)
             {
@@ -299,6 +317,18 @@ namespace Blackbird.Docking
             return tt != null ? (-(Vector3d)tt.forward).normalized : Vector3d.zero;
         }
 
+        // Perpendicular offset (m) from the target port's centerline to the chaser control point; +inf if
+        // unavailable so an unknown geometry never reads as "centered".
+        private double LateralOffsetMeters()
+        {
+            if (bbState.TargetDockingPort == null || _vessel == null || _vessel.ReferenceTransform == null) return double.PositiveInfinity;
+            Transform tt = bbState.TargetDockingPort.GetTransform();
+            if (tt == null) return double.PositiveInfinity;
+            Vector3d axis = ((Vector3d)tt.forward).normalized;
+            Vector3d sep = (Vector3d)_vessel.ReferenceTransform.position - (Vector3d)tt.position;
+            return Vector3d.Exclude(axis, sep).magnitude;
+        }
+
         private void DriveLateralCenter(FlightCtrlState state, Vessel vessel)
         {
             if (bbState.TargetDockingPort == null || vessel.ReferenceTransform == null) return;
@@ -306,19 +336,20 @@ namespace Blackbird.Docking
             Transform tt = bbState.TargetDockingPort.GetTransform();
             if (tt == null) return;
 
-            double speedLimit = 0.5;
-            double closeLateralTime = 5.0;
-
             Vector3d axis = ((Vector3d)tt.forward).normalized;
             Vector3d sep = (Vector3d)vessel.ReferenceTransform.position - (Vector3d)tt.position; // port
             Vector3d lateral = Vector3d.Exclude(axis, sep); // off-centerline
 
             Vector3d correction = Vector3d.zero;
-            double lateralMag = lateral.magnitude;
-            if (lateralMag > 1e-3)
+            if (lateral.magnitude > 0.2)
             {
-                double speed = Math.Min(speedLimit, lateralMag / closeLateralTime);
-                correction = -lateral.normalized * speed; // move towards centerline
+                //double speed = Math.Min(speedLimit, lateral.magnitude / closeLateralTime);
+                //correction = -lateral.normalized * speed; // move towards centerline
+                Vector3d toward = -lateral / lateral.magnitude;
+                Vector3d localDir = vessel.ReferenceTransform.InverseTransformDirection(toward);
+                double accel = _vs.AvailableRcsThrust.GetMagnitude(localDir) * _rcs.rcsAccelerationFactor()
+                               / Math.Max(1e-6, _vs.TotalMass);
+                correction = toward * DockingSchedule.MaxSpeed(lateral.magnitude, accel, 0.5);  // brakes to a stop at 0.5 m/s speed limit
             }
 
             Vector3d targetVel = TrajectoryProvider.GetVelocity(bbState.TargetVessel);

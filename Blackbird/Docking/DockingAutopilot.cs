@@ -27,12 +27,14 @@ namespace Blackbird.Docking
 
         public bool OverrideStartDistance = false; // dufixme: not implemented
         public double StartDistanceOverride = 0.0;
+        private const double MaxStandoffMeters = 20.0;   // reachable standoff; raw bbox (~57 m Starship) deadlocks BackingUp
 
         private double startDistance = 10.0; // docking AP will back up to this distance when enabled every time
         private double targetSize = 5.0; // re-calculated unless overridden
 
         private double acquireRange = 0.25;
         private double vesselBoundingSize = 0.0;
+        private double targetBoundingSize = 0.0;
         private Box3d vesselBoundingBox;
         private Box3d targetBoundingBox;
 
@@ -202,6 +204,7 @@ namespace Blackbird.Docking
                 vesselBoundingBox = DockingGeometry.GetBoundingBox(v);
                 targetBoundingBox = DockingGeometry.GetBoundingBox(bbState.TargetVessel);
                 vesselBoundingSize = vesselBoundingBox.size.magnitude;
+                targetBoundingSize = targetBoundingBox.size.magnitude;
 
                 RefreshSizes();
                 
@@ -217,8 +220,12 @@ namespace Blackbird.Docking
 
         private void RefreshSizes()
         {
-            targetSize = targetBoundingBox.size.magnitude;
-            startDistance = OverrideStartDistance ? StartDistanceOverride : vesselBoundingSize + targetSize + 0.5;
+            double _targetPadding = 0.33 * targetBoundingSize;
+            targetSize = Math.Min(MaxStandoffMeters, _targetPadding);
+            //startDistance = OverrideStartDistance ? StartDistanceOverride : vesselBoundingSize + targetSize + 0.5;
+            startDistance = OverrideStartDistance
+                ? StartDistanceOverride
+                : Math.Min(targetBoundingSize + 0.5 * vesselBoundingSize , MaxStandoffMeters);
         }
 
         // Recompute the docking geometry from the live transforms: separation (chaser control-transform to
@@ -260,7 +267,9 @@ namespace Blackbird.Docking
                 AcquireRange = acquireRange,
                 DockingCorridorRadius = DockingCorridorRadius,
                 SpeedLimit = dockSpeedLimit,
-                VesselBoundingSize = vesselBoundingSize
+                VesselBoundingSize = vesselBoundingSize,
+                TargetBoundingSize = targetBoundingSize,
+                ClipClearance = targetBoundingSize * 0.5
             };
         }
 

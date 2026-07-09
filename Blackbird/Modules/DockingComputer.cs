@@ -117,7 +117,7 @@ namespace Blackbird.Modules
             if (GUILayout.Button("Run Docking Guidance", GUILayout.Height(30))) _handler.RunDockingGuidance();
             // allow canceling/stopping if docking is enabled at all
             // this has been extremely frustrating, so im just going to keep these buttons enabled forever
-            //GUI.enabled = bbState.DockingEnabled == true;
+            GUI.enabled = bbState.DockingEnabled == true;
             if (GUILayout.Button("Stop Docking Guidance", GUILayout.Height(30))) _handler.StopDockingGuidance();
             if (GUILayout.Button("Assume Control", GUILayout.Height(30))) _handler.AssumeControl();
             GUI.enabled = true;
@@ -185,7 +185,7 @@ namespace Blackbird.Modules
                 assistStr = "track heading";
             } else if (_handler.AlignToPort)
             {
-                assistStr = "aligning ports";
+                assistStr = string.IsNullOrEmpty(_handler.AlignAssistStatus) ? "aligning ports" : _handler.AlignAssistStatus;
             } else if (_handler.ResetOrientation)
             {
                 assistStr = "re-orienting";
@@ -196,7 +196,7 @@ namespace Blackbird.Modules
             GUILayout.Space(4);
 
             // only one of these can be enabled at a time
-            GUI.enabled = manualEnabled;
+            GUI.enabled = bbState.DockingMode != DockingControlMode.Guidance;
             _handler.KeepPointed = GUILayout.Toggle(_handler.KeepPointed, " Keep pointed at target");
             _handler.AlignToPort = GUILayout.Toggle(_handler.AlignToPort, " Align with docking port");
             _handler.ResetOrientation = GUILayout.Toggle(_handler.ResetOrientation, " Reset Orientation");

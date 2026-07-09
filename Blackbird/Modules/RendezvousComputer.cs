@@ -257,20 +257,18 @@ namespace Blackbird.Modules
             // closest approach when the sub-box is checked (which greys the distance input — the CA is the mark).
             // FA ALWAYS consumes the distance as its don't-overburn margin, so the input also shows for FA.
             ParkingDistanceEnabled = GUILayout.Toggle(ParkingDistanceEnabled, " Match velocities at distance", GUILayout.Width(200));
-            if (bbState.RendezvousMethod == RendezvousMethod.FinalApproach)
+            if ((bbState.RendezvousMethod == RendezvousMethod.FinalApproach 
+                || bbState.RendezvousMethod == RendezvousMethod.MatchVelocity) && ParkingDistanceEnabled)
             {
-                if (ParkingDistanceEnabled)
-                {
-                    MatchAtClosestApproach = GUILayout.Toggle(MatchAtClosestApproach, " Closest approach", GUILayout.Width(200));
+                MatchAtClosestApproach = GUILayout.Toggle(MatchAtClosestApproach, " Closest approach", GUILayout.Width(200));
 
-                    GUILayout.BeginHorizontal();
-                    GUI.enabled = !MatchAtClosestApproach;
-                    GUILayout.Label("Park at distance:", GUILayout.Width(160));
-                    ParkingDistance = GUILayout.TextField(ParkingDistance, GUILayout.Width(60));
-                    GUILayout.Label("m");
-                    GUI.enabled = true;
-                    GUILayout.EndHorizontal();
-                }
+                GUILayout.BeginHorizontal();
+                GUI.enabled = !MatchAtClosestApproach;
+                GUILayout.Label("Park at distance:", GUILayout.Width(160));
+                ParkingDistance = GUILayout.TextField(ParkingDistance, GUILayout.Width(60));
+                GUILayout.Label("m");
+                GUI.enabled = true;
+                GUILayout.EndHorizontal();
             }
 
             if (bbState.RendezvousMethod == RendezvousMethod.FinalApproach)

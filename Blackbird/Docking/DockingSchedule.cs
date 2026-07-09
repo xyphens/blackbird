@@ -49,6 +49,8 @@ namespace Blackbird.Docking
         public double DockingCorridorRadius;   // lateral tolerance to count as "on the axis"
         public double SpeedLimit;              // user cap on every commanded approach speed (m/s)
         public double VesselBoundingSize;      // chaser bbox size.magnitude (entry-step "behind" threshold)
+        public double ClipClearance;           // safe distance to continue orienting near the target.  any closer means AP will back up
+        public double TargetBoundingSize;
     }
 
     // One tick's commanded approach: speeds along the axis / laterally, whether to align to the port
@@ -122,11 +124,13 @@ namespace Blackbird.Docking
                     : DockingSteps.BackingUp;
             }
 
-            if (g.LateralMag > c.DockingCorridorRadius)
-            {
-                // In front but off the centreline: back up first if too close, else go centre on the axis.
-                return g.ZSep < c.TargetSize ? DockingSteps.BackingUp : DockingSteps.MovingToStart;
-            }
+            //if (g.LateralMag > c.DockingCorridorRadius)
+            //{
+            //    // In front but off the centreline: back up first if too close, else go centre on the axis.
+            //    return g.ZSep < c.TargetSize ? DockingSteps.BackingUp : DockingSteps.MovingToStart;
+            //}
+
+            if (g.LateralMag > c.DockingCorridorRadius && g.ZSep < c.ClipClearance) return DockingSteps.BackingUp;
 
             return DockingSteps.Docking;
         }
