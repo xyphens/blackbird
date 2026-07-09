@@ -14,7 +14,7 @@ namespace Blackbird.Docking
         public double dockSpeedLimit = 1.0;       // cap on every maneuver
 
         // approaching
-        public double approachSpeedLimitMs = 5.0; // cap on the "get closer" sub routine
+        public double approachSpeedLimitMs = 2.0; // cap on the "get closer" sub routine
         public double approachLandingDistance = 150; // where we consider "close enough"
 
         //public bool forceRoll = false;        // hold a specific roll about the docking axis
@@ -169,9 +169,15 @@ namespace Blackbird.Docking
             state.mainThrottle = 0.0f;
 
             double remaining = range - approachLandingDistance;
-            if (remaining <= 0.0) {
+            if (remaining <= 20.0) { // match 
                 rcs.SetTargetWorldVelocity(targetVel); // match velocity and await port selection
-                status = "In docking range - select a docking port to continue";
+                if (remaining <= 0.0)
+                {
+                    status = "In docking range - select a docking port to continue";
+                } else
+                {
+                    status = "Approaching dock range - slowing down";
+                }
             } else
             {
                 double decel = Math.Max(0.01, AccelInDirection(-losDir));

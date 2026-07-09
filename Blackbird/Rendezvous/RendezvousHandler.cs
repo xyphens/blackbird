@@ -420,6 +420,7 @@ namespace Blackbird.Rendezvous
                     Vector3d brakeDir = HasRelative && Relative.RelativeVelocityWorld.sqrMagnitude > 1e-6
                                         ? Relative.RelativeVelocityWorld
                                         : -(Vector3d)active.ReferenceTransform.up;
+                    // 20 second lead time to flip
                     _executor.FlipSlewTimeSeconds = AttitudeControl.EstimateSlewTimeSeconds(active, brakeDir, 20.0, false);
                 }
                 //if (active?.ReferenceTransform != null)
