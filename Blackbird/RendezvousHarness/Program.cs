@@ -1368,9 +1368,9 @@ namespace Blackbird.RendezvousHarness
             // A 10 s flip time makes SafeClosingSpeed reserve coast/brake margin (well below raw brake-to-rest).
             ex.ParkingDistanceMeters = 100.0;
             ex.FlipSlewTimeSeconds = 10.0;
-            ex.ShipAccelMetersPerSecondSquared = 20.0;   // match the sim's applied brake accel (maxAccel)
 
             AssertTrue("execute close", ex.ForceExecute(state, RendezvousMethod.FinalApproach));
+            ex.ShipAccelMetersPerSecondSquared = 20.0;   // fed after Execute (mirrors the handler); match sim maxAccel
             const double maxAccel = 20.0;
             double dt = 0.05;
             int ticks = 0;
@@ -2048,8 +2048,8 @@ namespace Blackbird.RendezvousHarness
             ex.ParkingDistanceEnabled = true;   // box checked -> auto-park with the kill burn
             ex.ParkingDistanceMeters = 50.0;
             ex.FlipSlewTimeSeconds = 10.0;
-            ex.ShipAccelMetersPerSecondSquared = 10.0;   // match the sim's applied brake accel (maxAccel)
             ex.ForceExecute(state, RendezvousMethod.FinalApproach);
+            ex.ShipAccelMetersPerSecondSquared = 10.0;   // fed after Execute (mirrors the handler); match sim maxAccel
 
             const double maxAccel = 10.0;
             const double dt = 0.05;
@@ -2105,8 +2105,8 @@ namespace Blackbird.RendezvousHarness
             ex.ParkingDistanceEnabled = true;           // box checked -> auto-park with the kill burn
             ex.ParkingDistanceMeters = 50.0;
             ex.FlipSlewTimeSeconds = 10.0;
-            ex.ShipAccelMetersPerSecondSquared = 10.0;   // match the sim's applied brake accel (maxAccel)
             ex.ForceExecute(state, RendezvousMethod.FinalApproach);
+            ex.ShipAccelMetersPerSecondSquared = 10.0;   // fed after Execute (mirrors the handler); match sim maxAccel
 
             const double maxAccel = 10.0;
             const double dt = 0.05;
