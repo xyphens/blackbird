@@ -84,10 +84,7 @@ namespace Blackbird.Rendezvous
         private bool _warpToDeepest;                            // which live event feeds the CA-warp retarget
         public bool Warping { get; private set; }
 
-        //public RendezvousPhase Phase => _executor.Phase;
-        //public RendezvousStage Stage => _executor.Stage;
         public bool HasInterceptPlan => _executor.HasInterceptPlan; // todo: replace with sharedstate
-        public bool HaveHohmannPlan => _executor.HaveHohmannTransfer;
         public RendezvousCommand Command => _command;
         public bool HasCommand => _hasCommand;
         public RelativeState Relative { get; private set; }
@@ -119,21 +116,16 @@ namespace Blackbird.Rendezvous
             if (!_engaged) _attitude.Reset();
         }
 
-        // User gates (pass-through to the executor). Executing a stage cancels any warp.
-        public bool Execute() {
-            StopWarp();
-            bool executing = _executor.Execute();
-            bbState.RendezvousEnabled = executing;
-            return executing;
-        }
-        // Execute a specific stage out of order (e.g. Match Velocity any time, to kill a closing rate). Preempts
-        // whatever was running (warp, intercept, close approach) and forces a fresh orient to the new burn
-        // vector so Match Velocity always re-points to the terminal/retrograde direction before firing.
-        public bool Execute(RendezvousMethod method) {
+        public bool Execute(RendezvousMethod method, InterceptPhase phase, BlackbirdModule module)
+        {
             StopWarp();
             _settle.Reset();
-            bool executing = _executor.ForceExecute(method);
+            bbState.RendezvousMethod = method;
+            bbState.InterceptPhase = phase;
+            bbState.ActiveModule = module;
+            bool executing = _executor.Execute();
             bbState.RendezvousEnabled = executing;
+            
             return executing;
         }
 
@@ -397,7 +389,7 @@ namespace Blackbird.Rendezvous
                     VesselState vs = VesselState.FromVessel(active);
                     if (vs != null && MathHelpers.IsFinite(vs.AvailableThrust) && vs.AvailableThrust > 0.0
                         && MathHelpers.IsFinite(vs.TotalMass) && vs.TotalMass > 0.0)
-                        _executor.BurnAccelMetersPerSecondSquared = vs.AvailableThrust / vs.TotalMass;
+                        _executor.ShipAccelMetersPerSecondSquared = vs.AvailableThrust / vs.TotalMass;
                 }
             }
 
@@ -416,7 +408,7 @@ namespace Blackbird.Rendezvous
                 VesselState vs = VesselState.FromVessel(active);
                 if (vs != null && MathHelpers.IsFinite(vs.AvailableThrust) && vs.AvailableThrust > 0.0
                     && MathHelpers.IsFinite(vs.TotalMass) && vs.TotalMass > 0.0)
-                    _executor.BrakingDecelMetersPerSecondSquared = vs.AvailableThrust / vs.TotalMass;
+                    _executor.ShipAccelMetersPerSecondSquared = vs.AvailableThrust / vs.TotalMass;
 
                 // determine how long it will take to orient to new direction based on our current direction (not the flat 180 degree charge)
                 if (active?.ReferenceTransform != null) {

@@ -1,9 +1,8 @@
-using Blackbird.Docking;
+using Blackbird.Modules;
 using Blackbird.Guidance;
 using Blackbird.Mathematics;
 using Blackbird.Rendezvous;
 using System;
-using System.CodeDom.Compiler;
 using UnityEngine;
 using static UnityEngine.GraphicsBuffer;
 
@@ -25,9 +24,9 @@ namespace Blackbird.Modules
         private Rect _windowRect = new Rect(950, 200, 360, 380);
 
         private string _faError;
-
         private bool _faWillDeorbit = false;
 
+        // `true` after user clicks Apply
         public bool _approachParamsSet = false;
 
         // Final Approach - lock axes
@@ -44,8 +43,11 @@ namespace Blackbird.Modules
         private bool ParkingDistanceEnabled;
         // MV sub-box: kill burn triggers on the live closest approach instead of the park distance
         private bool MatchAtClosestApproach;
+        
+        private readonly double DefaultParkingDistance = 200.0;
+
+        // read this value
         private double _parkingDistance = 100.0;
-        private double DefaultParkingDistance = 100.0;
         private string ParkingDistance
         {
             get { return _parkingDistance.ToString("F0"); }
@@ -194,12 +196,10 @@ namespace Blackbird.Modules
             GUI.enabled = canExecute;
             if (GUILayout.Button("Execute: Intercept"))
             {
-                bbState.RendezvousMethod = RendezvousMethod.Intercept;
-                _handler.Execute();
+                _handler.Execute(RendezvousMethod.Intercept, InterceptPhase.Executing, BlackbirdModule.Rendezvous);
             }
 
             // Warp to closest approach (auto-stops short; cancelled if a burn starts).
-
             if (_handler.Warping)
             {
                 if (GUILayout.Button("Stop Warp")) _handler.StopWarp();
@@ -241,9 +241,8 @@ namespace Blackbird.Modules
             GUI.enabled = canExecute;
             if (GUILayout.Button("Execute: Match Velocity"))
             {
-                bbState.RendezvousMethod = RendezvousMethod.MatchVelocity;
                 SetParkingDistance();
-                _handler.Execute(RendezvousMethod.MatchVelocity);
+                _handler.Execute(RendezvousMethod.MatchVelocity, InterceptPhase.Executing, BlackbirdModule.Rendezvous);
             }
 
             // ---- FINAL APPROACH ----
@@ -295,8 +294,8 @@ namespace Blackbird.Modules
                     {
                         _faError = "Closest approach is already inside the park distance — lower it or use Match Velocity.";
                     } else { 
-                        _faError = null; 
-                        _handler.Execute(); 
+                        _faError = null;
+                        _handler.Execute(RendezvousMethod.FinalApproach, InterceptPhase.Executing, BlackbirdModule.Rendezvous);
                     }
                 }
                 GUILayout.EndHorizontal();
@@ -313,7 +312,7 @@ namespace Blackbird.Modules
                 _approachParamsSet = false;
 
                 // reset parking distance
-                _parkingDistance = DefaultParkingDistance;
+                //_parkingDistance = DefaultParkingDistance; // setting ParkingDistance sets _parkingDistance
                 ParkingDistance = DefaultParkingDistance.ToString("F0");
                 ParkingDistanceEnabled = false;
                 MatchAtClosestApproach = false;
@@ -406,6 +405,7 @@ namespace Blackbird.Modules
         {
             _handler.ParkingDistanceEnabled = ParkingDistanceEnabled;
             _handler.MatchAtClosestApproach = MatchAtClosestApproach;
+            // we use the parking distance to calculate the max intercept burn regardless if user wants us to stop at it
             _handler.ParkingDistanceMeters = !double.IsNaN(_parkingDistance) && _parkingDistance >= 0.0
                                 ? _parkingDistance
                                 : DefaultParkingDistance;

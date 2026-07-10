@@ -124,9 +124,10 @@ namespace Blackbird.Modules
             // allow canceling/stopping if docking is enabled at all
             // this has been extremely frustrating, so im just going to keep these buttons enabled forever
             GUI.enabled = bbState.DockingEnabled == true;
-            if (GUILayout.Button("Stop Docking Guidance", GUILayout.Height(30))) _handler.StopDockingGuidance();
             if (GUILayout.Button("Assume Control", GUILayout.Height(30))) _handler.AssumeControl();
             GUI.enabled = true;
+            // allow abort button to be clickable always
+            if (GUILayout.Button("Abort", GUILayout.Height(30))) _handler.StopDockingGuidance();
             GUILayout.EndHorizontal();
 
             GUI.DragWindow();

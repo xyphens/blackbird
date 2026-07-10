@@ -1369,7 +1369,7 @@ namespace Blackbird.RendezvousHarness
             // A 10 s flip time makes SafeClosingSpeed reserve coast/brake margin (well below raw brake-to-rest).
             ex.ParkingDistanceMeters = 100.0;
             ex.FlipSlewTimeSeconds = 10.0;
-            ex.BrakingDecelMetersPerSecondSquared = 20.0;   // match the sim's applied brake accel (maxAccel)
+            ex.ShipAccelMetersPerSecondSquared = 20.0;   // match the sim's applied brake accel (maxAccel)
 
             AssertTrue("execute close", ex.ForceExecute(RendezvousMethod.FinalApproach));
             const double maxAccel = 20.0;
@@ -1733,7 +1733,7 @@ namespace Blackbird.RendezvousHarness
             // crucially NOT toward the target (CA fed in band; MV must ignore it, not chase).
             TerminalRendezvousExecutor mv = NewExecutor(out _);
             mv.ParkingDistanceEnabled = true;
-            mv.BrakingDecelMetersPerSecondSquared = 5.0;
+            mv.ShipAccelMetersPerSecondSquared = 5.0;
             mv.ForceExecute(RendezvousMethod.MatchVelocity);
             RendezvousCommand hold = mv.Update(world, 50.0, 60.0);
             AssertScalar("MV holds (zero throttle) far from brake point", hold.Throttle, 0.0);
@@ -1742,7 +1742,7 @@ namespace Blackbird.RendezvousHarness
             // Final Approach (box unchecked): same geometry must actively control the approach (nonzero throttle).
             TerminalRendezvousExecutor fa = NewExecutor(out _);
             fa.ParkingDistanceEnabled = false;
-            fa.BrakingDecelMetersPerSecondSquared = 5.0;
+            fa.ShipAccelMetersPerSecondSquared = 5.0;
             fa.ForceExecute(RendezvousMethod.FinalApproach);
             RendezvousCommand chase = fa.Update(world, 50.0, 60.0);
             AssertTrue("FA acts (nonzero throttle)", chase.Throttle > 0.0);
@@ -1769,7 +1769,7 @@ namespace Blackbird.RendezvousHarness
             TerminalRendezvousExecutor hold = NewExecutor(out _);
             hold.ParkingDistanceEnabled = true;
             hold.ParkingDistanceMeters = 100.0;
-            hold.BrakingDecelMetersPerSecondSquared = 5.0;
+            hold.ShipAccelMetersPerSecondSquared = 5.0;
             hold.ForceExecute(RendezvousMethod.MatchVelocity);
             hold.Update(far, 900.0, 30.0);                               // tick 1: set the brake point
             RendezvousCommand held = hold.Update(far, 900.0, 30.0);      // tick 2: 1000 m > 190 m brake point
@@ -1787,7 +1787,7 @@ namespace Blackbird.RendezvousHarness
             TerminalRendezvousExecutor mv = NewExecutor(out _);
             mv.ParkingDistanceEnabled = true;
             mv.ParkingDistanceMeters = 100.0;
-            mv.BrakingDecelMetersPerSecondSquared = 5.0;
+            mv.ShipAccelMetersPerSecondSquared = 5.0;
             mv.ForceExecute(RendezvousMethod.MatchVelocity);
             mv.Update(near, 80.0, 6.0);                            // tick 1: set the brake point, hold
             RendezvousCommand brake = mv.Update(near, 80.0, 6.0);  // tick 2: inside the brake point -> fire
@@ -1829,7 +1829,7 @@ namespace Blackbird.RendezvousHarness
             TerminalRendezvousExecutor ex = NewExecutor(out SharedState state);
             ex.ParkingDistanceEnabled = true;
             ex.ParkingDistanceMeters = 1000.0;
-            ex.BrakingDecelMetersPerSecondSquared = 5.0;   // match the sim's applied brake accel
+            ex.ShipAccelMetersPerSecondSquared = 5.0;   // match the sim's applied brake accel
             ex.ForceExecute(RendezvousMethod.MatchVelocity);
 
             const double maxAccel = 5.0;
@@ -1892,7 +1892,7 @@ namespace Blackbird.RendezvousHarness
             ex.ParkingDistanceEnabled = true;
             ex.MatchAtClosestApproach = true;
             ex.ParkingDistanceMeters = 1000.0;             // distance mode would fire at ~1250 m — must be ignored
-            ex.BrakingDecelMetersPerSecondSquared = 5.0;
+            ex.ShipAccelMetersPerSecondSquared = 5.0;
             ex.ForceExecute(RendezvousMethod.MatchVelocity);
 
             const double maxAccel = 5.0;
@@ -2039,7 +2039,7 @@ namespace Blackbird.RendezvousHarness
             ex.ParkingDistanceEnabled = true;   // box checked -> auto-park with the kill burn
             ex.ParkingDistanceMeters = 50.0;
             ex.FlipSlewTimeSeconds = 10.0;
-            ex.BrakingDecelMetersPerSecondSquared = 10.0;   // match the sim's applied brake accel (maxAccel)
+            ex.ShipAccelMetersPerSecondSquared = 10.0;   // match the sim's applied brake accel (maxAccel)
             ex.ForceExecute(RendezvousMethod.FinalApproach);
 
             const double maxAccel = 10.0;
@@ -2096,7 +2096,7 @@ namespace Blackbird.RendezvousHarness
             ex.ParkingDistanceEnabled = true;           // box checked -> auto-park with the kill burn
             ex.ParkingDistanceMeters = 50.0;
             ex.FlipSlewTimeSeconds = 10.0;
-            ex.BrakingDecelMetersPerSecondSquared = 10.0;   // match the sim's applied brake accel (maxAccel)
+            ex.ShipAccelMetersPerSecondSquared = 10.0;   // match the sim's applied brake accel (maxAccel)
             ex.ForceExecute(RendezvousMethod.FinalApproach);
 
             const double maxAccel = 10.0;
@@ -2509,7 +2509,7 @@ namespace Blackbird.RendezvousHarness
             ca.ParkingDistanceEnabled = true;
             ca.MatchAtClosestApproach = true;
             ca.ParkingDistanceMeters = park;
-            ca.BrakingDecelMetersPerSecondSquared = a;
+            ca.ShipAccelMetersPerSecondSquared = a;
             ca.ForceExecute(RendezvousMethod.FinalApproach);
             RendezvousCommand caCmd = ca.Update(world, 50.0, 60.0);
             AssertTrue("FA+CA -> closest-approach brake (holding)",
@@ -2519,7 +2519,7 @@ namespace Blackbird.RendezvousHarness
             dist.ParkingDistanceEnabled = true;
             dist.MatchAtClosestApproach = false;
             dist.ParkingDistanceMeters = park;
-            dist.BrakingDecelMetersPerSecondSquared = a;
+            dist.ShipAccelMetersPerSecondSquared = a;
             dist.ForceExecute(RendezvousMethod.FinalApproach);
             RendezvousCommand distCmd = dist.Update(world, 50.0, 60.0);
             AssertTrue("FA without CA -> distance brake (holding)",
