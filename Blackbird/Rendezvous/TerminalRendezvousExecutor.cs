@@ -27,6 +27,7 @@ namespace Blackbird.Rendezvous
 
         // Hohmann coast-to-ignition: don't orient (or burn RCS) until ignition is within the orient window;
         // inside the final window the orient is just a drift correction before the burn.
+        private const int HohmannCandidateCount = 5;
         private const double HohmannPreOrientWindowSeconds = 600.0;  // 10 min: start the orientation maneuver
         private const double HohmannFinalOrientSeconds = 15.0;       // 15 s: corrective orientation
         private const double HohmannReSolveIntervalSeconds = 0.5;    // re-solve the burn at most this often in the window
@@ -146,9 +147,6 @@ namespace Blackbird.Rendezvous
             if (bbState.ActiveModule == BlackbirdModule.Rendezvous) bbState.ActiveModule = BlackbirdModule.None;
             ClearBurnState();
         }
-
-        // How many eligible Hohmann windows to surface for the user to choose from.
-        private const int HohmannCandidateCount = 5;
 
         // Refresh the cached plan for the current (not-yet-executed) stage so the UI can show ΔV / predicted
         // CA before the user commits. No phase change. The Hohmann path computes once and caches.
@@ -629,67 +627,42 @@ namespace Blackbird.Rendezvous
             if (!_faClosingDone)
             {
                 Vector3d bearing = relPos.magnitude > 1e-6 ? relPos / relPos.magnitude : Vector3d.zero;
-                Vector3d dVBudget;
 
                 // current distance - park at
                 double remainingDistance = Math.Max(0.0, relPos.magnitude - ParkingDistanceMeters);
 
-                // the burn is done continuously, so we arm the initial params, and then this function is called in main loop to continue burn up until our dV budget
+                // Arm the committed burn once: the axis + magnitude of the single closing impulse. dVBudget points
+                // toward the target when we must speed up to close (from rest), away when we arrived too hot.
                 if (!_approachArmed)
                 {
                     _commandedClosingSpeed = SafeClosingSpeed(remainingDistance);
-                    dVBudget = bearing * _commandedClosingSpeed - relVel; // cost of burn
-                    _faRelVelAtIgnition = relVel;   // both modes: reference for delivered / peak-drop escape
+                    Vector3d dVBudget = bearing * _commandedClosingSpeed - relVel;
+                    _faDvMagnitude = dVBudget.magnitude;
+                    _faDvUnit = _faDvMagnitude > 1e-6 ? dVBudget / _faDvMagnitude : bearing;
+                    _faRelVelAtIgnition = relVel;
                     _faMaxDelivered = 0.0;
-                    if (KeepFaAxesFrozen)
-                    {
-                        _faDvMagnitude = dVBudget.magnitude;
-                        _faDvUnit = _faDvMagnitude > 1e-6 ? dVBudget / _faDvMagnitude : bearing;
-                    }
-
                     _approachArmed = true;
                 }
 
-                if (KeepFaAxesFrozen)
+                // Delivered along the COMMITTED axis grows positive whether we're accelerating to close or
+                // decelerating from hot, and we latch on reaching the budget — so the burn never reverses (no
+                // second burn) regardless of direction. This completion is identical frozen vs tracking; only the
+                // steered direction differs (frozen holds the axis, tracking re-aims at the live target).
+                double delivered = Vector3d.Dot(relVel - _faRelVelAtIgnition, _faDvUnit);
+                if (delivered > _faMaxDelivered) _faMaxDelivered = delivered;
+
+                bool reached = delivered >= _faDvMagnitude - MatchVelocityToleranceMetersPerSecond;
+                bool peaked = _faMaxDelivered > BurnProgressThreshold
+                               && delivered < _faMaxDelivered - PeakDropMetersPerSecond;
+
+                if (!reached && !peaked)
                 {
-                    double delivered = Vector3d.Dot(relVel - _faRelVelAtIgnition, _faDvUnit);
-                    if (delivered > _faMaxDelivered) _faMaxDelivered = delivered;
-
-                    bool reached = delivered >= _faDvMagnitude - MatchVelocityToleranceMetersPerSecond;
-                    bool peaked = _faMaxDelivered > BurnProgressThreshold
-                                   && delivered < _faMaxDelivered - PeakDropMetersPerSecond;
-
-                    if (!reached && !peaked)
-                    {
-                        double remaining = _faDvMagnitude - delivered;
-                        double throttle = MathHelpers.Clamp(
-                            remaining / ThrottleTaperBandMetersPerSecond, BurnMinThrottle, 1.0);
-                        return Burn(_faDvUnit, throttle, string.Format(
-                            "final approach [frozen]: {0:F1}/{1:F1} m/s along axis at {2:F0} m",
-                            delivered, _faDvMagnitude, relPos.magnitude));
-                    }
-                } else
-                {
-                    double closingSpeed = Vector3d.Dot(relVel, bearing);
-                    dVBudget = bearing * _commandedClosingSpeed - relVel; // cost of burn
-
-                    // Delivered = how much we've slowed the closing rate since ignition (live-bearing projection).
-                    double delivered = Vector3d.Dot(_faRelVelAtIgnition - relVel, bearing);
-                    if (delivered > _faMaxDelivered) _faMaxDelivered = delivered;
-
-                    // reached: slowed to (or below) the committed safe speed — one-sided, never re-accelerate.
-                    // peaked:  closing rate bottomed out and climbed back — can't push further, hand off anyway.
-                    bool reached = closingSpeed <= _commandedClosingSpeed + MatchVelocityToleranceMetersPerSecond;
-                    bool peaked = _faMaxDelivered > BurnProgressThreshold
-                                   && delivered < _faMaxDelivered - PeakDropMetersPerSecond;
-
-                    if (!reached && !peaked)
-                    {
-                        double throttle = MathHelpers.Clamp(dVBudget.magnitude / ThrottleTaperBandMetersPerSecond, BurnMinThrottle, 1.0);
-                        return Burn(dVBudget, throttle, string.Format(
-                            "final approach [tracking]: closing {0:F2}/{1:F2} m/s at {2:F0} m",
-                            closingSpeed, _commandedClosingSpeed, relPos.magnitude));
-                    }
+                    Vector3d burnDir = KeepFaAxesFrozen ? _faDvUnit : bearing * _commandedClosingSpeed - relVel;
+                    double throttle = MathHelpers.Clamp(
+                        (_faDvMagnitude - delivered) / ThrottleTaperBandMetersPerSecond, BurnMinThrottle, 1.0);
+                    return Burn(burnDir, throttle, string.Format(
+                        "final approach [{0}]: {1:F1}/{2:F1} m/s along axis at {3:F0} m",
+                        KeepFaAxesFrozen ? "frozen" : "tracking", delivered, _faDvMagnitude, relPos.magnitude));
                 }
 
                 _faClosingDone = true;
