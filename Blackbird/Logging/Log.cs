@@ -15,6 +15,7 @@ namespace Blackbird.Logging
     {
         Debug,
         Psg,
+        Trajectory,
         Rendezvous,
         Compatibility,
         Docking
@@ -48,6 +49,7 @@ namespace Blackbird.Logging
         {
             { LogContext.Psg, "psg.log" },
             { LogContext.Rendezvous, "rendezvous.log" },
+            { LogContext.Trajectory, "trajectory.log" },
             { LogContext.Compatibility, "compatibility.log" },
             { LogContext.Docking, "docking.log" },
             { LogContext.Debug, "debug.log" },

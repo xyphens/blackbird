@@ -82,10 +82,7 @@ namespace Blackbird.Modules
         public bool IsRO { get; set; } = false;
         public bool IsRSS { get; set; } = false;
         public bool IsPrincipia { get; set; } = false;
-        public void Init()
-        {
-            CheckAssembliesLoaded();
-        }
+        public void Init() => CheckAssembliesLoaded();
 
         public bool CheckAssembliesLoaded()
         {

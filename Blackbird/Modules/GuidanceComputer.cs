@@ -2,6 +2,7 @@ using Blackbird.Guidance;
 using Blackbird.Helpers;
 using Blackbird.Mathematics;
 using Blackbird.Models;
+using Blackbird.Planning;
 using System;
 using UnityEngine;
 
@@ -17,6 +18,7 @@ namespace Blackbird.Modules
         private string _rollInputText = "90";
         private string _throttleInputText = "0";
         private bool _showAdvancedDetails;
+        private readonly Planning.Trajectory _trajectoryPlot = new Planning.Trajectory();
         private const double MinSecondsToUseWarp = 10.0;
         private readonly string[] _guidanceModeLabels = { "None", "Manual", "Autopilot" };
 
@@ -303,9 +305,21 @@ namespace Blackbird.Modules
             if (_showAdvancedDetails)
             {
                 DrawAdvancedDetails(bbState.LaunchPlan, bbState.LaunchPlan.TargetVessel);
+                DrawTrajectory();
             }
 
             GUI.DragWindow();
+        }
+
+        private void DrawTrajectory()
+        {
+            GUILayout.Space(10);
+            Vessel v = FlightGlobals.ActiveVessel;
+            _trajectoryPlot.Draw(_launchHandler.CurrentSolution, v.mainBody.Radius, _launchHandler.GuidanceInfo.TargetApoapsisAlt, 340, 170);
+            if (!double.IsNaN(_trajectoryPlot.MaxLoftAboveTargetMeters) && !double.IsInfinity(_trajectoryPlot.MaxLoftAboveTargetMeters))
+            {
+                GUILayout.Label($"Loft above target Ap: {_trajectoryPlot.MaxLoftAboveTargetMeters / 1000.0:F1} km");
+            }
         }
 
         private void DrawAdvancedDetails(LaunchPlan launchPlan, Vessel targetVessel)

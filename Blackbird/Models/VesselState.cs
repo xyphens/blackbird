@@ -62,6 +62,8 @@ namespace Blackbird.Models
         public double BodyRotationPeriod { get; private set; }
         public Vector3d GravityForce { get; private set; }
 
+        public TrajectoryState TrajectoryState { get; private set; }
+
         // PSG re-solves at 0.5-5 s; re-running the fuel sim per frame buys nothing.
         private const double FuelSimRefreshSeconds = 0.5;
         private const double FuelSimDivergenceTolerance = 0.01;
@@ -85,7 +87,7 @@ namespace Blackbird.Models
             OrbitInfo orbitInfo = TrajectoryProvider.GetOrbitInfo(vessel);
             double surfaceSpeed = vessel.srfSpeed;
             double verticalSpeed = vessel.verticalSpeed;
-            double totalMass = vessel.totalMass; // du: was GetDouble("totalMass") but no idea why?
+            double totalMass = vessel.totalMass;
             PropulsionInfo propulsion = GetPropulsionInfo(vessel, totalMass, body);
 
             (ThrustEnvelope rcsThrust, ThrustEnvelope rcsTorque) = GetRCS(vessel, false);
@@ -95,6 +97,7 @@ namespace Blackbird.Models
                 Vessel = vessel,
                 Body = body,
                 UniversalTime = Planetarium.GetUniversalTime(),
+                TrajectoryState = trajectoryState,
 
                 LatitudeDeg = trajectoryState != null && trajectoryState.IsValid ? trajectoryState.LatitudeDeg : vessel.latitude,
                 LongitudeDeg = trajectoryState != null && trajectoryState.IsValid ? trajectoryState.LongitudeDeg : vessel.longitude,
@@ -128,7 +131,6 @@ namespace Blackbird.Models
                 CurrentStage = vessel.currentStage,
                 PoweredStages = GetPoweredStages(vessel),
                 GravityForce = FlightGlobals.getGeeForceAtPosition(vessel.CoMD), // there's a CoM and CoMD -> CoMD maps to a Vector3d so i'm using that
-
 
                 DynamicPressureKpa = vessel.dynamicPressurekPa,
                 StaticPressureKpa = vessel.staticPressurekPa,
@@ -532,6 +534,7 @@ namespace Blackbird.Models
             double weightedAtmosphericIsp = 0.0;
             double ispWeight = 0.0;
             
+            // dufixme: where is 101.325 coming from?
             double pressureAtm = MathHelpers.IsFinite(vessel.staticPressurekPa) ? vessel.staticPressurekPa / 101.325 : 0.0;
 
             foreach (Part part in vessel.parts)

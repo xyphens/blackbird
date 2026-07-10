@@ -25,7 +25,6 @@ namespace Blackbird.Trajectory
                 WorldPosition = worldPosition,
                 WorldVelocity = vessel.obt_velocity,
                 RelativePosition = relativePosition,
-                RelativeVelocity = vessel.obt_velocity,
                 AltitudeMeters = OrbitMath.GetAltitudeAtPosition(body, worldPosition),
                 LatitudeDeg = vessel.latitude,
                 LongitudeDeg = vessel.longitude

@@ -1,6 +1,8 @@
-﻿using Blackbird.Mathematics;
+﻿using Blackbird.Logging;
+using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Modules;
+using Blackbird.Psg;
 using Blackbird.Trajectory;
 using System;
 
@@ -63,7 +65,7 @@ namespace Blackbird.Guidance
         // readout (rel-inc / RAAN vs target) has it.
         public void SetTargetVessel(Vessel target) => TargetVessel = target;
         private readonly AscentGuidance _ascentGuidance = new AscentGuidance();
-
+        
         public void Init(SharedState s)
         {
             if (s == null || FlightGlobals.ActiveVessel == null) return;
@@ -82,6 +84,9 @@ namespace Blackbird.Guidance
         }
         
         public AscentGuidanceInfo GuidanceInfo { get; private set; }
+        public PsgSolution CurrentSolution => _ascentGuidance.CurrentSolution;
+
+        public readonly AscentRecorder AscentReport = new AscentRecorder();
         public double SecondsUntilLaunch
         {
             get
@@ -153,6 +158,7 @@ namespace Blackbird.Guidance
             if (State != LaunchGuidanceState.AwaitingLaunch && State != LaunchGuidanceState.WarpingToLaunch) return;
             TimeWarp.SetRate(0, true);
             _ascentGuidance.Reset();
+            AscentReport.Reset();
             _completionControlReleased = false;
             State = LaunchGuidanceState.GuidingAscent;
         }
@@ -368,11 +374,27 @@ namespace Blackbird.Guidance
                         ManualRollCommand,
                         GuidanceMode);
 
-                if (GuidanceInfo != null && GuidanceInfo.IsGuidanceComplete)
+                if (GuidanceInfo != null)
                 {
-                    State = LaunchGuidanceState.Complete;
-                    bbState.GuidanceState = LaunchGuidanceState.Complete;
-                    bbState.ActiveModule = BlackbirdModule.None;
+                    if (AscentReport.LOG_ENABLED)
+                    {
+                        double ut = Planetarium.GetUniversalTime();
+                        AscentReport.LatchProjected(
+                                    AscentPathProvider.Build(_ascentGuidance.CurrentSolution, vessel),
+                                    vessel.mainBody.Radius,
+                                    GuidanceInfo.TargetApoapsisAlt);
+                        AscentReport.SampleActual(vessel, ut);
+                    }
+
+                    if (GuidanceInfo.IsGuidanceComplete)
+                    {
+                        if (AscentReport.HasData) AscentReport.WriteReport();
+
+                        State = LaunchGuidanceState.Complete;
+                        bbState.GuidanceState = LaunchGuidanceState.Complete;
+                        bbState.ActiveModule = BlackbirdModule.None;
+                    }
+
                 }
             }
 

@@ -42,7 +42,7 @@ namespace Blackbird.Guidance
         private bool _complete;
         private Task<PsgOptimizationResult> _solveTask;
         private PsgProblem _pendingProblem;
-        private PsgSolution _solution;
+        public PsgSolution CurrentSolution;
         private TerminalSteeringGate _terminalGate;
         private double _lastSolveRequestUt = double.NegativeInfinity;
         private string _optimizerStatus = "PSG idle";
@@ -69,6 +69,7 @@ namespace Blackbird.Guidance
         public double PredictedPeriapsisAlt { get; private set; } = double.NaN;
         private double _lastPredictionUt = double.NegativeInfinity;
         private const double PredictionIntervalSeconds = 0.5;
+        // trajectory plotting
 
         public void Reset()
         {
@@ -77,7 +78,7 @@ namespace Blackbird.Guidance
             _optimizerFailCount = 0;
             _solveTask = null;
             _pendingProblem = null;
-            _solution = null;
+            CurrentSolution = null;
             _terminalGate.Reset();
             _lastSolveRequestUt = double.NegativeInfinity;
             _optimizerStatus = "PSG idle";
@@ -142,8 +143,8 @@ namespace Blackbird.Guidance
             double r = Math.Max(1e-9, relPos.magnitude);
             double h = Vector3d.Cross(relPos, vesselState.OrbitalVelocity).magnitude;
             double e = 0.5 * vesselState.OrbitalVelocity.sqrMagnitude - vesselState.BodyGravParameter / r;
-            double targetH = _solution != null ? _solution.TerminalAngularMomentum : double.NaN;
-            double targetE = _solution != null ? _solution.TerminalSpecificEnergy : double.NaN;
+            double targetH = CurrentSolution != null ? CurrentSolution.TerminalAngularMomentum : double.NaN;
+            double targetE = CurrentSolution != null ? CurrentSolution.TerminalSpecificEnergy : double.NaN;
             bbLogger.Write($"[{tag}] h={h:F0} (target {targetH:F0}, dH={h - targetH:F0}) e={e:F1} (target {targetE:F1}, dE={e - targetE:F1}) ap={vesselState.CurrentApoapsisAlt:F0} pe={vesselState.CurrentPeriapsisAlt:F0}");
         }
 
@@ -177,17 +178,17 @@ namespace Blackbird.Guidance
 
             // Terminal completion shutoff: energy (size) + mean-radius latch + banded real-Pe (shape),
             // evaluated only near the plan's end (or when the plan end recedes - the runaway signature).
-            if (!_complete && _solution != null && _solution.IsValid)
+            if (!_complete && CurrentSolution != null && CurrentSolution.IsValid)
             {
-                if (MathHelpers.IsFinite(_solution.FinalUniversalTime))
+                if (MathHelpers.IsFinite(CurrentSolution.FinalUniversalTime))
                 {
                     _minPlanFinalUt = double.IsNaN(_minPlanFinalUt)
-                        ? _solution.FinalUniversalTime
-                        : Math.Min(_minPlanFinalUt, _solution.FinalUniversalTime);
+                        ? CurrentSolution.FinalUniversalTime
+                        : Math.Min(_minPlanFinalUt, CurrentSolution.FinalUniversalTime);
                 }
 
                 bool gateArmed = ShouldEvaluateTerminalGate(
-                    _solution.TimeToGo(vesselState.UniversalTime), _solution.FinalUniversalTime, _minPlanFinalUt);
+                    CurrentSolution.TimeToGo(vesselState.UniversalTime), CurrentSolution.FinalUniversalTime, _minPlanFinalUt);
                 if (!gateArmed)
                 {
                     // dormant mid-plan: the shape-grace clock must measure contiguous blocked time near the end
@@ -207,7 +208,7 @@ namespace Blackbird.Guidance
                     J2RadiusExtremes(vesselState, out double minR, out double maxR);
                     double band = TerminalShapeBandMeters(ob.J2, ob.ReferenceRadiusMeters, rMag);
                     TerminalCutDecision cut = DecideTerminalCut(
-                        e, _solution.TerminalSpecificEnergy, minR, maxR, targetRadius, targetPeRadius, band);
+                        e, CurrentSolution.TerminalSpecificEnergy, minR, maxR, targetRadius, targetPeRadius, band);
 
                     if (cut == TerminalCutDecision.Complete)
                     {
@@ -245,11 +246,11 @@ namespace Blackbird.Guidance
                 LogCompletion("psg-failure-bailout", vesselState);
             }
 
-            double velocityToGo = _solution != null && _solution.IsValid
-                ? _solution.VelocityToGo(vesselState.UniversalTime)
+            double velocityToGo = CurrentSolution != null && CurrentSolution.IsValid
+                ? CurrentSolution.VelocityToGo(vesselState.UniversalTime)
                 : EstimateVelocityToGo(vesselState, ascentProfile);
-            double timeToGo = _solution != null && _solution.IsValid
-                ? _solution.TimeToGo(vesselState.UniversalTime)
+            double timeToGo = CurrentSolution != null && CurrentSolution.IsValid
+                ? CurrentSolution.TimeToGo(vesselState.UniversalTime)
                 : EstimateTimeToGoSeconds(vesselState, velocityToGo);
 
             //LogVelocityCheck(vesselState, timeToGo);
@@ -270,7 +271,7 @@ namespace Blackbird.Guidance
                     true);
             }
 
-            if (_solution != null && _solution.IsValid)
+            if (CurrentSolution != null && CurrentSolution.IsValid)
             {
                 bool isExpired = IsSolutionExpired(vesselState.UniversalTime);
 
@@ -292,7 +293,7 @@ namespace Blackbird.Guidance
                         true);
                 }
 
-                if (isExpired && vesselState.UniversalTime > _solution.FinalUniversalTime + TerminalOverrunGraceSeconds)
+                if (isExpired && vesselState.UniversalTime > CurrentSolution.FinalUniversalTime + TerminalOverrunGraceSeconds)
                 {
                     _complete = true;
                     _phase = PoweredGuidancePhase.Complete;
@@ -310,12 +311,12 @@ namespace Blackbird.Guidance
                         true);
                 }
 
-                PsgGuidanceVector guidance = _solution.InertialGuidance(vesselState.UniversalTime);
+                PsgGuidanceVector guidance = CurrentSolution.InertialGuidance(vesselState.UniversalTime);
                 if (guidance != null && guidance.IsValid)
                 {
                     // Hold the last followable steering: reject an ill-conditioned terminal solve that commands a
                     // turn the craft can't fly (orbit error -> 0 makes the thrust direction singular near cutoff).
-                    double gateMaxRate = _solution.TimeToGo(vesselState.UniversalTime) <= TerminalSolveHorizonSeconds
+                    double gateMaxRate = CurrentSolution.TimeToGo(vesselState.UniversalTime) <= TerminalSolveHorizonSeconds
                                         ? AttitudeControl.MaxControlRateRadPerSec(vesselState.Vessel)
                                         : 0.0;
 
@@ -350,7 +351,7 @@ namespace Blackbird.Guidance
                     Vector3d heldDirection = GetSurfaceCommandDirection(vesselState, heldHeading, psgPitch);
 
                     
-                    double commandedThrottle = _solution.TimeToGo(vesselState.UniversalTime) <= 0.0 ? 1.0 : guidance.Throttle;
+                    double commandedThrottle = CurrentSolution.TimeToGo(vesselState.UniversalTime) <= 0.0 ? 1.0 : guidance.Throttle;
                     // claude added this
                     //double commandedThrottle = guidance.Throttle;
                     //if (_solution.TimeToGo(vesselState.UniversalTime) <= 0.0)
@@ -499,7 +500,7 @@ namespace Blackbird.Guidance
                 if (result != null && result.Success && result.Solution != null)
                 {
                     _optimizerFailCount = 0;
-                    _solution = result.Solution;
+                    CurrentSolution = result.Solution;
                     // No lock reset here: the gate self-limits (it only rejects unflyable commands), so it tracks
                     // the live direction every frame and needs no terminal-window arming.
                 }
@@ -544,7 +545,7 @@ namespace Blackbird.Guidance
                 return;
             }
 
-            PsgSolution warmStart = _runColdSolve ? null : _solution;
+            PsgSolution warmStart = _runColdSolve ? null : CurrentSolution;
             _runColdSolve = false;
 
             _lastSolveRequestUt = vesselState.UniversalTime;
@@ -556,7 +557,7 @@ namespace Blackbird.Guidance
 
         private void PinSolutionToGroundedTime(VesselState vesselState)
         {
-            if (_solution == null || !_solution.IsValid || vesselState == null || vesselState.Vessel == null) return;
+            if (CurrentSolution == null || !CurrentSolution.IsValid || vesselState == null || vesselState.Vessel == null) return;
 
             Vessel.Situations situation = vesselState.Vessel.situation;
             if (situation != Vessel.Situations.PRELAUNCH &&
@@ -566,28 +567,28 @@ namespace Blackbird.Guidance
                 return;
             }
 
-            _solution.ShiftStartUniversalTime(vesselState.UniversalTime);
+            CurrentSolution.ShiftStartUniversalTime(vesselState.UniversalTime);
         }
 
         private bool IsSolutionStale(double universalTime)
         {
-            return _solution == null ||
-                   !_solution.IsValid ||
-                   universalTime - _solution.CreatedUniversalTime > SolutionStaleSeconds;
+            return CurrentSolution == null ||
+                   !CurrentSolution.IsValid ||
+                   universalTime - CurrentSolution.CreatedUniversalTime > SolutionStaleSeconds;
         }
 
         private bool IsSolutionExpired(double universalTime)
         {
-            return _solution != null &&
-                   _solution.IsValid &&
-                   universalTime > _solution.FinalUniversalTime + ExpiredSolutionGraceSeconds;
+            return CurrentSolution != null &&
+                   CurrentSolution.IsValid &&
+                   universalTime > CurrentSolution.FinalUniversalTime + ExpiredSolutionGraceSeconds;
         }
 
         private double GetSolveIntervalSeconds(double universalTime)
         {
-            if (_solution == null || !_solution.IsValid) return RetryIntervalSeconds;
+            if (CurrentSolution == null || !CurrentSolution.IsValid) return RetryIntervalSeconds;
 
-            double timeToGo = _solution.TimeToGo(universalTime);
+            double timeToGo = CurrentSolution.TimeToGo(universalTime);
             return timeToGo <= TerminalSolveHorizonSeconds
                 ? TerminalSolveIntervalSeconds
                 : SolveIntervalSeconds;
@@ -606,7 +607,7 @@ namespace Blackbird.Guidance
 
         private bool IsPsgTerminalComplete(VesselState vesselState, AscentProfile ascentProfile)
         {
-            if (_solution == null || !_solution.IsValid) return false;
+            if (CurrentSolution == null || !CurrentSolution.IsValid) return false;
             if (IsSolutionExpired(vesselState.UniversalTime)) return false;
 
             double targetPeRadius = vesselState.BodyRadius + ascentProfile.TargetPeriapsisAlt;
@@ -631,9 +632,9 @@ namespace Blackbird.Guidance
 
         private Vector3d GetCurrentThrustDirection(VesselState vesselState, double profileHeadingDeg, double profilePitchDeg)
         {
-            if (_solution != null && _solution.IsValid)
+            if (CurrentSolution != null && CurrentSolution.IsValid)
             {
-                PsgGuidanceVector guidance = _solution.InertialGuidance(vesselState.UniversalTime);
+                PsgGuidanceVector guidance = CurrentSolution.InertialGuidance(vesselState.UniversalTime);
                 if (guidance != null && guidance.IsValid && guidance.InertialDirection.sqrMagnitude > 0.0)
                     return guidance.InertialDirection.normalized;
             }

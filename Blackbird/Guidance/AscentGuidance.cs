@@ -3,18 +3,20 @@ using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Trajectory;
 using Blackbird.Modules;
+using Blackbird.Psg;
 
 namespace Blackbird.Guidance
 {
     public sealed class AscentGuidance
     {
         private readonly PoweredAscentGuidance _poweredGuidance = new PoweredAscentGuidance();
-        private readonly ClassicAscentGuidance2 _classicGuidance = new ClassicAscentGuidance2();
+        private readonly ClassicAscentGuidance _classicGuidance = new ClassicAscentGuidance();
+        public PsgSolution CurrentSolution => _poweredGuidance.CurrentSolution;
 
         private bool IsRSS = false;
-        private bool IsPrincipia = false;
-        private double _holdPitchUntilAlt = 0.0;
-        private double _minVrfSpeedToPitch = 100.0;
+        private bool IsPrincipia = false; // tells us if we need to factor J2/use custom functions to better approximate orbital state
+        private double _holdPitchUntilAlt = 0.0; // wait until cleared launch pad to pitch
+        private double _minVrfSpeedToPitch = 100.0; // wait until m/s velocity to pitch
         private bool _handedToPsg;   // latched at the PSG handoff so it can't bounce back into the bootstrap turn
 
         // important to call this before the class is used
@@ -109,11 +111,6 @@ namespace Blackbird.Guidance
                 commandHeading = followPsgInertial && poweredCommand != null
                     ? poweredCommand.HeadingDeg
                     : MathHelpers.NormalizeDegrees(profileHeading);
-
-                // note: replaced ClampPitchForAutopilot/ClampPitchForControl with MathHelpers.Clamp
-                //commandPitch = poweredCommand != null
-                //            ? MathHelpers.Clamp(poweredCommand.PitchDeg, -30.0, 90.0)
-                //            : MathHelpers.Clamp(profilePitch, -30.0, 90.0);
 
                 commandThrottle = poweredCommand != null ? poweredCommand.Throttle : profileThrottle;
                 commandRoll = 0.0;
@@ -254,7 +251,6 @@ namespace Blackbird.Guidance
             double angleFromUp = Vector3d.Angle(srfVel.normalized, up);
             return 90.0 - angleFromUp;
         }
-
 
         // Computes a usable launch heading when the selected plan does not provide one.
         private static double GetFallbackLaunchHeading(Vessel vessel, LaunchPlan plan)
