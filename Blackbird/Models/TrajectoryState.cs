@@ -14,7 +14,6 @@ namespace Blackbird.Models
         public Vector3d WorldPosition { get; set; }
         public Vector3d WorldVelocity { get; set; }
         public Vector3d RelativePosition { get; set; }
-        public Vector3d RelativeVelocity { get; set; }
 
         public double AltitudeMeters { get; set; }
         public double LatitudeDeg { get; set; }

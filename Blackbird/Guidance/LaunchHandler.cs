@@ -87,6 +87,8 @@ namespace Blackbird.Guidance
         public PsgSolution CurrentSolution => _ascentGuidance.CurrentSolution;
 
         public readonly AscentRecorder AscentReport = new AscentRecorder();
+        public bool TrackTrajectory = false;
+
         public double SecondsUntilLaunch
         {
             get
@@ -322,7 +324,6 @@ namespace Blackbird.Guidance
                 TargetOrbitNormal = TrajectoryProvider.GetOrbitNormal(target)
             };
         }
-
         public void Reset()
         {
             if (bbState != null) bbState.LaunchPlan = null;
@@ -376,7 +377,7 @@ namespace Blackbird.Guidance
 
                 if (GuidanceInfo != null)
                 {
-                    if (AscentReport.LOG_ENABLED)
+                    if (TrackTrajectory)
                     {
                         double ut = Planetarium.GetUniversalTime();
                         AscentReport.LatchProjected(
@@ -388,7 +389,7 @@ namespace Blackbird.Guidance
 
                     if (GuidanceInfo.IsGuidanceComplete)
                     {
-                        if (AscentReport.HasData) AscentReport.WriteReport();
+                        if (AscentReport.HasData && TrackTrajectory && AscentReport.LOG_ENABLED) AscentReport.WriteReport();
 
                         State = LaunchGuidanceState.Complete;
                         bbState.GuidanceState = LaunchGuidanceState.Complete;

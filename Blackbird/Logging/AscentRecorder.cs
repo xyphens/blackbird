@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Blackbird.Logging;
 using Blackbird.Mathematics;
 using Blackbird.Models;
+using Blackbird.Psg;
 using UnityEngine;
 
 namespace Blackbird.Logging
@@ -11,6 +12,8 @@ namespace Blackbird.Logging
     {
         private const double SampleIntervalSeconds = 1.0;
         private const int MaxActualSamples = 4000;
+        private const double ProjectionStepSeconds = 5.0; // RK4 step for the forward propagation
+
         private readonly BlackbirdLog _log = new BlackbirdLog(LogContext.Trajectory);
         public bool LOG_ENABLED = true;
 
@@ -45,7 +48,8 @@ namespace Blackbird.Logging
 
         private readonly List<Sample> _projected = new List<Sample>();
         private readonly List<Sample> _actual = new List<Sample>();
-
+        public int ActualCount => _actual.Count;
+        
         private bool _latched;
         private double _latchUt = double.NaN;
         private Vector3d _refDir;
@@ -54,7 +58,60 @@ namespace Blackbird.Logging
         private double _lastSampleUt = double.NegativeInfinity;
 
         public bool HasProjection => _latched;
+        public double TargetApAlt => _targetApAlt;
         public bool HasData => _latched && _actual.Count > 0;
+        private const double ProjectionHorizonSeconds = 300.0; // forward ballistic window
+
+        public bool GetHistory(out double[] altMeters, out double[] downrangeMeters)
+        {
+            int nn = _actual.Count;
+            if (nn < 2) { altMeters = null; downrangeMeters = null; return false; }
+            altMeters = new double[nn];
+            downrangeMeters = new double[nn];
+            for (int i = 0; i < nn; i++)
+            {
+                altMeters[i] = _actual[i].AltMeters;
+                downrangeMeters[i] = _actual[i].DownrangeMeters;
+            }
+            return true;
+        }
+
+        // J2-propagated from current state forward;
+        // shows coast/descent when suborbital stopping at impact or opposite end
+        public bool GetBallisticProjection(Vessel vessel, out double[] altMeters, out double[] downrangeMeters)
+        {
+            altMeters = null; downrangeMeters = null;
+            if (!_latched || vessel == null || vessel.mainBody == null) return false;
+
+            BodyOblateness.Oblateness ob = BodyOblateness.For(vessel.mainBody);
+            Vector3 up = vessel.mainBody.transform.up;
+            Vector3d pole = new Vector3d(up.x, up.y, up.z).normalized;
+            double mu = vessel.mainBody.gravParameter;
+
+            Vector3d r = vessel.GetWorldPos3D() - vessel.mainBody.position;
+            Vector3d v = vessel.obt_velocity;
+
+            int steps = (int)(ProjectionHorizonSeconds / ProjectionStepSeconds);
+            var alt = new List<double>(steps + 1);
+            var down = new List<double>(steps + 1);
+            double prevDown = double.NegativeInfinity;
+
+            for (int i = 0; i <= steps; i++) {
+                double a = r.magnitude - _bodyRadius;
+                double dr = Downrange(r);
+                if (i > 0 && dr + 1.0 < prevDown) break; // past the far side; downrange folding back
+                alt.Add(a);
+                down.Add(dr);
+                prevDown = dr;
+                if (a <= 0.0) break; // ground impact
+                J2Propagator.Step(ref r, ref v, mu, ob.J2, ob.ReferenceRadiusMeters, pole, ProjectionStepSeconds);
+            }
+
+            if (alt.Count < 2) return false;
+            altMeters = alt.ToArray();
+            downrangeMeters = down.ToArray();
+            return true;
+        }
 
         public void Reset()
         {
@@ -65,6 +122,7 @@ namespace Blackbird.Logging
             _lastSampleUt = double.NegativeInfinity;
             _targetApAlt = double.NaN;
         }
+
         public void LatchProjected(AscentPath path, double bodyRadius, double targetApAlt)
         {
             if (_latched || path == null || !path.IsValid) return;
@@ -77,7 +135,15 @@ namespace Blackbird.Logging
             _projected.Clear();
             foreach (AscentPathPoint p in path.Points)   // was PsgSolutionPoint
             {
-                _projected.Add(new Sample { /* identical body */ });
+                _projected.Add(new Sample
+                {
+                    T = p.UniversalTime - _latchUt,
+                    AltMeters = p.RelativePosition.magnitude - bodyRadius,
+                    DownrangeMeters = Downrange(p.RelativePosition),
+                    InertialSpeedMps = p.RelativeVelocity.magnitude,
+                    MassKg = p.MassKg,
+                    ThrustOrThrottle = p.Throttle
+                });
             }
             _latched = true;
         }
@@ -93,13 +159,13 @@ namespace Blackbird.Logging
             VesselState vs = VesselState.FromVessel(vessel);
             if (vs == null || vs.Body == null) return;
 
-            //Vector3d rel = vs.Position - vs.Body.position;
             // dufixme: can i use this instead?
+            //Vector3d rel = vs.Position - vs.Body.position;
             _actual.Add(new Sample
             {
                 T = ut - _latchUt,
-                AltMeters = vs.TrajectoryState.RelativeVelocity.magnitude,
-                DownrangeMeters = Downrange(vs.TrajectoryState.RelativeVelocity),
+                AltMeters = vs.TrajectoryState.RelativePosition.magnitude - _bodyRadius,
+                DownrangeMeters = Downrange(vs.TrajectoryState.RelativePosition),
                 InertialSpeedMps = vs.OrbitalVelocity.magnitude,
                 MassKg = vs.TotalMass * 1000.0, // vs mass in tons, PSG in kg
                 ThrustOrThrottle = vs.ThrustToWeight
@@ -114,7 +180,6 @@ namespace Blackbird.Logging
             return Math.Acos(d) * _bodyRadius;
         }
 
-        // write projected + actual paths with a diff summary to csv in KSP root
         public void WriteReport()
         {
             if (!_latched || !LOG_ENABLED) return;

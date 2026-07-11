@@ -124,7 +124,7 @@
     <Compile Include="Math\OrbitMath.cs" />
     <Compile Include="Math\TwoBody.cs" />
     <Compile Include="Math\LambertSolver.cs" />
-    <Compile Include="Planning\Trajectory.cs" />
+    <Compile Include="Planning\TrajectoryPlot.cs" />
     <Compile Include="PSG\J2Oblateness.cs" />
     <Compile Include="RCS\Balancer.cs" />
     <Compile Include="RCS\Controller.cs" />

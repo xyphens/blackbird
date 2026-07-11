@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using Blackbird.Psg;
 using UnityEngine;
 
@@ -65,19 +66,26 @@ namespace Blackbird.Models
             double throttle = vessel.ctrlState != null ? vessel.ctrlState.mainThrottle : 0.0;
             Vector3d bodyPos = vessel.mainBody.position;
 
-            var pts = new AscentPathPoint[n + 1];
-            for (int i = 0; i < n; i++) {
+            var pts = new List<AscentPathPoint>(n + 1);
+            double prevR = double.NegativeInfinity;
+
+            for (int i = 0; i <= n; i++) {
                 double ut = now + horizon * i / n;
-                pts[i] = new AscentPathPoint
+                Vector3d rel = o.getPositionAtUT(ut) - bodyPos;
+                if (rel.magnitude + 1.0 < prevR) break; // stop at Ap
+                prevR = Math.Max(prevR, rel.magnitude);
+                pts.Add(new AscentPathPoint
                 {
                     UniversalTime = ut,
-                    RelativePosition = o.getPositionAtUT(ut) - bodyPos,
+                    RelativePosition = rel,
                     RelativeVelocity = o.getOrbitalVelocityAtUT(ut),
                     MassKg = massKg,
                     Throttle = throttle
-                };
+                });
             }
-            return new AscentPath { CreatedUniversalTime = now, Points = pts };
+
+            if (pts.Count < 2) return null;
+            return new AscentPath { CreatedUniversalTime = now, Points = pts.ToArray() };
         }
     }
 }

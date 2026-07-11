@@ -17,8 +17,7 @@ namespace Blackbird.Modules
         private string _headingInputText = "90";
         private string _rollInputText = "90";
         private string _throttleInputText = "0";
-        private bool _showAdvancedDetails;
-        private readonly Planning.Trajectory _trajectoryPlot = new Planning.Trajectory();
+        private readonly TrajectoryPlot _trajectoryPlot = new Planning.TrajectoryPlot();
         private const double MinSecondsToUseWarp = 10.0;
         private readonly string[] _guidanceModeLabels = { "None", "Manual", "Autopilot" };
 
@@ -40,7 +39,7 @@ namespace Blackbird.Modules
             {
                 _windowRect.height = 0f;
                 _wasVisible = true;
-                _showAdvancedDetails = false;
+                if (_launchHandler != null) _launchHandler.TrackTrajectory = false;
             }
 
             if (bbState == null || !bbState.GuidanceVisible) return;
@@ -301,10 +300,11 @@ namespace Blackbird.Modules
                 GUILayout.Label($"Plane Error: {FormatNum(guidanceInfo.PlaneErrorDeg, "F2", "°")}");
             }
 
-            _showAdvancedDetails = GUILayout.Toggle(_showAdvancedDetails, "Show Advanced Details");
-            if (_showAdvancedDetails)
+
+            _launchHandler.TrackTrajectory = GUILayout.Toggle(_launchHandler.TrackTrajectory, "Show Advanced Details");
+            if (_launchHandler.TrackTrajectory)
             {
-                DrawAdvancedDetails(bbState.LaunchPlan, bbState.LaunchPlan.TargetVessel);
+                //DrawAdvancedDetails(bbState.LaunchPlan, bbState.LaunchPlan.TargetVessel);
                 DrawTrajectory();
             }
 
@@ -314,8 +314,14 @@ namespace Blackbird.Modules
         private void DrawTrajectory()
         {
             GUILayout.Space(10);
-            Vessel v = FlightGlobals.ActiveVessel;
-            _trajectoryPlot.Draw(_launchHandler.CurrentSolution, v.mainBody.Radius, _launchHandler.GuidanceInfo.TargetApoapsisAlt, 340, 170);
+            var rec = _launchHandler.AscentReport;
+            rec.GetHistory(out double[] hAlt, out double[] hDown);
+            rec.GetBallisticProjection(FlightGlobals.ActiveVessel, out double[] pAlt, out double[] pDown);
+
+            double tgtAp = _launchHandler.GuidanceInfo != null ? _launchHandler.GuidanceInfo.TargetApoapsisAlt : rec.TargetApAlt;
+
+            _trajectoryPlot.Draw(hAlt, hDown, pAlt, pDown, tgtAp, 360, 170);
+
             if (!double.IsNaN(_trajectoryPlot.MaxLoftAboveTargetMeters) && !double.IsInfinity(_trajectoryPlot.MaxLoftAboveTargetMeters))
             {
                 GUILayout.Label($"Loft above target Ap: {_trajectoryPlot.MaxLoftAboveTargetMeters / 1000.0:F1} km");
