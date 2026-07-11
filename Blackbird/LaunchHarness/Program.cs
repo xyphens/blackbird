@@ -41,7 +41,159 @@ namespace Blackbird.LaunchHarness
             CheckPrecessionAwareWindow();
             CheckSaturnVLaunchWindow();
             CheckAscentPitchSchedule();
+            CheckAscentPredictorReproducesFlight();
+            CheckAscentShootingSolver();
             return 0;
+        }
+
+        // P0 calibration: proves the AscentIntegrator physics (central gravity + RSS drag + variable mass) by
+        // reproducing the flown Starship ascent from trajectory.log. Driven by the flown thrust ATTITUDE (backed out
+        // of the log's 2D momentum balance), the engine must reproduce the flown surface flight-path angle and speed
+        // -- headline: too-vertical 76 deg at 34 km. Validates the engine, not a fitted constant; drag is a ~2%
+        // perturbation here, so the FPA reproduction is a gravity+steering check. Tolerances: 1.5 deg FPA / 4% speed.
+        private static void CheckAscentPredictorReproducesFlight()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== Ascent predictor: reproduce flown Starship ascent (RK4 engine calibration) ===");
+
+            // Vehicle: Starship+SuperHeavy stage 1 from the log (thrust ~74.3 MN, mdot ~22192 kg/s => Isp ~341 s).
+            const double thrust = 74.3e6, mdot = 22192.0, cdA = 55.0;
+            const double startAltM = 137.4, startMassKg = 5209193.0;
+
+            // Flown thrust attitude (pitch from local vertical, deg) vs altitude (m), backed out of the log.
+            AttPoint[] attitude =
+            {
+                new AttPoint(138, 0.31),   new AttPoint(2147, 0.12),  new AttPoint(4181, 0.46),  new AttPoint(6213, 2.85),
+                new AttPoint(8419, 4.25),  new AttPoint(10659, 5.63), new AttPoint(12792, 7.00), new AttPoint(15182, 8.55),
+                new AttPoint(17292, 9.92), new AttPoint(19586, 11.40),new AttPoint(22074, 13.01),new AttPoint(24763, 14.76),
+                new AttPoint(26916, 16.15),new AttPoint(29192, 17.63),new AttPoint(31592, 19.20),new AttPoint(34119, 20.85),
+                new AttPoint(36778, 22.61),new AttPoint(39570, 24.45),new AttPoint(42497, 26.38),new AttPoint(44525, 27.71),
+                new AttPoint(46615, 29.09),new AttPoint(48768, 30.50),new AttPoint(50983, 31.97),new AttPoint(53261, 33.47),
+                new AttPoint(55602, 35.02),new AttPoint(58006, 36.62),new AttPoint(60473, 38.25),new AttPoint(63004, 39.93),
+                new AttPoint(65596, 41.64),new AttPoint(68251, 43.41),new AttPoint(70968, 45.21),new AttPoint(73744, 47.07),
+            };
+
+            var cfg = new AscentDynamicsConfig
+            {
+                Mu = EarthMu,
+                BodyRadius = EarthRadius,
+                DragAreaCd = cdA,
+                Stages = new[] { new AscentStage { ThrustNewtons = thrust, MassFlowKgPerSec = mdot, PropellantKg = 3.0e6, JettisonMassKg = 0.0 } },
+                DensityAtAltitude = RssAtmosphere.Density,
+                SteeringPitchFromVerticalDeg = st => InterpAttitude(attitude, st.AltitudeMeters(EarthRadius)),
+            };
+
+            var integrator = new AscentIntegrator(cfg);
+            AscentState s0 = new AscentState { T = 0, X = EarthRadius + startAltM, Y = 0, Vx = 0, Vy = 0, MassKg = startMassKg };
+            List<AscentState> path = integrator.Integrate(s0, 0.25, st => st.AltitudeMeters(EarthRadius) >= 62000.0, 4000);
+
+            // Flown reference checkpoints (alt m, surface speed, surface FPA deg) from trajectory.log.
+            Ref[] refs =
+            {
+                new Ref(6000, 280.2, 88.93),  new Ref(12000, 434.0, 85.81), new Ref(20000, 603.2, 82.17),
+                new Ref(34000, 872.4, 76.21), new Ref(45000, 1079.9, 71.58),new Ref(60000, 1343.7, 65.73),
+            };
+
+            foreach (Ref r in refs)
+            {
+                AscentState sim = StateAtAltitude(path, r.AltM);
+                double fpa = sim.FlightPathAngleDeg, vs = sim.SurfaceSpeed;
+                double dFpa = fpa - r.FpaDeg, dVsPct = 100.0 * (vs - r.Vs) / r.Vs;
+                bool pass = Math.Abs(dFpa) <= 1.5 && Math.Abs(dVsPct) <= 4.0;
+
+                Console.WriteLine(string.Format(
+                    "  {0,3:F0} km  sim FPA {1,5:F1}  Vs {2,5:F0}  |  flown FPA {3,5:F1}  Vs {4,5:F0}  |  dFPA {5,5:F2}  dVs {6,5:F1}%  {7}",
+                    r.AltM / 1000.0, fpa, vs, r.FpaDeg, r.Vs, dFpa, dVsPct, pass ? "PASS" : "FAIL"));
+                if (!pass) throw new Exception(string.Format(
+                    "Ascent predictor did not reproduce flight at {0:F0} km (dFPA {1:F2} deg, dVs {2:F1}%).",
+                    r.AltM / 1000.0, dFpa, dVsPct));
+            }
+        }
+
+        // The kick-angle shooting solver run against the validated AscentIntegrator with the fuller phased steering
+        // law. Asserts STRUCTURAL invariants that hold regardless of the (still-open) handover/target choice, so the
+        // check never needs rewriting when those settle: (1) the kick->orbit-FPA map is monotonic; (2) orbit-frame FPA
+        // is below surface-frame FPA at handover (body co-rotation tilts velocity toward horizontal); (3) bisection
+        // lands a requested orbit-FPA target and reproduces it on re-integration; (4) the no-solution guard fires for
+        // an unreachable bracket. The steering here is the predictive kick law, so this exercises the engine as a
+        // true forward predictor. The 60 deg target is only a probe value, not a committed guidance number.
+        private static void CheckAscentShootingSolver()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== Ascent shooting solver: kick angle -> orbit-frame FPA at handover (fuller phased law) ===");
+
+            var io = new AscentShootingInputs
+            {
+                Mu = EarthMu,
+                BodyRadius = EarthRadius,
+                DragAreaCd = 55.0,
+                Stages = new[] { new AscentStage { ThrustNewtons = 74.3e6, MassFlowKgPerSec = 22192.0, PropellantKg = 3.0e6, JettisonMassKg = 0.0 } },
+                DensityAtAltitude = RssAtmosphere.Density,
+                InitialState = new AscentState { T = 0, X = EarthRadius + 137.4, Y = 0, Vx = 0, Vy = 0, MassKg = 5209193.0 },
+                TowerClearanceAltitudeMeters = 1000.0,
+                HandoverAltitudeMeters = 45000.0,
+                TargetFlightPathAngleDeg = 60.0,   // probe target (orbit frame); not a committed value
+                MaxKickDeg = 45.0,
+                StepSeconds = 0.5,
+                MaxSteps = 4000,
+                RotationRateRadPerSec = 2.0 * Math.PI / EarthSiderealDay,
+                LaunchLatitudeCos = Math.Cos(CapeLatitude * Math.PI / 180.0),
+                DynamicPressureShiftPa = 2000.0
+            };
+
+            // (1) monotonic in kick, and (2) orbit FPA < surface FPA at handover (co-rotation invariant)
+            double prevOrbit = double.MaxValue;
+            foreach (double k in new[] { 3.0, 4.0, 5.0, 8.0, 12.0 })
+            {
+                AscentHandoverPrediction p = AscentShootingSolver.PredictHandover(io, k);
+                Console.WriteLine(string.Format("  kick {0,4:F0}  ->  surface {1,6:F2}  orbit {2,6:F2}", k, p.SurfaceFpaDeg, p.OrbitFpaDeg));
+                if (p.OrbitFpaDeg > prevOrbit + 1e-6) throw new Exception("Kick->orbit-FPA map is not monotonic.");
+                if (p.OrbitFpaDeg > p.SurfaceFpaDeg + 1e-6) throw new Exception("Orbit FPA is not below surface FPA (co-rotation invariant violated).");
+                prevOrbit = p.OrbitFpaDeg;
+            }
+
+            // (3) converge to the probe orbit-FPA target, and reproduce it on an independent re-integration
+            AscentShootingResult r = AscentShootingSolver.Solve(io);
+            bool solveOk = r.Converged && Math.Abs(r.AchievedFlightPathAngleDeg - io.TargetFlightPathAngleDeg) <= 0.3
+                           && r.KickAngleDeg > 0.0 && r.KickAngleDeg < io.MaxKickDeg;
+            Console.WriteLine(string.Format("  solve orbit-FPA {0:F0} deg: kick {1:F3}  achieved {2:F3}  [{3}]  {4}",
+                io.TargetFlightPathAngleDeg, r.KickAngleDeg, r.AchievedFlightPathAngleDeg, r.Status, solveOk ? "PASS" : "FAIL"));
+            if (!solveOk) throw new Exception("Shooting solve did not reach target orbit FPA.");
+            double recheck = AscentShootingSolver.PredictHandover(io, r.KickAngleDeg).OrbitFpaDeg;
+            if (Math.Abs(recheck - io.TargetFlightPathAngleDeg) > 0.3) throw new Exception("Solved kick does not reproduce target orbit FPA.");
+
+            // (4) no-solution guard: a bracket too small to turn far enough must be flagged, not silently clamped
+            io.MaxKickDeg = 3.0;
+            io.TargetFlightPathAngleDeg = 20.0;   // demand a hard turn the 3 deg bracket cannot deliver by 45 km
+            AscentShootingResult g = AscentShootingSolver.Solve(io);
+            bool guardOk = !g.Converged && g.Status.IndexOf("TWR", StringComparison.OrdinalIgnoreCase) >= 0;
+            Console.WriteLine(string.Format("  guard (maxKick 3 deg, target 20 deg): converged={0}  status={1}  {2}", g.Converged, g.Status, guardOk ? "PASS" : "FAIL"));
+            if (!guardOk) throw new Exception("No-solution guard did not fire for an unreachable target.");
+        }
+
+        private struct AttPoint { public double Alt; public double PsiDeg; public AttPoint(double a, double p) { Alt = a; PsiDeg = p; } }
+        private struct Ref { public double AltM; public double Vs; public double FpaDeg; public Ref(double a, double v, double f) { AltM = a; Vs = v; FpaDeg = f; } }
+
+        // Linear interpolation of the backed-out attitude table (pitch from vertical) at an altitude.
+        private static double InterpAttitude(AttPoint[] t, double alt)
+        {
+            if (alt <= t[0].Alt) return t[0].PsiDeg;
+            if (alt >= t[t.Length - 1].Alt) return t[t.Length - 1].PsiDeg;
+            for (int i = 0; i < t.Length - 1; i++)
+            {
+                if (alt < t[i].Alt || alt > t[i + 1].Alt) continue;
+                double f = (alt - t[i].Alt) / (t[i + 1].Alt - t[i].Alt);
+                return t[i].PsiDeg + f * (t[i + 1].PsiDeg - t[i].PsiDeg);
+            }
+            return t[t.Length - 1].PsiDeg;
+        }
+
+        // First stepped state at or above the target altitude (0.25 s steps, so no interpolation needed).
+        private static AscentState StateAtAltitude(List<AscentState> path, double altM)
+        {
+            for (int i = 1; i < path.Count; i++)
+                if (path[i].AltitudeMeters(EarthRadius) >= altM) return path[i];
+            return path[path.Count - 1];
         }
 
         // Characterizes the pre-PSG gravity-turn pitch schedule. Golden values pin the CURRENT commanded curve
