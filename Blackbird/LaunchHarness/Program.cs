@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Blackbird.Guidance;
 using Blackbird.Planning;
 using UnityEngine;
 
@@ -39,7 +40,48 @@ namespace Blackbird.LaunchHarness
             CheckLaunchPlaneError();
             CheckPrecessionAwareWindow();
             CheckSaturnVLaunchWindow();
+            CheckAscentPitchSchedule();
             return 0;
+        }
+
+        // Characterizes the pre-PSG gravity-turn pitch schedule. Golden values pin the CURRENT commanded curve
+        // (turn start/end + pitch at 34 km) so the magic-number constants in GetTurnStartAltitude /
+        // GetHorizontalFlightAltitude can be reworked later without silently drifting the flown profile. RSS
+        // Earth's 34 km pitch must also land in the real-world 55-72 deg band (flight data ~60-68). Pure geometry.
+        private static void CheckAscentPitchSchedule()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== Ascent pitch-schedule characterization (locks the validated gravity turn) ===");
+
+            var cases = new[]
+            {
+                new { Name = "RSS Earth 209km", R = EarthRadius, Atm = 140000.0, Ap = 209000.0, Pe = 209000.0, RealWorld = true,  Start = 2100.0, End = 119000.0, P34 = 65.4 },
+                new { Name = "RSS Earth 350km", R = EarthRadius, Atm = 140000.0, Ap = 350000.0, Pe = 350000.0, RealWorld = true,  Start = 2100.0, End = 140000.0, P34 = 69.2 },
+                new { Name = "Kerbin 100km",    R = 600000.0,   Atm =  70000.0, Ap = 100000.0, Pe = 100000.0, RealWorld = false, Start =  480.0, End =  59500.0, P34 = 38.9 },
+                new { Name = "Kerbin 80km",     R = 600000.0,   Atm =  70000.0, Ap =  80000.0, Pe =  80000.0, RealWorld = false, Start =  480.0, End =  59500.0, P34 = 38.9 },
+            };
+
+            foreach (var c in cases)
+            {
+                double insertion = Math.Max(100.0, Math.Min(c.Ap, c.Pe));
+                double start = AscentProfileSolver.GetTurnStartAltitude(0.0, c.R, c.Atm, insertion);
+                double end = Math.Max(start + 1000.0, AscentProfileSolver.GetHorizontalFlightAltitude(c.Atm, insertion));
+                double p12 = AscentProfileSolver.GetSolvedPitchAtAltitude(12000.0, start, end);
+                double p34 = AscentProfileSolver.GetSolvedPitchAtAltitude(34000.0, start, end);
+                double p50 = AscentProfileSolver.GetSolvedPitchAtAltitude(50000.0, start, end);
+
+                bool golden = Math.Abs(start - c.Start) < 1.0 && Math.Abs(end - c.End) < 1.0 && Math.Abs(p34 - c.P34) < 0.3;
+                bool realWorldOk = !c.RealWorld || (p34 >= 55.0 && p34 <= 72.0);
+                bool monotonic = p12 >= p34 && p34 >= p50;
+                bool pass = golden && realWorldOk && monotonic;
+
+                Console.WriteLine(string.Format(
+                    "  {0,-16} start {1,5:F0}m  end {2,6:F0}m | pitch@ 12km {3,4:F1}  34km {4,4:F1}  50km {5,4:F1}  {6}",
+                    c.Name, start, end, p12, p34, p50, pass ? "PASS" : "FAIL"));
+                if (!pass) throw new Exception(string.Format(
+                    "Pitch-schedule characterization drift: {0} (start {1:F0}/exp {2:F0}, end {3:F0}/exp {4:F0}, p34 {5:F2}/exp {6:F2})",
+                    c.Name, start, c.Start, end, c.End, p34, c.P34));
+            }
         }
 
         // Faithful replay of the 2026-07-03 Saturn V flight in KSP's OWN frame (+Y pole, left-handed cross), using

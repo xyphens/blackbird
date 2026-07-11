@@ -162,24 +162,22 @@ namespace Blackbird.Guidance
         {
             double targetInsertionAlt = Math.Max(100.0, Math.Min(targetApoapsisAlt, targetPeriapsisAlt));
             double atmosphereTop = GetAtmosphereTop(vesselState);
-            double turnStartAlt = GetTurnStartAltitude(vesselState, atmosphereTop, targetInsertionAlt);
+            double turnStartAlt = GetTurnStartAltitude(vesselState.AltitudeMeters, vesselState.BodyRadius, atmosphereTop, targetInsertionAlt);
             double turnEndAlt = GetHorizontalFlightAltitude(atmosphereTop, targetInsertionAlt);
             turnEndAlt = Math.Max(turnStartAlt + 1000.0, turnEndAlt);
-            double exitPitchDeg = GetAtmosphereExitPitchDeg(atmosphereTop, turnEndAlt);
-            double shapeExponent = SolveTurnShapeExponent(turnStartAlt, turnEndAlt, atmosphereTop, exitPitchDeg);
 
             double[] controlAltitudes = CreateControlAltitudes(turnStartAlt, turnEndAlt, atmosphereTop);
             var points = new List<AscentProfilePoint>();
 
-            double initialPitch = GetSolvedPitchAtAltitude(vesselState.AltitudeMeters, turnStartAlt, turnEndAlt, shapeExponent);
-            double initialThrottle = GetSolvedThrottleAtAltitude(vesselState.AltitudeMeters, turnStartAlt, turnEndAlt);
+            double initialPitch = GetSolvedPitchAtAltitude(vesselState.AltitudeMeters, turnStartAlt, turnEndAlt);
+            double initialThrottle = GetSolvedThrottleAtAltitude(vesselState.AltitudeMeters, turnEndAlt);
             AddPoint(points, vesselState.AltitudeMeters, initialPitch, headingDeg, initialThrottle);
 
             for (int i = 0; i < controlAltitudes.Length; i++)
             {
                 double altitude = controlAltitudes[i];
-                double pitch = GetSolvedPitchAtAltitude(altitude, turnStartAlt, turnEndAlt, shapeExponent);
-                double throttle = GetSolvedThrottleAtAltitude(altitude, turnStartAlt, turnEndAlt);
+                double pitch = GetSolvedPitchAtAltitude(altitude, turnStartAlt, turnEndAlt);
+                double throttle = GetSolvedThrottleAtAltitude(altitude, turnEndAlt);
                 AddPoint(points, altitude, pitch, headingDeg, throttle);
             }
 
@@ -212,27 +210,18 @@ namespace Blackbird.Guidance
         }
 
         // Chooses where the bootstrap gravity turn begins before PSG owns the thrust vector.
-        private static double GetTurnStartAltitude(VesselState vesselState, double atmosphereTop, double insertionAlt)
+        // Pure (plain doubles) so the pitch schedule can be characterized offline in the harness.
+        public static double GetTurnStartAltitude(double currentAltitude, double bodyRadius, double atmosphereTop, double insertionAlt)
         {
             double pressureStart = atmosphereTop > 0.0 ? atmosphereTop * 0.015 : insertionAlt * 0.05;
-            double radiusScaledStart = vesselState.BodyRadius * 0.0008;
+            double radiusScaledStart = bodyRadius * 0.0008;
             double start = Math.Max(250.0, Math.Min(pressureStart, radiusScaledStart));
 
-            return MathHelpers.Clamp(start, vesselState.AltitudeMeters, insertionAlt * 0.25);
-        }
-
-        // Computes the desired pitch near atmosphere exit from target altitude and atmospheric depth.
-        private static double GetAtmosphereExitPitchDeg(double atmosphereTop, double turnEndAlt)
-        {
-            if (atmosphereTop <= 0.0) return 0.0;
-            if (turnEndAlt <= atmosphereTop) return 0.0;
-
-            double coastFraction = (turnEndAlt - atmosphereTop) / turnEndAlt;
-            return MathHelpers.Clamp(5.0 + coastFraction * 15.0, 2.0, 20.0);
+            return MathHelpers.Clamp(start, currentAltitude, insertionAlt * 0.25);
         }
 
         // Chooses where the bootstrap profile becomes horizontal instead of waiting for apoapsis.
-        private static double GetHorizontalFlightAltitude(double atmosphereTop, double insertionAlt)
+        public static double GetHorizontalFlightAltitude(double atmosphereTop, double insertionAlt)
         {
             if (atmosphereTop > 0.0)
             {
@@ -245,28 +234,6 @@ namespace Blackbird.Guidance
             }
 
             return insertionAlt * 0.50;
-        }
-
-        // Solves the curve exponent so pitch at atmosphere edge matches the desired exit pitch.
-        private static double SolveTurnShapeExponent(
-            double turnStartAlt,
-            double turnEndAlt,
-            double atmosphereTop,
-            double exitPitchDeg)
-        {
-            double referenceAlt = atmosphereTop > turnStartAlt && atmosphereTop < turnEndAlt
-                ? atmosphereTop
-                : turnEndAlt;
-
-            double progress = MathHelpers.Clamp(
-                (referenceAlt - turnStartAlt) / (turnEndAlt - turnStartAlt),
-                0.001,
-                0.999);
-
-            double normalizedPitch = MathHelpers.Clamp(exitPitchDeg / 90.0, 0.001, 0.999);
-            double exponent = Math.Log(1.0 - normalizedPitch) / Math.Log(progress);
-
-            return MathHelpers.Clamp(exponent, 0.35, 2.5);
         }
 
         // Creates altitude samples for stable interpolation before PSG guidance is available.
@@ -292,22 +259,23 @@ namespace Blackbird.Guidance
             return altitudes.ToArray();
         }
 
-        // Evaluates the solved gravity-turn curve at one altitude.
-        private static double GetSolvedPitchAtAltitude(
+        // Evaluates the gravity-turn curve at one altitude: a linear 90->0 deg ramp over the turn span.
+        // (The former shape-exponent solve is gone: GetAtmosphereExitPitchDeg always returned 0 because
+        // turnEndAlt is clamped <= atmosphereTop, which pinned the exponent to 1.0 in every case.)
+        public static double GetSolvedPitchAtAltitude(
             double altitude,
             double turnStartAlt,
-            double turnEndAlt,
-            double shapeExponent)
+            double turnEndAlt)
         {
             if (altitude <= turnStartAlt) return 90.0;
             if (altitude >= turnEndAlt) return 0.0;
 
             double progress = (altitude - turnStartAlt) / (turnEndAlt - turnStartAlt);
-            return MathHelpers.Clamp(90.0 * (1.0 - Math.Pow(progress, shapeExponent)), 0.0, 90.0);
+            return MathHelpers.Clamp(90.0 * (1.0 - progress), 0.0, 90.0);
         }
 
         // Keeps engines burning until the profile reaches its explicit cutoff altitude.
-        private static double GetSolvedThrottleAtAltitude(double altitude, double turnStartAlt, double turnEndAlt)
+        private static double GetSolvedThrottleAtAltitude(double altitude, double turnEndAlt)
         {
             return altitude >= turnEndAlt ? 0.0 : 1.0;
         }

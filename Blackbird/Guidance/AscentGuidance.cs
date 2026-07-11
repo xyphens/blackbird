@@ -16,7 +16,7 @@ namespace Blackbird.Guidance
         private bool IsRSS = false;
         private bool IsPrincipia = false; // tells us if we need to factor J2/use custom functions to better approximate orbital state
         private double _holdPitchUntilAlt = 0.0; // wait until cleared launch pad to pitch
-        private double _minVrfSpeedToPitch = 100.0; // wait until m/s velocity to pitch
+        private double _minVrfSpeedToPitch = 100; // wait until m/s velocity to pitch
         private bool _handedToPsg;   // latched at the PSG handoff so it can't bounce back into the bootstrap turn
 
         // important to call this before the class is used
