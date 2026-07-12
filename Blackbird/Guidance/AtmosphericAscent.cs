@@ -16,8 +16,8 @@ namespace Blackbird.Guidance
     {
         public enum Phase { ProgradeAtmospheric, ClosedLoopVacuum };
 
-        private const double ConservatismMarginDeg = 10.0; // hold handover this many degrees more vertical than PSG (should be ~55 degrees at 34km)
-        private const double HandoverPressureFraction = 0.001; // vacuum boundary
+        //private const double DefaultConservatismMarginDeg = 10.0; // hold handover this many degrees more vertical than PSG (should be ~55 degrees at 34km)
+        //private const double DefaultHandoverPressureFraction = 0.001; // vacuum boundary
         private const double DynamicPressureShiftPa = 2000.0; // surface- -> orbit-prograde shift used by solve
         private const double DragThrustRatioTrigger = 0.001; // aero force negligible vs thrust -> hand to PSG
         private const double HandoverQKpa = 1.0;  // safe kPa to had over to PSG
@@ -25,8 +25,13 @@ namespace Blackbird.Guidance
         private const double MaxKickDeg = 30.0;
         private const double SolveStepSeconds = 0.5;
         private const int SolveMaxSteps = 4000;
+        private const double ProfileLogIntervalSeconds = 1.0; // per-step pitch-profile sampling cadence
 
         private static readonly BlackbirdLog Log = new BlackbirdLog(LogContext.Trajectory);
+
+        // in-flight tunables (GuidanceComputer "PSG Smoothing Margin" and "kPa Fraction")
+        private double _conservatismMarginDeg = 10.0;
+        private double _handoverPressureFraction = 0.001;
 
         private Phase _phase = Phase.ProgradeAtmospheric;
         private bool _kickSolved;
@@ -35,12 +40,21 @@ namespace Blackbird.Guidance
         private double _lastUt = double.NaN;
         private Vector3d _slewDir = Vector3d.zero;
         private double _lastDiagUt = double.NegativeInfinity;
+        private double _lastProfileUt = double.NegativeInfinity;
 
         private double _handoverAltMeters = double.NaN;
 
         public bool KickSolved => _kickSolved;
         public double KickAngleDeg => _kickDeg;
         public Phase CurrentPhase => _phase;
+
+        // live tunables from GuidanceComputer; ignore non-finite/non-positive to keep the defaults safe.
+        // takes effect on the next kick solve (has no effect once _kickSolved latches).
+        public void Configure(double conservatismMarginDeg, double handoverPressureFraction)
+        {
+            if (MathHelpers.IsFinite(conservatismMarginDeg)) _conservatismMarginDeg = conservatismMarginDeg;
+            if (MathHelpers.IsFinite(handoverPressureFraction) && handoverPressureFraction > 0.0) _handoverPressureFraction = handoverPressureFraction;
+        }
 
         public void Reset()
         {
@@ -79,7 +93,7 @@ namespace Blackbird.Guidance
 
                 double psgFpa = PsgExpectedOrbitFpaDeg(psg, vs.BodyRadius, handover);
                 if (!MathHelpers.IsFinite(psgFpa)) return Diag(vs, string.Format("psgFpa NaN (points don't bracket {0:F0} km)", handover / 1000.0));
-                double targetFpa = psgFpa + ConservatismMarginDeg;
+                double targetFpa = psgFpa + _conservatismMarginDeg;
 
                 AscentShootingInputs io = BuildInputs(vs, handover, targetFpa, _handoverAltMeters);
                 if (io == null) return Diag(vs, "no stages");
@@ -96,8 +110,8 @@ namespace Blackbird.Guidance
                 _kickDeg = r.KickAngleDeg;
                 _handoverAltMeters = handover;
                 _kickSolved = true;
-                Log.Write(string.Format("[kick-ascent] kick={0:F2} deg | PSG FPA {1:F1} + {2:F0} margin = {3:F1} | handover {4:F1} km",
-                        _kickDeg, psgFpa, ConservatismMarginDeg, targetFpa, handover / 1000.0));
+                Log.Write(string.Format("[kick-ascent] kick={0:F2} deg | PSG FPA {1:F1} + {2:F1} margin = {3:F1} | handover {4:F1} km (kPa frac {5:G})",
+                        _kickDeg, psgFpa, _conservatismMarginDeg, targetFpa, handover / 1000.0, _handoverPressureFraction));
                 return true;
             }
             catch (Exception ex)
@@ -137,6 +151,7 @@ namespace Blackbird.Guidance
                 {
                     double surfaceFpa = FlightPathAngleDeg(vs.VerticalSpeed, vs.SurfaceSpeed);
                     double pitch = Math.Min(90.0 - _kickDeg, surfaceFpa); // kick held until velocity catches up, then prograde
+                    LogProfile(vs, pitch, surfaceFpa);
                     return new Command
                     {
                         PitchDeg = pitch,
@@ -157,11 +172,53 @@ namespace Blackbird.Guidance
                 }
             }
 
+            LogProfile(vs, PitchAboveHorizonDeg(vs, _slewDir), FlightPathAngleDeg(vs.VerticalSpeed, vs.SurfaceSpeed));
             return new Command
             {
                 HasInertialDirection = _slewDir.sqrMagnitude > 0.0,
                 InertialDirection = _slewDir
             };
+        }
+
+        // per-step pitch-profile sample: the atmospheric climb FPA/pitch that the act/proj streams don't capture.
+        // cmdPitchDeg is the commanded pitch above horizon (surface-prograde law in atmosphere, slewed PSG vector in vacuum).
+        private void LogProfile(VesselState vs, double cmdPitchDeg, double surfaceFpaDeg)
+        {
+            if (vs == null || vs.UniversalTime - _lastProfileUt < ProfileLogIntervalSeconds) return;
+            _lastProfileUt = vs.UniversalTime;
+            Log.Write("kick", new KickProfileSample
+            {
+                Phase = _phase.ToString(),
+                AltKm = vs.AltitudeMeters / 1000.0,
+                CmdPitchDeg = cmdPitchDeg,
+                SurfaceFpaDeg = surfaceFpaDeg,
+                AoADeg = surfaceFpaDeg - cmdPitchDeg,
+                KickDeg = _kickDeg,
+                Qkpa = vs.DynamicPressureKpa,
+                Mach = vs.Mach,
+                SurfaceSpeed = vs.SurfaceSpeed
+            });
+        }
+
+        private struct KickProfileSample
+        {
+            public string Phase;
+            public double AltKm;
+            public double CmdPitchDeg;   // commanded pitch above horizon
+            public double SurfaceFpaDeg; // flown surface-frame flight-path angle
+            public double AoADeg;        // flown minus commanded (velocity lag)
+            public double KickDeg;
+            public double Qkpa;
+            public double Mach;
+            public double SurfaceSpeed;
+        }
+
+        // Pitch of a world-frame direction above the local horizon (90 = straight up, 0 = horizontal).
+        private static double PitchAboveHorizonDeg(VesselState vs, Vector3d dir)
+        {
+            if (vs == null || vs.Body == null || dir.sqrMagnitude <= 0.0) return double.NaN;
+            Vector3d up = (vs.Position - vs.Body.position).normalized;
+            return 90.0 - Vector3d.Angle(dir, up);
         }
 
         private static double FlightPathAngleDeg(double vSpeed, double speed)
@@ -196,11 +253,11 @@ namespace Blackbird.Guidance
         }
 
         // hand control to PSG when there's no atmosphere/drag left
-        private static double HandoverAltitude(CelestialBody body)
+        private double HandoverAltitude(CelestialBody body)
         {
             double seaLevel = body.GetPressure(0.0);
             if (seaLevel <= 0.0) return double.NaN;
-            double threshold = HandoverPressureFraction * seaLevel;
+            double threshold = _handoverPressureFraction * seaLevel;
             double top = body.atmosphereDepth;
             for (double alt =  0.0; alt <= top; alt += 500.0)
             {

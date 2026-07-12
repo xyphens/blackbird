@@ -22,13 +22,15 @@ namespace Blackbird.Guidance
         private double _pitchSafetyMeters = 200;
 
         // important to call this before the class is used
-        public void Refresh(bool isRss, bool isPrincipia, double holdUntilAltitude, double minVrfSp = 100.0)
+        public void Refresh(bool isRss, bool isPrincipia, double holdUntilAltitude, double minVrfSp = 100.0,
+            double conservatismMarginDeg = double.NaN, double handoverPressureFraction = double.NaN)
         {
             _holdPitchUntilAlt = Math.Max(holdUntilAltitude, 100.0); // wait until at least 100 meters before we start kick
             _pitchSafetyMeters = _holdPitchUntilAlt * 4;
             IsRSS = isRss;
             IsPrincipia = isPrincipia;
             _minVrfSpeedToPitch = minVrfSp;
+            _atmAscent.Configure(conservatismMarginDeg, handoverPressureFraction); // non-finite -> keep defaults
         }
         public void Reset()
         {

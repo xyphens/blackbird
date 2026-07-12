@@ -21,6 +21,7 @@ namespace Blackbird.Modules
         private const double MinSecondsToUseWarp = 10.0;
         private readonly string[] _guidanceModeLabels = { "None", "Manual", "Autopilot" };
 
+
         private const float BtnW = 60f;
         private const float BtnH = 34f;
 
@@ -112,9 +113,20 @@ namespace Blackbird.Modules
                     _launchHandler.BeginAscent();
                 }
 
+                GUILayout.Space(4);
+
+                GUILayout.Label("Advanced Flight Tuning", GUILayout.Width(50));
+
                 GUILayout.BeginHorizontal();
-                _launchHandler.MinVSpeedToPitch = GUILayout.TextField(_launchHandler.MinVSpeedToPitch, GUILayout.Width(50));
-                GUILayout.Label("m/s", GUILayout.Width(50));
+                _launchHandler.PsgTransitionMargin = GUILayout.TextField(_launchHandler.PsgTransitionMargin, GUILayout.Width(50));
+                GUILayout.Label("°", GUILayout.Width(50));
+                GUILayout.EndHorizontal();
+
+                GUILayout.Space(6);
+
+                GUILayout.BeginHorizontal();
+                _launchHandler.HandoverKpa = GUILayout.TextField(_launchHandler.HandoverKpa, GUILayout.Width(50));
+                GUILayout.Label("m", GUILayout.Width(50));
                 GUILayout.EndHorizontal();
 
                 GUILayout.Space(6);
@@ -124,6 +136,12 @@ namespace Blackbird.Modules
                 GUILayout.Label("m", GUILayout.Width(50));
                 GUILayout.EndHorizontal();
 
+                GUILayout.Space(6);
+
+                GUILayout.BeginHorizontal();
+                _launchHandler.MinAltitudeForPitch = GUILayout.TextField(_launchHandler.MinAltitudeForPitch, GUILayout.Width(50));
+                GUILayout.Label("m", GUILayout.Width(50));
+                GUILayout.EndHorizontal();
                 bool armed = _launchHandler.State == LaunchGuidanceState.AwaitingLaunch
                           || _launchHandler.State == LaunchGuidanceState.WarpingToLaunch;
 

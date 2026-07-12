@@ -46,6 +46,21 @@ namespace Blackbird.Guidance
             set { if (double.TryParse(value, out double v)) _minVSpd = v; }
         }
 
+        private double _psgTransitionMargin = 7.0;
+        public string PsgTransitionMargin
+        {
+            get { return _psgTransitionMargin.ToString(); }
+            set { if (double.TryParse(value, out double v)) _psgTransitionMargin = v; }
+        }
+
+        private double _handoverKpa = 0.002;
+        public string HandoverKpa
+        {
+            get { return _handoverKpa.ToString(); }
+            set { if (double.TryParse(value, out double v)) _handoverKpa = v; }
+        }
+
+
         private readonly double _launchTowerClearance = 175.0; // starship's launch tower is ~150 meters
 
         private double _minAltToPitch = 0.0;
@@ -130,9 +145,10 @@ namespace Blackbird.Guidance
             State = LaunchGuidanceState.WarpingToLaunch;
         }
 
+        // fucks
         private void RefreshGuidanceComputer()
         {
-            _ascentGuidance.Refresh(bbState.IsRSS, bbState.IsPrincipia, _minAltToPitch, _minVSpd);
+            _ascentGuidance.Refresh(bbState.IsRSS, bbState.IsPrincipia, _minAltToPitch, _minVSpd, _psgTransitionMargin, _handoverKpa);
         }
         //private static void SetSafeWarpRate(double toUt, bool isRss) => WarpHelper.SetSafeWarpRate(secondsRemaining, isRss);
         private void WarpToUT(double UT, Vessel vessel)
