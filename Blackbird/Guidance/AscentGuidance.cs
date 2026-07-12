@@ -19,11 +19,13 @@ namespace Blackbird.Guidance
         private double _holdPitchUntilAlt = 0.0; // wait until cleared launch pad to pitch
         private double _minVrfSpeedToPitch = 100; // wait until m/s velocity to pitch
         private bool _handedToPsg;   // latched at the PSG handoff so it can't bounce back into the bootstrap turn
+        private double _pitchSafetyMeters = 200;
 
         // important to call this before the class is used
         public void Refresh(bool isRss, bool isPrincipia, double holdUntilAltitude, double minVrfSp = 100.0)
         {
-            _holdPitchUntilAlt = holdUntilAltitude;
+            _holdPitchUntilAlt = Math.Max(holdUntilAltitude, 100.0); // wait until at least 100 meters before we start kick
+            _pitchSafetyMeters = _holdPitchUntilAlt * 4;
             IsRSS = isRss;
             IsPrincipia = isPrincipia;
             _minVrfSpeedToPitch = minVrfSp;
@@ -93,13 +95,23 @@ namespace Blackbird.Guidance
 
                 bool psgReady = poweredCommand != null && poweredCommand.HasInertialDirection;
                 double psgPitch = poweredCommand != null ? poweredCommand.PitchDeg : double.NaN;
+                
 
-                if (holdVSpeed)
+                if (!_atmAscent.KickSolved)
                 {
-                    _atmAscent.TrySolveKick(vesselState, _poweredGuidance.CurrentSolution); // solve during the hold
+                    _atmAscent.TrySolveKick(vesselState, _poweredGuidance.CurrentSolution, _minVrfSpeedToPitch);
+                }
+
+                // hold vertical while we're waiting for kick to solve and we're below a padded safety margin
+                // we expect a solve well-before the safety altitude, so this is just a fallback
+                bool awaitingKick = !_atmAscent.KickSolved && vessel.altitude < _pitchSafetyMeters;
+
+                if (holdVSpeed || awaitingKick)
+                {
                     commandPitch = 90.0;
                     commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
-                } else if (_atmAscent.KickSolved)
+                }
+                else if (_atmAscent.KickSolved)
                 {
                     Vector3d psgVec = psgReady ? poweredCommand.InertialDirection : Vector3d.zero;
                     AtmosphericAscent.Command c = _atmAscent.Update(vesselState, psgReady, psgVec);
@@ -109,16 +121,29 @@ namespace Blackbird.Guidance
                         commandInertialDir = c.InertialDirection;
                         commandPitch = MathHelpers.Clamp(psgPitch, -30.0, 90.0);
                         commandHeading = poweredCommand.HeadingDeg;
-                    } else
+                    }
+                    else
                     {
                         commandPitch = MathHelpers.Clamp(c.PitchDeg, -30.0, 90.0);
                         commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
                     }
-                } else
+                }
+                else
                 {
-                    // kick never solved -> bootstramp ramp fallback
-                    commandPitch = MathHelpers.Clamp(profilePitch, -30.0, 90.0);
-                    commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
+                    // kick not solved (stock, or PSG unavailable) -> keep the classic/PSG inertial insertion handoff
+                    if (psgReady && (!vessel.mainBody.atmosphere || profilePitch <= psgPitch)) _handedToPsg = true;
+                    if (_handedToPsg && psgReady)
+                    {
+                        followPsgInertial = true;
+                        commandInertialDir = poweredCommand.InertialDirection;
+                        commandPitch = MathHelpers.Clamp(psgPitch, -30.0, 90.0);
+                        commandHeading = poweredCommand.HeadingDeg;
+                    }
+                    else
+                    {
+                        commandPitch = MathHelpers.Clamp(profilePitch, -30.0, 90.0);
+                        commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
+                    }
                 }
 
                 commandThrottle = poweredCommand != null ? poweredCommand.Throttle : profileThrottle;

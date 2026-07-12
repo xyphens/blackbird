@@ -52,7 +52,7 @@ namespace Blackbird.Guidance
             double target = io.TargetFlightPathAngleDeg; // orbit frame
             double fLo = PredictHandover(io, 0.0).OrbitFpaDeg - target;           // no kick: most vertical
             double fHi = PredictHandover(io, io.MaxKickDeg).OrbitFpaDeg - target;   // max kick: most horizontal
-            if (fLo < 0.0) return Fail(0.0, fLo + target, "Target is more horizontal than zero-kick ascent");
+            if (fLo < 0.0) return Fail(0.0, fLo + target, "Target is more vertical than zero-kick ascent");
             if (fHi > 0.0) return Fail(io.MaxKickDeg, fHi + target, "TWR-limited - max kick cannot reach target flight path angle");
 
             double lo = 0.0;
@@ -110,16 +110,19 @@ namespace Blackbird.Guidance
         // phase-structed steering
         public static double PhasedSteeringPitchDeg(AscentState s, AscentShootingInputs io, double kickDeg)
         {
-            double alt = s.AltitudeMeters(io.BodyRadius);
-            if (alt < io.TowerClearanceAltitudeMeters) return 0.0; // vertical hold
-
+            if (s.AltitudeMeters(io.BodyRadius) < io.TowerClearanceAltitudeMeters) return 0.0;   // vertical hold
             double surfaceProgradePitch = 90.0 - s.FlightPathAngleDeg;
-            if (surfaceProgradePitch < kickDeg) return kickDeg;
+            return surfaceProgradePitch < kickDeg ? kickDeg : surfaceProgradePitch;               // kick-hold, then surface-prograde
+            //double alt = s.AltitudeMeters(io.BodyRadius);
+            //if (alt < io.TowerClearanceAltitudeMeters) return 0.0; // vertical hold
 
-            double v = s.SurfaceSpeed;
-            double q = 0.5 * io.DensityAtAltitude(alt) * v * v;
-            if (q > io.DynamicPressureShiftPa) return surfaceProgradePitch; // keep surface-prograde while aero is significant
-            return 90.0 - OrbitFlightPathAngleDeg(s, io.RotationRateRadPerSec, io.LaunchLatitudeCos); // orbit-prograde
+            //double surfaceProgradePitch = 90.0 - s.FlightPathAngleDeg;
+            //if (surfaceProgradePitch < kickDeg) return kickDeg;
+
+            //double v = s.SurfaceSpeed;
+            //double q = 0.5 * io.DensityAtAltitude(alt) * v * v;
+            //if (q > io.DynamicPressureShiftPa) return surfaceProgradePitch; // keep surface-prograde while aero is significant
+            //return 90.0 - OrbitFlightPathAngleDeg(s, io.RotationRateRadPerSec, io.LaunchLatitudeCos); // orbit-prograde
         }
 
         // surface velocity plus body co-rotation

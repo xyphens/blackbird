@@ -16,7 +16,7 @@ namespace Blackbird.Guidance
     {
         public enum Phase { ProgradeAtmospheric, ClosedLoopVacuum };
 
-        private const double ConservatismMarginDeg = 10.0; // hold handover this many degrees more vertical than PSG
+        private const double ConservatismMarginDeg = 10.0; // hold handover this many degrees more vertical than PSG (should be ~55 degrees at 34km)
         private const double HandoverPressureFraction = 0.001; // vacuum boundary
         private const double DynamicPressureShiftPa = 2000.0; // surface- -> orbit-prograde shift used by solve
         private const double DragThrustRatioTrigger = 0.001; // aero force negligible vs thrust -> hand to PSG
@@ -34,6 +34,9 @@ namespace Blackbird.Guidance
         private double _lastQKpa = double.NaN;
         private double _lastUt = double.NaN;
         private Vector3d _slewDir = Vector3d.zero;
+        private double _lastDiagUt = double.NegativeInfinity;
+
+        private double _handoverAltMeters = double.NaN;
 
         public bool KickSolved => _kickSolved;
         public double KickAngleDeg => _kickDeg;
@@ -47,6 +50,7 @@ namespace Blackbird.Guidance
             _lastQKpa = double.NaN;
             _lastUt = double.NaN;
             _slewDir = Vector3d.zero;
+            _handoverAltMeters = double.NaN;
         }
 
         public struct Command
@@ -56,38 +60,61 @@ namespace Blackbird.Guidance
             public Vector3d InertialDirection; // slew-limited PSG vector (vacuum)
         }
 
-        // solve the kick one PSG has a solution
-        public bool TrySolveKick(VesselState vs, PsgSolution psg)
+        // solve the kick once PSG has a solution
+        // only ran once
+        public bool TrySolveKick(VesselState vs, PsgSolution psg, double vrfSpeed)
         {
             if (_kickSolved) return true;
-            if (vs == null || vs.Body == null || !vs.Body.atmosphere) return false;
-            if (psg == null || !psg.IsValid || psg.Points == null || psg.Points.Length < 2) return false;
+            if (vs == null || vs.Body == null || !vs.Body.atmosphere) return Diag(vs, "no atmosphere");
+            if (psg == null || !psg.IsValid || psg.Points == null || psg.Points.Length < 2) return Diag(vs, "PSG not ready");
+
+            // 100^2 / (2*a0)
+            double a0 = Math.Max(0.5, vs.AvailableThrust / vs.TotalMass - vs.BodySurfaceGravity);
+            _handoverAltMeters = (vrfSpeed * vrfSpeed) / (2.0 * a0);
 
             try
             {
                 double handover = HandoverAltitude(vs.Body);
-                if (!MathHelpers.IsFinite(handover) || handover <= vs.AltitudeMeters) return false;
+                if (!MathHelpers.IsFinite(handover) || handover <= vs.AltitudeMeters) return Diag(vs, "handover invalid: " + handover);
 
                 double psgFpa = PsgExpectedOrbitFpaDeg(psg, vs.BodyRadius, handover);
-                if (!MathHelpers.IsFinite(psgFpa)) return false;
-                double targetFpa = psgFpa + ConservatismMarginDeg; // hold more vertical than PSG's flat optimum
+                if (!MathHelpers.IsFinite(psgFpa)) return Diag(vs, string.Format("psgFpa NaN (points don't bracket {0:F0} km)", handover / 1000.0));
+                double targetFpa = psgFpa + ConservatismMarginDeg;
 
-                AscentShootingInputs io = BuildInputs(vs, handover, targetFpa);
-                if (io == null) return false;
+                AscentShootingInputs io = BuildInputs(vs, handover, targetFpa, _handoverAltMeters);
+                if (io == null) return Diag(vs, "no stages");
 
                 AscentShootingResult r = AscentShootingSolver.Solve(io);
-                if (!r.Converged) return false;
+                if (!r.Converged)
+                {
+                    double zk = AscentShootingSolver.PredictHandover(io, 0.0).OrbitFpaDeg;
+                    double mk = AscentShootingSolver.PredictHandover(io, MaxKickDeg).OrbitFpaDeg;
+                    return Diag(vs, string.Format("target {0:F1} vs window [{1:F1}..{2:F1}] (maxkick..0kick), surfFPA {3:F1}",
+                        targetFpa, mk, zk, FlightPathAngleDeg(vs.VerticalSpeed, vs.SurfaceSpeed)));
+                }
 
                 _kickDeg = r.KickAngleDeg;
+                _handoverAltMeters = handover;
                 _kickSolved = true;
                 Log.Write(string.Format("[kick-ascent] kick={0:F2} deg | PSG FPA {1:F1} + {2:F0} margin = {3:F1} | handover {4:F1} km",
                         _kickDeg, psgFpa, ConservatismMarginDeg, targetFpa, handover / 1000.0));
                 return true;
             }
-            catch (Exception ex) {
-                Log.Write("[kick-ascent] solve failed, using ramp: " + ex.Message);
+            catch (Exception ex)
+            {
+                Log.Write("[kick-ascent] exception: " + ex.Message);
                 return false;
             }
+        }
+
+        private bool Diag(VesselState vs, string reason)
+        {
+            if (vs != null && vs.UniversalTime - _lastDiagUt > 2.0)
+            {
+                _lastDiagUt = vs.UniversalTime;
+                Log.Write(string.Format("[kick-ascent] waiting @ {0:F1} km: {1}", vs.AltitudeMeters / 1000.0, reason));
+            }
+            return false;
         }
 
         public Command Update(VesselState vs, bool psgReady, Vector3d psgIntertialDirection)
@@ -101,7 +128,7 @@ namespace Blackbird.Guidance
 
             if (_phase == Phase.ProgradeAtmospheric)
             {
-                if (psgReady && AeroNegligible(vs, qKpa, dQdt))
+                if (psgReady && (AeroNegligible(vs, qKpa, dQdt) || vs.AltitudeMeters >= _handoverAltMeters))
                 {
                     _phase = Phase.ClosedLoopVacuum;
                     _slewDir = NoseDirection(vs); // begin slew from current altitude
@@ -168,6 +195,7 @@ namespace Blackbird.Guidance
             return (from + (to - from) * t).normalized;
         }
 
+        // hand control to PSG when there's no atmosphere/drag left
         private static double HandoverAltitude(CelestialBody body)
         {
             double seaLevel = body.GetPressure(0.0);
@@ -207,7 +235,7 @@ namespace Blackbird.Guidance
             return Math.Asin(MathHelpers.Clamp(sin, -1.0, 1.0)) * 180 / Math.PI;
         }
 
-        private static AscentShootingInputs BuildInputs(VesselState vs, double handover, double targetFpa)
+        private static AscentShootingInputs BuildInputs(VesselState vs, double handover, double targetFpa, double towerClearance)
         {
             AscentStage[] stages = BuildStages(vs);
             if (stages.Length == 0) return null;
@@ -228,7 +256,7 @@ namespace Blackbird.Guidance
                     Vy = vs.HorizontalSpeed,
                     MassKg = vs.TotalMass * 1000.0
                 },
-                TowerClearanceAltitudeMeters = vs.AltitudeMeters, // kick from current cleared state
+                TowerClearanceAltitudeMeters = towerClearance,
                 HandoverAltitudeMeters = handover,
                 TargetFlightPathAngleDeg = targetFpa,
                 MaxKickDeg = MaxKickDeg,
