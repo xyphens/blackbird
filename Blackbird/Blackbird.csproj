@@ -83,6 +83,7 @@
     <Compile Include="Guidance\AscentGuidance.cs" />
     <Compile Include="Guidance\AscentProfile.cs" />
     <Compile Include="Guidance\AscentShootingSolver.cs" />
+    <Compile Include="Guidance\AtmosphericAscent.cs" />
     <Compile Include="Guidance\AttitudeControl.cs" />
     <Compile Include="Guidance\ClassicAscentGuidance.cs" />
     <Compile Include="Guidance\DirectionTracking.cs" />

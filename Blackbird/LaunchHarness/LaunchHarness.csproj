@@ -46,6 +46,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="RssAtmosphere.cs" />
+    <Compile Include="KerbinAtmosphere.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Blackbird.csproj">

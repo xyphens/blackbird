@@ -11,6 +11,7 @@ namespace Blackbird.Guidance
     {
         private readonly PoweredAscentGuidance _poweredGuidance = new PoweredAscentGuidance();
         private readonly ClassicAscentGuidance _classicGuidance = new ClassicAscentGuidance();
+        private readonly AtmosphericAscent _atmAscent = new AtmosphericAscent();
         public PsgSolution CurrentSolution => _poweredGuidance.CurrentSolution;
 
         private bool IsRSS = false;
@@ -31,6 +32,7 @@ namespace Blackbird.Guidance
         {
             _poweredGuidance.Reset();
             _classicGuidance.Reset();
+            _atmAscent.Reset();
             _handedToPsg = false;
         }
 
@@ -74,7 +76,8 @@ namespace Blackbird.Guidance
             double currentHeading = GetCurrentHeadingDeg(vessel);
             double currentPitch = GetCurrentPitchDeg(vessel);
             double currentThrottle = vessel.ctrlState != null ? vessel.ctrlState.mainThrottle : 0.0;
-            double currentRoll = vessel.ctrlState != null ? vessel.ctrlState.roll : 0.0; 
+            double currentRoll = vessel.ctrlState != null ? vessel.ctrlState.roll : 0.0;
+            Vector3d commandInertialDir = poweredCommand != null ? poweredCommand.InertialDirection : Vector3d.zero;
 
             double commandHeading;
             double commandPitch;
@@ -91,29 +94,60 @@ namespace Blackbird.Guidance
                 bool psgReady = poweredCommand != null && poweredCommand.HasInertialDirection;
                 double psgPitch = poweredCommand != null ? poweredCommand.PitchDeg : double.NaN;
 
-                if (!holdVSpeed && psgReady && (!vessel.mainBody.atmosphere || profilePitch <= psgPitch)) _handedToPsg = true;
-
                 if (holdVSpeed)
                 {
+                    _atmAscent.TrySolveKick(vesselState, _poweredGuidance.CurrentSolution); // solve during the hold
                     commandPitch = 90.0;
-                }
-                else if (_handedToPsg && psgReady)
+                    commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
+                } else if (_atmAscent.KickSolved)
                 {
-                    commandPitch = MathHelpers.Clamp(psgPitch, -30.0, 90.0);
-                    followPsgInertial = true;
-                } else if (_handedToPsg) {
-                    commandPitch = GetSurfaceProgradePitchDeg(vessel); // dufixme
+                    Vector3d psgVec = psgReady ? poweredCommand.InertialDirection : Vector3d.zero;
+                    AtmosphericAscent.Command c = _atmAscent.Update(vesselState, psgReady, psgVec);
+                    if (c.HasInertialDirection)
+                    {
+                        followPsgInertial = true;
+                        commandInertialDir = c.InertialDirection;
+                        commandPitch = MathHelpers.Clamp(psgPitch, -30.0, 90.0);
+                        commandHeading = poweredCommand.HeadingDeg;
+                    } else
+                    {
+                        commandPitch = MathHelpers.Clamp(c.PitchDeg, -30.0, 90.0);
+                        commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
+                    }
                 } else
                 {
+                    // kick never solved -> bootstramp ramp fallback
                     commandPitch = MathHelpers.Clamp(profilePitch, -30.0, 90.0);
+                    commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
                 }
-
-                commandHeading = followPsgInertial && poweredCommand != null
-                    ? poweredCommand.HeadingDeg
-                    : MathHelpers.NormalizeDegrees(profileHeading);
 
                 commandThrottle = poweredCommand != null ? poweredCommand.Throttle : profileThrottle;
                 commandRoll = 0.0;
+                
+
+                //if (!holdVSpeed && psgReady && (!vessel.mainBody.atmosphere || profilePitch <= psgPitch)) _handedToPsg = true;
+
+                //if (holdVSpeed)
+                //{
+                //    commandPitch = 90.0;
+                //}
+                //else if (_handedToPsg && psgReady)
+                //{
+                //    commandPitch = MathHelpers.Clamp(psgPitch, -30.0, 90.0);
+                //    followPsgInertial = true;
+                //} else if (_handedToPsg) {
+                //    commandPitch = GetSurfaceProgradePitchDeg(vessel); // dufixme
+                //} else
+                //{
+                //    commandPitch = MathHelpers.Clamp(profilePitch, -30.0, 90.0);
+                //}
+
+                //commandHeading = followPsgInertial && poweredCommand != null
+                //    ? poweredCommand.HeadingDeg
+                //    : MathHelpers.NormalizeDegrees(profileHeading);
+
+                //commandThrottle = poweredCommand != null ? poweredCommand.Throttle : profileThrottle;
+                //commandRoll = 0.0;
             }
             else if (guidanceMode == GuidanceMode.Manual)
             {
@@ -149,8 +183,8 @@ namespace Blackbird.Guidance
                 CommandRoll = commandRoll,
                 //HasInertialDirection = !holdVSpeed && poweredCommand != null && poweredCommand.HasInertialDirection,
                 HasInertialDirection = followPsgInertial,
-                InertialDirection = poweredCommand != null ? poweredCommand.InertialDirection : Vector3d.zero,
-
+                //InertialDirection = poweredCommand != null ? poweredCommand.InertialDirection : Vector3d.zero,
+                InertialDirection = commandInertialDir,
                 CurrentPitchDeg = currentPitch,
                 CurrentHeadingDeg = currentHeading,
 

@@ -41,6 +41,7 @@ namespace Blackbird.Guidance
     }
 
     // bisection on the pitch-kick angle so predicted flight-path angle at handover equals the target
+    // (bisection root finder)
     public static class AscentShootingSolver
     {
         private const double FpaToleranceDeg = 0.05;

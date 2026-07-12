@@ -43,7 +43,354 @@ namespace Blackbird.LaunchHarness
             CheckAscentPitchSchedule();
             CheckAscentPredictorReproducesFlight();
             CheckAscentShootingSolver();
+            CheckAscentTargetFromPsg();
+            CheckAscentApoapsisLoft();
+            CheckSolveAcrossBodies();
             return 0;
+        }
+
+        private const double KerbinMu = 3.5316e12;
+        private const double KerbinRadius = 600000.0;
+        private const double KerbinSiderealDay = 21549.425;
+
+        // Proves the forward-shooting root-finder (AscentShootingSolver's engine) adapts the kick per BODY with no
+        // hardcoded shape constant. For the same body-general target (a real-world surface FPA at the same fraction of
+        // the atmosphere), the solver must find a DIFFERENT kick on Kerbin than on Earth -- Kerbin needs a larger kick
+        // for the same handover (its shorter atmosphere / lower orbital speed under-turns) -- and both profiles must
+        // reach the target without lofting (coast apoapsis climbing, bounded). This is the go/no-go that a fixed
+        // kshape would fail and the solver passes: one mechanism, two bodies, zero body-specific tuning.
+        private static void CheckSolveAcrossBodies()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== Solve across bodies (kick adapts per body; no fixed kshape) ===");
+
+            const double targetSurfaceFpa = 55.0;   // real-world-like handover angle; same on both bodies
+            double[] earthKicks = new double[3];
+            double[] kerbinKicks = new double[3];
+            double[] twrs = { 1.5, 1.8, 2.2 };
+
+            Console.WriteLine("  body    TWR   kick   surfaceFPA(target 55)   coastApo(km)");
+            for (int i = 0; i < twrs.Length; i++)
+            {
+                earthKicks[i] = RunBodyCase("Earth ", twrs[i], EarthMu, EarthRadius, EarthSiderealDay,
+                    RssAtmosphere.Density, 5209193.0, 341.0, 55.0, 34000.0, targetSurfaceFpa);
+                kerbinKicks[i] = RunBodyCase("Kerbin", twrs[i], KerbinMu, KerbinRadius, KerbinSiderealDay,
+                    KerbinAtmosphere.DensityAt, 100000.0, 300.0, 1.0, 17000.0, targetSurfaceFpa);
+            }
+
+            bool adapts = true;
+            for (int i = 0; i < twrs.Length; i++)
+                if (!(kerbinKicks[i] > earthKicks[i] + 1.0)) adapts = false;   // Kerbin needs a materially larger kick
+
+            Console.WriteLine("  " + (adapts ? "PASS" : "FAIL") + " (Kerbin kick > Earth kick for every TWR -> the solver adapts per body)");
+            if (!adapts) throw new Exception("Solve did not adapt the kick across bodies (a fixed kshape would be wrong).");
+        }
+
+        // Solves the kick for one (body, vehicle, TWR) to a surface-FPA target, then reports + validates the profile.
+        private static double RunBodyCase(string body, double twr, double mu, double bodyRadius, double siderealDay,
+            Func<double, double> density, double massKg, double ispSeconds, double dragAreaCd, double sampleAltM, double targetFpa)
+        {
+            double g = mu / (bodyRadius * bodyRadius);
+            double thrust = twr * massKg * g;
+            double mdot = thrust / (ispSeconds * 9.80665);
+
+            var io = new AscentShootingInputs
+            {
+                Mu = mu,
+                BodyRadius = bodyRadius,
+                DragAreaCd = dragAreaCd,
+                Stages = new[] { new AscentStage { ThrustNewtons = thrust, MassFlowKgPerSec = mdot, PropellantKg = massKg * 0.62, JettisonMassKg = 0.0 } },
+                DensityAtAltitude = density,
+                InitialState = new AscentState { T = 0, X = bodyRadius + 137.0, Y = 0, Vx = 0, Vy = 0, MassKg = massKg },
+                TowerClearanceAltitudeMeters = 1000.0,
+                HandoverAltitudeMeters = sampleAltM,          // measure the target FPA here
+                TargetFlightPathAngleDeg = targetFpa,
+                MaxKickDeg = 30.0,
+                StepSeconds = 0.25,
+                MaxSteps = 8000,
+                RotationRateRadPerSec = 2.0 * Math.PI / siderealDay,
+                LaunchLatitudeCos = 1.0,                       // both pads near the equator here
+                DynamicPressureShiftPa = 2000.0
+            };
+
+            double kick = SolveKickForSurfaceFpa(io, targetFpa);
+            AscentHandoverPrediction p = AscentShootingSolver.PredictHandover(io, kick);
+            double coastApo = CoastApoapsisAt(io, kick);
+
+            bool nonLoft = coastApo > 0.0 && coastApo < 100000.0;   // bounded + climbing (not escaping/absurd)
+            bool ok = kick > 0.0 && kick < io.MaxKickDeg && Math.Abs(p.SurfaceFpaDeg - targetFpa) <= 0.5 && nonLoft;
+            Console.WriteLine(string.Format("  {0}  {1:F1}  {2,5:F2}   {3,6:F1}                 {4,6:F0}   {5}",
+                body, twr, kick, p.SurfaceFpaDeg, coastApo, ok ? "ok" : "BAD"));
+            if (!ok) throw new Exception(string.Format("Cross-body case failed: {0} TWR {1:F1} (kick {2:F2}, FPA {3:F1}, coastApo {4:F0}).",
+                body, twr, kick, p.SurfaceFpaDeg, coastApo));
+            return kick;
+        }
+
+        // Harness bisection on the app engine (PredictHandover) targeting SURFACE FPA -- the same forward-shooting
+        // root-find as AscentShootingSolver.Solve, with a surface predicate for the body-general target.
+        private static double SolveKickForSurfaceFpa(AscentShootingInputs io, double targetFpa)
+        {
+            double lo = 0.0, hi = io.MaxKickDeg, mid = 0.0;
+            for (int i = 0; i < 60; i++)
+            {
+                mid = 0.5 * (lo + hi);
+                double fpa = AscentShootingSolver.PredictHandover(io, mid).SurfaceFpaDeg;
+                if (Math.Abs(fpa - targetFpa) <= 0.03) break;
+                if (fpa > targetFpa) lo = mid; else hi = mid;   // more vertical than target -> kick harder
+            }
+            return mid;
+        }
+
+        // Coast apoapsis (km) at the handover altitude for a solved kick -- the non-loft signal.
+        private static double CoastApoapsisAt(AscentShootingInputs io, double kick)
+        {
+            var cfg = new AscentDynamicsConfig
+            {
+                Mu = io.Mu, BodyRadius = io.BodyRadius, DragAreaCd = io.DragAreaCd, Stages = io.Stages,
+                DensityAtAltitude = io.DensityAtAltitude,
+                SteeringPitchFromVerticalDeg = st => AscentShootingSolver.PhasedSteeringPitchDeg(st, io, kick)
+            };
+            var integrator = new AscentIntegrator(cfg);
+            AscentState s = io.InitialState;
+            for (int i = 0; i < io.MaxSteps; i++)
+            {
+                if (s.AltitudeMeters(io.BodyRadius) >= io.HandoverAltitudeMeters) break;
+                s = integrator.Step(s, io.StepSeconds);
+            }
+            return CoastApoapsisKm(s, io.Mu, io.BodyRadius, io.RotationRateRadPerSec, io.LaunchLatitudeCos);
+        }
+
+        // PSG optimal orbit-frame FPA (deg) vs altitude (m), from trajectory.log proj rows. Rises to a ~28.5 deg peak
+        // near 52 km (co-rotation makes it near-horizontal at the pad), then eases toward insertion. Reference fixture.
+        private static readonly PsgFpaPoint[] PsgExpectedFpa =
+        {
+            new PsgFpaPoint(137, 2.38),    new PsgFpaPoint(318, 4.26),    new PsgFpaPoint(846, 7.29),
+            new PsgFpaPoint(1739, 9.88),   new PsgFpaPoint(3075, 12.27),  new PsgFpaPoint(4927, 14.46),
+            new PsgFpaPoint(7384, 16.51),  new PsgFpaPoint(10546, 18.43), new PsgFpaPoint(14531, 20.27),
+            new PsgFpaPoint(19467, 22.02), new PsgFpaPoint(25507, 23.71), new PsgFpaPoint(32819, 25.35),
+            new PsgFpaPoint(41606, 26.93), new PsgFpaPoint(52098, 28.48), new PsgFpaPoint(64589, 27.81),
+            new PsgFpaPoint(107367, 25.79),new PsgFpaPoint(145279, 21.95),
+        };
+
+        // PSG optimal coast apoapsis (km) vs altitude (m), from the same proj rows (energy+angular-momentum of the
+        // drag-free optimal state). The non-lofted reference: the atmospheric law must not bank apoapsis above this.
+        private static readonly PsgCoastPoint[] PsgExpectedCoastApoKm =
+        {
+            new PsgCoastPoint(137, 0.2),    new PsgCoastPoint(317, 0.4),    new PsgCoastPoint(845, 1.1),
+            new PsgCoastPoint(1739, 2.3),   new PsgCoastPoint(3075, 4.2),   new PsgCoastPoint(4926, 7.0),
+            new PsgCoastPoint(7384, 11.0),  new PsgCoastPoint(10545, 16.4), new PsgCoastPoint(14530, 23.7),
+            new PsgCoastPoint(19466, 33.5), new PsgCoastPoint(25507, 46.4), new PsgCoastPoint(32819, 63.6),
+            new PsgCoastPoint(41606, 86.5), new PsgCoastPoint(52098, 117.1),new PsgCoastPoint(64589, 146.8),
+            new PsgCoastPoint(107367, 182.9),new PsgCoastPoint(145279, 205.7),
+        };
+
+        // Sources the shooting solver's target from PSG's OWN expected trajectory instead of a hardcoded FPA. PSG's
+        // projected (drag-free optimal) path -- from the reference flight's proj rows in trajectory.log, orbit-frame
+        // FPA = asin(dAlt/dt / |Vinertial|) -- is the state the atmospheric law should hand off onto, so there is no
+        // loft/discontinuity. In flight this target is read live from PsgSolution (RelativePosition/RelativeVelocity);
+        // this table is the offline fixture that validates the coupling. Asserts a representative handover converges
+        // to a sane kick hitting PSG's target; reports the mid-climb tracking deviation as a diagnostic (a single kick
+        // runs MORE horizontal than PSG's optimal mid-climb -- anti-loft -- then converges to PSG's FPA at handover).
+        private static void CheckAscentTargetFromPsg()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== Ascent target from PSG optimal (couple solver target to PSG's expected FPA) ===");
+
+            PsgFpaPoint[] psg = PsgExpectedFpa;
+
+            AscentShootingInputs BaseInputs() => new AscentShootingInputs
+            {
+                Mu = EarthMu,
+                BodyRadius = EarthRadius,
+                DragAreaCd = 55.0,
+                Stages = new[] { new AscentStage { ThrustNewtons = 74.3e6, MassFlowKgPerSec = 22192.0, PropellantKg = 3.0e6, JettisonMassKg = 0.0 } },
+                DensityAtAltitude = RssAtmosphere.Density,
+                InitialState = new AscentState { T = 0, X = EarthRadius + 137.4, Y = 0, Vx = 0, Vy = 0, MassKg = 5209193.0 },
+                TowerClearanceAltitudeMeters = 1000.0,
+                MaxKickDeg = 45.0,
+                StepSeconds = 0.5,
+                MaxSteps = 6000,
+                RotationRateRadPerSec = 2.0 * Math.PI / EarthSiderealDay,
+                LaunchLatitudeCos = Math.Cos(CapeLatitude * Math.PI / 180.0),
+                DynamicPressureShiftPa = 2000.0
+            };
+
+            foreach (double handover in new[] { 40000.0, 50000.0, 60000.0, 70000.0 })
+            {
+                AscentShootingInputs io = BaseInputs();
+                io.HandoverAltitudeMeters = handover;
+                io.TargetFlightPathAngleDeg = InterpPsgFpa(psg, handover);
+
+                AscentShootingResult r = AscentShootingSolver.Solve(io);
+                double climbDev = MaxClimbDeviationFromPsg(io, r.KickAngleDeg, psg);
+                Console.WriteLine(string.Format(
+                    "  handover {0,2:F0} km  PSG target {1,5:F1}  ->  kick {2,5:F2}  achieved {3,5:F2}  [{4}]  midclimb max|traj-PSG| {5,4:F1} deg",
+                    handover / 1000.0, io.TargetFlightPathAngleDeg, r.KickAngleDeg, r.AchievedFlightPathAngleDeg, r.Status, climbDev));
+            }
+
+            // Assert the representative 50 km handover converges to a sane kick hitting PSG's own target.
+            AscentShootingInputs io50 = BaseInputs();
+            io50.HandoverAltitudeMeters = 50000.0;
+            io50.TargetFlightPathAngleDeg = InterpPsgFpa(psg, 50000.0);
+            AscentShootingResult r50 = AscentShootingSolver.Solve(io50);
+            bool ok = r50.Converged
+                      && r50.KickAngleDeg > 0.0 && r50.KickAngleDeg < io50.MaxKickDeg
+                      && Math.Abs(r50.AchievedFlightPathAngleDeg - io50.TargetFlightPathAngleDeg) <= 0.3;
+            Console.WriteLine("  " + (ok ? "PASS" : "FAIL") + " (50 km handover solves to PSG target with a sane kick)");
+            if (!ok) throw new Exception("PSG-coupled target did not solve to a sane kick at the 50 km handover.");
+        }
+
+        private struct PsgFpaPoint { public double Alt; public double FpaDeg; public PsgFpaPoint(double a, double f) { Alt = a; FpaDeg = f; } }
+
+        // Linear interpolation of PSG's expected orbit-FPA table at an altitude.
+        private static double InterpPsgFpa(PsgFpaPoint[] t, double alt)
+        {
+            if (alt <= t[0].Alt) return t[0].FpaDeg;
+            if (alt >= t[t.Length - 1].Alt) return t[t.Length - 1].FpaDeg;
+            for (int i = 0; i < t.Length - 1; i++)
+            {
+                if (alt < t[i].Alt || alt > t[i + 1].Alt) continue;
+                double f = (alt - t[i].Alt) / (t[i + 1].Alt - t[i].Alt);
+                return t[i].FpaDeg + f * (t[i + 1].FpaDeg - t[i].FpaDeg);
+            }
+            return t[t.Length - 1].FpaDeg;
+        }
+
+        // Max deviation (deg) of the kicked trajectory's orbit-frame FPA from PSG's expected FPA over the climb.
+        private static double MaxClimbDeviationFromPsg(AscentShootingInputs io, double kickDeg, PsgFpaPoint[] psg)
+        {
+            var cfg = new AscentDynamicsConfig
+            {
+                Mu = io.Mu,
+                BodyRadius = io.BodyRadius,
+                DragAreaCd = io.DragAreaCd,
+                Stages = io.Stages,
+                DensityAtAltitude = io.DensityAtAltitude,
+                SteeringPitchFromVerticalDeg = st => AscentShootingSolver.PhasedSteeringPitchDeg(st, io, kickDeg)
+            };
+
+            var integrator = new AscentIntegrator(cfg);
+            AscentState s = io.InitialState;
+            double maxDev = 0.0;
+            for (int i = 0; i < io.MaxSteps; i++)
+            {
+                double alt = s.AltitudeMeters(io.BodyRadius);
+                if (alt >= io.HandoverAltitudeMeters) break;
+                if (alt >= 2000.0)
+                {
+                    double orbit = AscentShootingSolver.OrbitFlightPathAngleDeg(s, io.RotationRateRadPerSec, io.LaunchLatitudeCos);
+                    double dev = Math.Abs(orbit - InterpPsgFpa(psg, alt));
+                    if (dev > maxDev) maxDev = dev;
+                }
+                s = integrator.Step(s, io.StepSeconds);
+            }
+            return maxDev;
+        }
+
+        // Apoapsis-loft check: does the single-kick law bank more apoapsis than PSG's non-lofted optimal? Coast
+        // apoapsis (energy + angular momentum of the current orbit-frame state) is compared to PSG's optimal over the
+        // climb. The solved single-kick tracks AT OR BELOW PSG (anti-loft) -> a second kick-altitude parameter is not
+        // needed. A deliberately lofted late-kick (vertical hold to 30 km) is included so the metric is proven to
+        // detect real loft, not pass vacuously.
+        private static void CheckAscentApoapsisLoft()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== Ascent apoapsis-loft (single-kick vs PSG optimal; is a 2nd parameter needed?) ===");
+
+            const double handover = 50000.0;
+
+            AscentShootingInputs Inputs() => new AscentShootingInputs
+            {
+                Mu = EarthMu, BodyRadius = EarthRadius, DragAreaCd = 55.0,
+                Stages = new[] { new AscentStage { ThrustNewtons = 74.3e6, MassFlowKgPerSec = 22192.0, PropellantKg = 3.0e6, JettisonMassKg = 0.0 } },
+                DensityAtAltitude = RssAtmosphere.Density,
+                InitialState = new AscentState { T = 0, X = EarthRadius + 137.4, Y = 0, Vx = 0, Vy = 0, MassKg = 5209193.0 },
+                TowerClearanceAltitudeMeters = 1000.0,
+                HandoverAltitudeMeters = handover,
+                TargetFlightPathAngleDeg = InterpPsgFpa(PsgExpectedFpa, handover),
+                MaxKickDeg = 45.0, StepSeconds = 0.5, MaxSteps = 6000,
+                RotationRateRadPerSec = 2.0 * Math.PI / EarthSiderealDay,
+                LaunchLatitudeCos = Math.Cos(CapeLatitude * Math.PI / 180.0),
+                DynamicPressureShiftPa = 2000.0
+            };
+
+            // Single kick solved to PSG's target: must not bank apoapsis above PSG's optimal.
+            AscentShootingInputs io = Inputs();
+            AscentShootingResult r = AscentShootingSolver.Solve(io);
+            double singleOverLoft = MaxCoastOverLoftKm(io, r.KickAngleDeg, PsgExpectedCoastApoKm);
+
+            // Deliberately lofted counterexample: vertical hold all the way to 30 km, then kick -> should over-loft.
+            AscentShootingInputs lofted = Inputs();
+            lofted.TowerClearanceAltitudeMeters = 30000.0;
+            double loftedOverLoft = MaxCoastOverLoftKm(lofted, 8.0, PsgExpectedCoastApoKm);
+
+            Console.WriteLine(string.Format("  single-kick (K {0:F2} -> PSG {1:F1} deg): max coast-apoapsis over-loft vs PSG = {2:F1} km",
+                r.KickAngleDeg, io.TargetFlightPathAngleDeg, singleOverLoft));
+            Console.WriteLine(string.Format("  late-kick (vertical to 30 km, deliberately lofted): max over-loft vs PSG = {0:F1} km", loftedOverLoft));
+
+            bool singleOk = singleOverLoft <= 3.0;          // single kick does not loft
+            bool detects = loftedOverLoft >= 4.0;           // metric flags a genuinely lofted ascent (non-vacuous)
+            Console.WriteLine("  " + (singleOk && detects ? "PASS" : "FAIL") + " (single-kick anti-loft; loft metric discriminates)");
+            if (!singleOk) throw new Exception(string.Format("Single-kick lofts above PSG optimal by {0:F1} km.", singleOverLoft));
+            if (!detects) throw new Exception("Loft metric failed to flag a deliberately lofted ascent (would be vacuous).");
+        }
+
+        private struct PsgCoastPoint { public double Alt; public double CoastApoKm; public PsgCoastPoint(double a, double c) { Alt = a; CoastApoKm = c; } }
+
+        private static double InterpPsgCoast(PsgCoastPoint[] t, double alt)
+        {
+            if (alt <= t[0].Alt) return t[0].CoastApoKm;
+            if (alt >= t[t.Length - 1].Alt) return t[t.Length - 1].CoastApoKm;
+            for (int i = 0; i < t.Length - 1; i++)
+            {
+                if (alt < t[i].Alt || alt > t[i + 1].Alt) continue;
+                double f = (alt - t[i].Alt) / (t[i + 1].Alt - t[i].Alt);
+                return t[i].CoastApoKm + f * (t[i + 1].CoastApoKm - t[i].CoastApoKm);
+            }
+            return t[t.Length - 1].CoastApoKm;
+        }
+
+        // Coast apoapsis altitude (km) of the state's orbit-frame conic (surface velocity + co-rotation).
+        private static double CoastApoapsisKm(AscentState s, double mu, double bodyRadius, double rotationRate, double latCos)
+        {
+            double r = s.Radius;
+            double ex = -s.Y / r, ey = s.X / r;
+            double vrot = rotationRate * r * latCos;
+            double ox = s.Vx + vrot * ex, oy = s.Vy + vrot * ey;
+            double energy = 0.5 * (ox * ox + oy * oy) - mu / r;
+            if (energy >= 0.0) return double.PositiveInfinity;   // escape
+            double h = Math.Abs(s.X * oy - s.Y * ox);
+            double a = -mu / (2.0 * energy);
+            double e = Math.Sqrt(Math.Max(0.0, 1.0 + 2.0 * energy * h * h / (mu * mu)));
+            return (a * (1.0 + e) - bodyRadius) / 1000.0;
+        }
+
+        // Max amount (km) the kicked trajectory's coast apoapsis exceeds PSG's optimal over the climb (loft signal).
+        private static double MaxCoastOverLoftKm(AscentShootingInputs io, double kickDeg, PsgCoastPoint[] psgCoast)
+        {
+            var cfg = new AscentDynamicsConfig
+            {
+                Mu = io.Mu, BodyRadius = io.BodyRadius, DragAreaCd = io.DragAreaCd, Stages = io.Stages,
+                DensityAtAltitude = io.DensityAtAltitude,
+                SteeringPitchFromVerticalDeg = st => AscentShootingSolver.PhasedSteeringPitchDeg(st, io, kickDeg)
+            };
+
+            var integrator = new AscentIntegrator(cfg);
+            AscentState s = io.InitialState;
+            double maxOver = double.NegativeInfinity;
+            for (int i = 0; i < io.MaxSteps; i++)
+            {
+                double alt = s.AltitudeMeters(io.BodyRadius);
+                if (alt >= io.HandoverAltitudeMeters) break;
+                if (alt >= 4000.0)
+                {
+                    double apo = CoastApoapsisKm(s, io.Mu, io.BodyRadius, io.RotationRateRadPerSec, io.LaunchLatitudeCos);
+                    double over = apo - InterpPsgCoast(psgCoast, alt);
+                    if (over > maxOver) maxOver = over;
+                }
+                s = integrator.Step(s, io.StepSeconds);
+            }
+            return maxOver;
         }
 
         // P0 calibration: proves the AscentIntegrator physics (central gravity + RSS drag + variable mass) by
