@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
 using Blackbird.Guidance;
+using Blackbird.Mathematics;
+using Blackbird.Models;
+using Blackbird.OpenLoop;
 using Blackbird.Planning;
+using Blackbird.Psg;
 using UnityEngine;
 
 namespace Blackbird.LaunchHarness
@@ -46,6 +50,12 @@ namespace Blackbird.LaunchHarness
             CheckAscentTargetFromPsg();
             CheckAscentApoapsisLoft();
             CheckSolveAcrossBodies();
+            CheckAscentIloadEmbedFrame();
+            CheckAscentIloadPsgPadBoot();
+            CheckAscentIloadEval();
+            CheckAscentIloadBuildSweep();
+            CheckAscentIloadFailurePaths();
+            CheckAscentIloadLowTwrVehicle();
             return 0;
         }
 
@@ -981,6 +991,422 @@ namespace Blackbird.LaunchHarness
 
             position = r * (Math.Cos(nu) * pHat + Math.Sin(nu) * qHat);
             velocity = Math.Sqrt(mu / p) * (-Math.Sin(nu) * pHat + (eccentricity + Math.Cos(nu)) * qHat);
+        }
+
+        // ================= I-load / chi-table open-loop ascent (P3) =================
+        // Fixture: the flown Starship stack + 210 km circular target exactly as PSG logged them on the pad
+        // (psg.log 2026-07-12 18:48:17 problem snapshot; KSP world axes: +Y pole, LEFT-handed frame).
+        private const double IloadMu = 398600435436096.0;
+        private const double IloadBodyRadius = 6371000.0;
+        private const double IloadOmegaY = 7.292115373194e-05;
+        private static readonly Vector3d IloadPad = new Vector3d(5269748.13480735, 3050629.29654613, 1874773.26428383);
+        // Logged obt_velocity of the vessel AT REST on the pad — the ground truth for the embed's co-rotation term.
+        private static readonly Vector3d IloadPadRestVelocity = new Vector3d(-136.710617086584, 0.0, 384.276119338767);
+        private const double IloadLiftoffMassKg = 4801932.15098977;
+        private const double IloadPadAltMeters = 134.85194942262;
+        private const double IloadUt = 131990860.243475;
+        private const double IloadHandoffAltMeters = 43000.0;   // 0.002 pressure fraction, flight-validated
+        private const double IloadTargetRadius = 6581000.0;     // 210 km circular
+        // Upper stage from the 18:53:06 IGNITION snapshot, not the pad snapshot: pre-launch, stock
+        // DeltaVStageInfo overstates the future stage (start 1535.9/end 416.7/isp 368) — at ignition the
+        // fuelsim snaps to the physical stage (booster dry ~317 t actually jettisons; real dV ~7.9 km/s).
+        private const double IloadUpperStartTons = 1219.52827792525;
+        private const double IloadUpperEndTons = 145.047253524969;
+
+        private static PoweredStageInfo MakeIloadStage(int kspStage, int phaseIndex, double startMassTons,
+            double endMassTons, double thrustKn, double ispSec, double minThrottle)
+        {
+            double mdotTonsPerSec = thrustKn / (ispSec * MathHelpers.StandardGravity);
+            return new PoweredStageInfo
+            {
+                IsValid = true,
+                ReasonUnavailable = string.Empty,
+                Stage = kspStage,
+                PhaseIndex = phaseIndex,
+                IsCurrentOrFutureStage = true,
+                StartMass = startMassTons,
+                EndMass = endMassTons,
+                VacuumSpecificImpulse = ispSec,
+                CurrentSpecificImpulse = ispSec,
+                VacuumThrust = thrustKn,
+                CurrentThrust = thrustKn,
+                MinimumThrust = thrustKn * minThrottle,
+                MinimumThrottle = minThrottle,
+                BurnTimeSeconds = (startMassTons - endMassTons) / mdotTonsPerSec,
+                VacuumDeltaV = 0.0,
+                CurrentDeltaV = 0.0
+            };
+        }
+
+        // Inputs exactly as BeginOpenLoopBuild fills them in-game: pad position and body spin in KSP world axes,
+        // due-east launch (heading 90 at the Cape), target plane = the plane the resting pad already lies in
+        // (Cross(r, v_rest), the tangent-launch case actually flown). boosterThrustScale synthesizes the
+        // second, lower-TWR vehicle for the generality check — everything else derives from the stage list.
+        private static OpenLoopInputs MakeIloadInputs(double boosterThrustScale = 1.0)
+        {
+            Vector3d pole = new Vector3d(0.0, 1.0, 0.0);
+            Vector3d omega = pole * IloadOmegaY;
+            Vector3d restVelocity = Vector3d.Cross(IloadPad, omega);      // = the logged rest obt_velocity
+            Vector3d targetNormal = Vector3d.Cross(IloadPad, restVelocity).normalized;
+
+            return new OpenLoopInputs
+            {
+                Mu = IloadMu,
+                BodyRadiusMeters = IloadBodyRadius,
+                DragAreaCd = 55.0,
+                DensityAtAltitude = RssAtmosphere.Density,
+                Stages = new[]
+                {
+                    MakeIloadStage(4, 0, 4799.94562259349, 1536.49514218216, 74432.4743886079 * boosterThrustScale, 347.000005723145, 0.4),
+                    MakeIloadStage(2, 1, IloadUpperStartTons, IloadUpperEndTons, 11767.9762330475, 380.000006267421, 0.400000005662442)
+                },
+                LiftoffMassKg = IloadLiftoffMassKg,
+                PadAltitudeMeters = IloadPadAltMeters,
+                UniversalTime = IloadUt,
+                PadRelativePosition = IloadPad,
+                DownrangeDirection = restVelocity.normalized,
+                BodyAngularVelocity = omega,
+                HandoffAltitudeMeters = IloadHandoffAltMeters,
+                PitchOverSpeedMps = 100.0,
+                HoldVerticalUntilAltMeters = 0.0,
+                Target = PsgTarget.Create(IloadMu, IloadTargetRadius, IloadTargetRadius, IloadTargetRadius,
+                    targetNormal, 28.6083883588767, 236.977771247498, false, false)
+            };
+        }
+
+        // PSG solved straight from the pad rest state (the in-game boot solve, which the build REQUIRES).
+        // Anchors the fixture's feasibility independent of the integrator, and proves the harness's
+        // by-construction target normal is the SAME plane flight's inc/LAN-constrained target resolves to.
+        private static void CheckAscentIloadPsgPadBoot()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== I-load PSG pad-boot (fixture feasibility; fixed normal == flown inc/LAN plane) ===");
+            OpenLoopInputs io = MakeIloadInputs();
+            PsgInitialState initial = PsgInitialState.Create(IloadPad, IloadPadRestVelocity, IloadLiftoffMassKg, IloadUt);
+            PsgBodyModel body = PsgBodyModel.Create(IloadMu, IloadBodyRadius, new Vector3d(0.0, IloadOmegaY, 0.0));
+            PsgPhase[] phases = PsgPhase.FromPoweredStages(io.Stages);
+
+            PsgTarget lanTarget = PsgTarget.Create(IloadMu, IloadTargetRadius, IloadTargetRadius, IloadTargetRadius,
+                Vector3d.zero, 28.6083883588767, 236.977771247498, true, false);   // exactly as flight FromPlan logged it
+
+            var masses = new List<double>();
+            foreach (var pair in new[] { new { Label = "fixed pad-rest normal", T = io.Target }, new { Label = "flown inc/LAN (free plane)", T = lanTarget } })
+            {
+                PsgProblem prob = PsgProblem.Create(initial, body, pair.T, phases, IloadPad.normalized);
+                PsgOptimizationResult res = new PsgOptimizer().Solve(prob, null);
+                if (res == null || !res.Success || res.Solution == null) throw new Exception("PSG pad boot did not converge (" + pair.Label + ").");
+                PsgSolutionPoint term = res.Solution.TerminalState();
+                Vector3d n = Vector3d.Cross(term.RelativePosition, term.RelativeVelocity).normalized;
+                double planeToMine = Vector3d.Angle(n, io.Target.TargetOrbitNormal);
+                Console.WriteLine(string.Format("  {0,-28}: injected {1:F1} t (floor {2:F1}, margin {3:F1} t)  iters {4}  tgo {5:F0} s  plane-vs-mine {6:F3} deg",
+                    pair.Label, term.MassKg / 1000.0, IloadUpperEndTons, term.MassKg / 1000.0 - IloadUpperEndTons, res.Iterations,
+                    res.Solution.TimeToGo(IloadUt), planeToMine));
+                if (planeToMine > 0.1) throw new Exception("Pad-boot terminal plane does not match the fixture normal (" + pair.Label + ").");
+                if (term.MassKg / 1000.0 - IloadUpperEndTons < 150.0) throw new Exception("Fixture lost its feasibility margin (" + pair.Label + ").");
+                masses.Add(term.MassKg);
+            }
+            if (Math.Abs(masses[0] - masses[1]) > 2000.0)
+                throw new Exception("Fixed-normal and inc/LAN targets disagree — the harness target no longer matches flight semantics.");
+        }
+
+        // The embed IS the flight-frame contract: PSG receives body-centered position + INERTIAL velocity in
+        // KSP's left-handed world frame, where a surface-fixed point moves at Cross(r, omega) — pinned here
+        // against the flown log's rest state, so a handedness/sign regression fails offline, not in a launch.
+        private static void CheckAscentIloadEmbedFrame()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== I-load embed frame (2D->3D embed reproduces the flown pad rest state) ===");
+
+            OpenLoopInputs io = MakeIloadInputs();
+            AscentState rest = new AscentState { T = 0, X = IloadBodyRadius + IloadPadAltMeters, Y = 0, Vx = 0, Vy = 0, MassKg = IloadLiftoffMassKg };
+            OpenLoopTrajectory.EmbedState(rest, io, out Vector3d r3, out Vector3d v3);
+
+            double posErr = (r3 - IloadPad).magnitude;
+            double velErr = (v3 - IloadPadRestVelocity).magnitude;
+            Console.WriteLine(string.Format("  rest embed: |dPos| {0:E2} m  |dVel| {1:E3} m/s (logged obt_velocity)", posErr, velErr));
+            if (posErr > 0.01) throw new Exception("Embed does not reproduce the logged pad position.");
+            if (velErr > 0.01) throw new Exception("Embed does not reproduce the logged rest inertial velocity (co-rotation sign/frame).");
+
+            // Moving state: in-plane components must survive the embed exactly, and the co-rotation term must
+            // be the only out-of-plane contribution (orthonormal er/et; guards future refactors).
+            AscentState moving = new AscentState { T = 120, X = IloadBodyRadius + 40000.0, Y = 55000.0, Vx = 900.0, Vy = 1300.0, MassKg = 2.5e6 };
+            OpenLoopTrajectory.EmbedState(moving, io, out Vector3d rm, out Vector3d vm);
+            Vector3d er = IloadPad.normalized;
+            Vector3d et = (io.DownrangeDirection - Vector3d.Dot(io.DownrangeDirection, er) * er).normalized;
+            Vector3d surf = vm - Vector3d.Cross(rm, io.BodyAngularVelocity);
+            bool ok = Math.Abs(rm.magnitude - moving.Radius) < 0.01
+                      && Math.Abs(Vector3d.Dot(surf, er) - moving.Vx) < 1e-6
+                      && Math.Abs(Vector3d.Dot(surf, et) - moving.Vy) < 1e-6;
+            Console.WriteLine("  " + (ok ? "PASS" : "FAIL") + " (moving-state embed: exact in-plane components + radius)");
+            if (!ok) throw new Exception("Embed corrupted the in-plane state components.");
+        }
+
+        // The contract's headline check: ONE fixed pitch rate end-to-end (integrate -> embed -> PSG solve) on the
+        // flown vehicle. Asserts PSG convergence, terminal orbit = the 210 km circular target, terminal plane
+        // parallel to the target normal (Cross(r,v) convention), and an injected mass inside the physical window.
+        private static void CheckAscentIloadEval()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== I-load eval (fixed 0.7 deg/s: integrate -> embed -> PSG -> injected mass) ===");
+
+            OpenLoopInputs io = MakeIloadInputs();
+            DateTime t0 = DateTime.UtcNow;
+            OpenLoopCandidate c = OpenLoopTrajectory.EvaluateCandidate(io, 0.7);
+            Console.WriteLine(string.Format("  valid={0} ({1})  {2:F1} s wall", c.Valid, c.Valid ? "ok" : c.Reason, (DateTime.UtcNow - t0).TotalSeconds));
+            if (!c.Valid) throw new Exception("Fixed-rate eval did not produce a PSG-convergent trajectory: " + c.Reason);
+
+            PsgSolutionPoint term = c.PsgSolution.TerminalState();
+            double rMag = term.RelativePosition.magnitude;
+            double vMag = term.RelativeVelocity.magnitude;
+            double vCirc = Math.Sqrt(IloadMu / rMag);
+            double radialSpeed = Vector3d.Dot(term.RelativePosition.normalized, term.RelativeVelocity);
+            Vector3d termNormal = Vector3d.Cross(term.RelativePosition, term.RelativeVelocity).normalized;
+            double planeErrDeg = Vector3d.Angle(termNormal, io.Target.TargetOrbitNormal);
+
+            Console.WriteLine(string.Format("  injected {0,7:F1} t   tHandoff {1,5:F1} s   psgTgo {2,5:F1} s   iters {3}",
+                c.InjectedMassKg / 1000.0, c.TimeToHandoffSeconds, c.PsgTimeToGoSeconds, c.PsgIterations));
+            Console.WriteLine(string.Format("  terminal: alt {0,6:F1} km  |v| {1,6:F1} (circ {2,6:F1})  vRadial {3,5:F2} m/s  plane err {4:F3} deg",
+                (rMag - IloadBodyRadius) / 1000.0, vMag, vCirc, radialSpeed, planeErrDeg));
+
+            if (planeErrDeg > 0.2) throw new Exception(string.Format("Terminal plane is {0:F2} deg off the target normal.", planeErrDeg));
+            if (Math.Abs(rMag - IloadTargetRadius) > 2000.0) throw new Exception("Terminal radius missed the 210 km circular target.");
+            if (Math.Abs(vMag - vCirc) > 5.0 || Math.Abs(radialSpeed) > 5.0) throw new Exception("Terminal velocity is not circular-orbital.");
+            if (c.InjectedMassKg <= IloadUpperEndTons * 1000.0 || c.InjectedMassKg >= IloadUpperStartTons * 1000.0)
+                throw new Exception(string.Format("Injected mass {0:F0} kg outside the physical window ({1:F0}..{2:F0}).",
+                    c.InjectedMassKg, IloadUpperEndTons * 1000.0, IloadUpperStartTons * 1000.0));
+            if (c.TimeToHandoffSeconds < 30.0 || c.TimeToHandoffSeconds > 400.0) throw new Exception("Time to handoff is not sane.");
+            if (c.PsgTimeToGoSeconds < 60.0 || c.PsgTimeToGoSeconds > 1200.0) throw new Exception("PSG time-to-go is not sane.");
+
+            // The integrated path itself: reaches the handoff, burns monotonically, never pitches below horizon.
+            OpenLoopSample last = c.Path[c.Path.Count - 1];
+            bool pathOk = last.AltMeters >= IloadHandoffAltMeters;
+            for (int i = 1; i < c.Path.Count && pathOk; i++)
+                pathOk = c.Path[i].MassKg < c.Path[i - 1].MassKg
+                         && c.Path[i].TimeSec > c.Path[i - 1].TimeSec
+                         && c.Path[i].PitchDeg >= 0.0 && c.Path[i].PitchDeg <= 90.0;
+            Console.WriteLine("  " + (pathOk ? "PASS" : "FAIL") + " (path reaches handoff; mass/time monotonic; pitch in [0,90])");
+            if (!pathOk) throw new Exception("Integrated path violates a physical invariant.");
+        }
+
+        // The 1-D optimizer: sweep the SAME 9-point coarse grid Build uses (warm-chained like Build) to prove the
+        // injected-mass objective is single-basin over the rate band, then require Build's winner to sit in that
+        // basin's interior and beat every coarse sample. Also pins the table/lookup semantics the flight code
+        // consumes (PitchDeg below/inside/beyond the table) and proves the warm-start plumbing does real work.
+        private static void CheckAscentIloadBuildSweep()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== I-load Build sweep (unimodality; winner beats coarse grid; table + lookup semantics) ===");
+
+            OpenLoopInputs io = MakeIloadInputs();
+            double[] rates = new double[9];
+            var scan = new OpenLoopCandidate[9];
+            PsgSolution warm = null;
+            for (int i = 0; i < 9; i++)
+            {
+                rates[i] = 0.2 + (2.2 - 0.2) * i / 8.0;
+                scan[i] = OpenLoopTrajectory.EvaluateCandidate(io, rates[i], warm);
+                if (scan[i].Valid) warm = scan[i].PsgSolution;
+                Console.WriteLine(string.Format("  rate {0,4:F2}  {1}", rates[i],
+                    scan[i].Valid ? string.Format("injected {0,7:F1} t  iters {1}", scan[i].InjectedMassKg / 1000.0, scan[i].PsgIterations)
+                                  : "INVALID: " + scan[i].Reason));
+            }
+
+            int first = -1, lastValid = -1, peak = -1;
+            for (int i = 0; i < 9; i++)
+            {
+                if (!scan[i].Valid) continue;
+                if (first < 0) first = i;
+                lastValid = i;
+                if (peak < 0 || scan[i].InjectedMassKg > scan[peak].InjectedMassKg) peak = i;
+            }
+            if (first < 0 || lastValid - first + 1 < 3) throw new Exception("Fewer than 3 valid coarse samples across the rate band.");
+            for (int i = first; i <= lastValid; i++)
+                if (!scan[i].Valid) throw new Exception(string.Format("Invalid candidate at rate {0:F2} INSIDE the valid band (non-contiguous).", rates[i]));
+
+            const double slackKg = 2000.0;   // PSG solve-to-solve noise allowance
+            for (int i = first; i < peak; i++)
+                if (scan[i].InjectedMassKg > scan[i + 1].InjectedMassKg + slackKg)
+                    throw new Exception(string.Format("Objective not single-basin: dip rising toward peak at rate {0:F2}.", rates[i]));
+            for (int i = peak; i < lastValid; i++)
+                if (scan[i + 1].InjectedMassKg > scan[i].InjectedMassKg + slackKg)
+                    throw new Exception(string.Format("Objective not single-basin: rise falling off peak at rate {0:F2}.", rates[i + 1]));
+            Console.WriteLine(string.Format("  single-basin over [{0:F2}..{1:F2}], peak at {2:F2} deg/s", rates[first], rates[lastValid], rates[peak]));
+
+            DateTime t0 = DateTime.UtcNow;
+            OpenLoopTrajectory plan = OpenLoopTrajectory.Build(io);
+            Console.WriteLine(string.Format("  Build: valid={0} ({1})  {2:F1} s wall", plan.IsValid,
+                plan.IsValid ? string.Format("rate {0:F3} deg/s, injected {1:F1} t", plan.PitchRateDegPerSecond, plan.PredictedInjectedMassKg / 1000.0)
+                             : plan.ReasonUnavailable, (DateTime.UtcNow - t0).TotalSeconds));
+            if (!plan.IsValid) throw new Exception("Build failed on the flown fixture: " + plan.ReasonUnavailable);
+            if (plan.PitchRateDegPerSecond <= 0.2 || plan.PitchRateDegPerSecond >= 2.2)
+                throw new Exception("Winning rate railed against the search band.");
+            // Profile sanity bands (David, 2026-07-13): the winning chi table must look like a real RSS ascent,
+            // not PSG's flat-and-fast drag-free optimum — pitch 58-66 deg around 38 km, 42-48 deg at the ~43 km
+            // handoff. The AoA cap in the ramp law is what enforces this; these bands catch it regressing.
+            double pitchAt38 = InterpTracePitchAtAltitude(plan.Trace, 38000.0);
+            if (pitchAt38 < 58.0 || pitchAt38 > 66.0)
+                throw new Exception(string.Format("Pitch {0:F1} deg at 38 km is outside the 58-66 deg real-ascent band.", pitchAt38));
+            double handoffPitch = plan.TablePitchDeg[plan.TablePitchDeg.Length - 1];
+            if (handoffPitch < 42.0 || handoffPitch > 48.0)
+                throw new Exception(string.Format("Handoff pitch {0:F1} deg is outside the 42-48 deg band.", handoffPitch));
+
+            // The AoA cap holds on the actual winning trajectory: finite-difference FPA from the trace vs the
+            // commanded pitch, everywhere past pitch-over (2 deg cap + discretization slop).
+            double maxAoa = MaxTraceAoaDeg(plan.Trace);
+            Console.WriteLine(string.Format("  pitch@38km {0:F1} deg   handoff pitch {1:F1} deg   max |AoA| {2:F2} deg", pitchAt38, handoffPitch, maxAoa));
+            if (maxAoa > 2.5)
+                throw new Exception(string.Format("Winning trajectory flies {0:F1} deg AoA — the ramp AoA cap is not holding.", maxAoa));
+            if (Math.Abs(plan.PitchRateDegPerSecond - rates[peak]) > 0.30)
+                throw new Exception(string.Format("Winner {0:F2} deg/s is not in the coarse peak's cell ({1:F2}).", plan.PitchRateDegPerSecond, rates[peak]));
+            if (plan.PredictedInjectedMassKg < scan[peak].InjectedMassKg - 1.0)
+                throw new Exception("Golden-section refinement lost mass vs the coarse peak.");
+
+            // Table invariants + the exact lookup semantics AscentGuidance flies.
+            double[] s = plan.TableSpeedMps, p = plan.TablePitchDeg;
+            if (s.Length != p.Length || s.Length < 50) throw new Exception("Chi table is degenerate.");
+            if (s[0] < io.PitchOverSpeedMps) throw new Exception("Table starts below the pitch-over speed.");
+            for (int i = 1; i < s.Length; i++)
+            {
+                if (s[i] <= s[i - 1]) throw new Exception("Table speeds are not strictly ascending.");
+                if (p[i] > p[i - 1] + 0.3) throw new Exception(string.Format("Pitch table rises {0:F2}->{1:F2} deg at {2:F0} m/s (not a gravity turn).", p[i - 1], p[i], s[i]));
+                if (p[i] < 0.0 || p[i] > 90.0) throw new Exception("Table pitch outside [0,90].");
+            }
+            if (p[p.Length - 1] > 65.0) throw new Exception(string.Format("Handoff pitch {0:F1} deg — table never really turned.", p[p.Length - 1]));
+            int k = s.Length / 2;
+            bool lookupOk = plan.PitchDeg(0.0) == 90.0
+                            && plan.PitchDeg(s[0] - 1.0) == 90.0
+                            && plan.PitchDeg(1e9) == p[p.Length - 1]
+                            && Math.Abs(plan.PitchDeg(0.5 * (s[k] + s[k + 1])) - 0.5 * (p[k] + p[k + 1])) < 1e-9;
+            Console.WriteLine("  " + (lookupOk ? "PASS" : "FAIL") + " (lookup: 90 below table, last beyond, exact midpoint interpolation)");
+            if (!lookupOk) throw new Exception("PitchDeg lookup semantics broken.");
+
+            if (plan.HandoffAltitudeMeters != io.HandoffAltitudeMeters) throw new Exception("Handoff altitude not passed through.");
+            if (!(plan.PredictedTimeToOrbitSeconds > plan.PredictedTimeToHandoffSeconds && plan.PredictedTimeToHandoffSeconds > 0.0))
+                throw new Exception("Predicted times are inconsistent.");
+            if (plan.Trace == null || plan.Trace.Length < 50 || plan.Trace[plan.Trace.Length - 1].AltMeters < plan.HandoffAltitudeMeters)
+                throw new Exception("Trace does not reach the handoff altitude.");
+
+            // The winning open-loop trajectory itself, decimated for the eyeball.
+            Console.WriteLine("      t      alt     downrange   srfSpd   pitch    mass");
+            for (int i = 0; i < plan.Trace.Length; i += Math.Max(1, plan.Trace.Length / 15))
+            {
+                OpenLoopSample w = plan.Trace[i];
+                Console.WriteLine(string.Format("  {0,5:F1}s  {1,6:F1}km  {2,7:F1}km  {3,6:F0}m/s  {4,5:F1}d  {5,6:F0}t",
+                    w.TimeSec, w.AltMeters / 1000.0, w.DownrangeMeters / 1000.0, w.SurfaceSpeedMps, w.PitchDeg, w.MassKg / 1000.0));
+            }
+            OpenLoopSample h = plan.Trace[plan.Trace.Length - 1];
+            Console.WriteLine(string.Format("  {0,5:F1}s  {1,6:F1}km  {2,7:F1}km  {3,6:F0}m/s  {4,5:F1}d  {5,6:F0}t  <- handoff to PSG",
+                h.TimeSec, h.AltMeters / 1000.0, h.DownrangeMeters / 1000.0, h.SurfaceSpeedMps, h.PitchDeg, h.MassKg / 1000.0));
+
+            // Warm-start does real work: re-solving the winner from its own solution must not iterate more.
+            OpenLoopCandidate cold = OpenLoopTrajectory.EvaluateCandidate(io, plan.PitchRateDegPerSecond);
+            OpenLoopCandidate hot = OpenLoopTrajectory.EvaluateCandidate(io, plan.PitchRateDegPerSecond, cold.PsgSolution);
+            Console.WriteLine(string.Format("  warm-start: cold {0} iters -> warm {1} iters (masses {2:F1} / {3:F1} t)",
+                cold.PsgIterations, hot.PsgIterations, cold.InjectedMassKg / 1000.0, hot.InjectedMassKg / 1000.0));
+            if (!cold.Valid || !hot.Valid) throw new Exception("Winner re-evaluation failed.");
+            if (hot.PsgIterations > cold.PsgIterations) throw new Exception("Warm-started solve iterated MORE than cold (warm-start not plumbed).");
+            if (Math.Abs(hot.InjectedMassKg - cold.InjectedMassKg) > 2000.0) throw new Exception("Warm and cold solves disagree on the objective.");
+        }
+
+        // Commanded pitch (above horizon) from the plan trace, linearly interpolated at an altitude.
+        private static double InterpTracePitchAtAltitude(OpenLoopSample[] trace, double altMeters)
+        {
+            for (int i = 1; i < trace.Length; i++)
+            {
+                if (trace[i].AltMeters < altMeters) continue;
+                double f = (altMeters - trace[i - 1].AltMeters) / Math.Max(1e-9, trace[i].AltMeters - trace[i - 1].AltMeters);
+                return trace[i - 1].PitchDeg + f * (trace[i].PitchDeg - trace[i - 1].PitchDeg);
+            }
+            return trace[trace.Length - 1].PitchDeg;
+        }
+
+        // Max |commanded pitch - velocity FPA| over the trace past pitch-over: the flown angle of attack,
+        // with FPA finite-differenced from consecutive samples (asin(dAlt / (v*dt))).
+        private static double MaxTraceAoaDeg(OpenLoopSample[] trace)
+        {
+            double max = 0.0;
+            for (int i = 1; i < trace.Length; i++)
+            {
+                OpenLoopSample a = trace[i - 1], b = trace[i];
+                double dt = b.TimeSec - a.TimeSec;
+                double v = 0.5 * (a.SurfaceSpeedMps + b.SurfaceSpeedMps);
+                if (dt <= 0.0 || v < 150.0 || b.PitchDeg >= 89.9) continue;   // skip vertical hold + start-up noise
+                double sinFpa = MathHelpers.Clamp((b.AltMeters - a.AltMeters) / (v * dt), -1.0, 1.0);
+                double fpa = MathHelpers.Rad2Deg(Math.Asin(sinFpa));
+                double aoa = Math.Abs(fpa - 0.5 * (a.PitchDeg + b.PitchDeg));
+                if (aoa > max) max = aoa;
+            }
+            return max;
+        }
+
+        // Every declared failure path returns Fail(reason)/invalid-candidate — never a throw, never a bogus plan.
+        private static void CheckAscentIloadFailurePaths()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== I-load failure paths (validation, integrator divergence, PSG non-convergence) ===");
+
+            void ExpectBuildFail(string label, OpenLoopInputs io, string reason)
+            {
+                OpenLoopTrajectory t = OpenLoopTrajectory.Build(io);
+                bool ok = !t.IsValid && t.ReasonUnavailable == reason;
+                Console.WriteLine(string.Format("  {0,-22} -> {1}  ({2})", label, ok ? "PASS" : "FAIL", t.ReasonUnavailable));
+                if (!ok) throw new Exception(string.Format("Failure path '{0}' returned '{1}', expected '{2}'.", label, t.ReasonUnavailable, reason));
+            }
+
+            ExpectBuildFail("null inputs", null, "null inputs");
+            OpenLoopInputs noTarget = MakeIloadInputs(); noTarget.Target = null;
+            ExpectBuildFail("no PSG target", noTarget, "no PSG target");
+            OpenLoopInputs noStages = MakeIloadInputs(); noStages.Stages = new PoweredStageInfo[0];
+            ExpectBuildFail("no stages", noStages, "no stages");
+            OpenLoopInputs badHandoff = MakeIloadInputs(); badHandoff.HandoffAltitudeMeters = badHandoff.PadAltitudeMeters;
+            ExpectBuildFail("handoff below pad", badHandoff, "bad handoff altitude");
+            OpenLoopInputs noAtmo = MakeIloadInputs(); noAtmo.DensityAtAltitude = null;
+            ExpectBuildFail("no atmosphere", noAtmo, "no atmosphere model");
+
+            // Integrator divergence: a 6 deg/s ramp flips the vehicle horizontal long before the handoff.
+            OpenLoopCandidate flip = OpenLoopTrajectory.EvaluateCandidate(MakeIloadInputs(), 6.0);
+            bool flipOk = !flip.Valid && flip.Reason == "pitched past horizontal";
+            Console.WriteLine(string.Format("  {0,-22} -> {1}  ({2})", "6 deg/s over-rotation", flipOk ? "PASS" : "FAIL", flip.Reason));
+            if (!flipOk) throw new Exception("Over-rotation did not fail with 'pitched past horizontal': " + flip.Reason);
+
+            // PSG non-convergence: a retrograde-ish target plane this stack cannot reach must be reported, not
+            // returned as a plan. (Flipped normal = ~57 deg of plane error at the tangent geometry.)
+            // Rate 0.7 is integrator-feasible (proven above), so the rejection must come from the PSG stage —
+            // either non-convergence or the propellant-feasibility gate, never a bogus valid plan.
+            OpenLoopInputs badPlane = MakeIloadInputs();
+            badPlane.Target = PsgTarget.Create(IloadMu, IloadTargetRadius, IloadTargetRadius, IloadTargetRadius,
+                -badPlane.Target.TargetOrbitNormal, 151.4, 236.977771247498, false, false);
+            OpenLoopCandidate unreach = OpenLoopTrajectory.EvaluateCandidate(badPlane, 0.7);
+            bool unreachOk = !unreach.Valid
+                             && (unreach.Reason == "PSG did not converge" || unreach.Reason == "PSG solution exceeds available propellant");
+            Console.WriteLine(string.Format("  {0,-22} -> {1}  ({2})", "unreachable plane", unreachOk ? "PASS" : "FAIL", unreach.Reason));
+            if (!unreachOk) throw new Exception(string.Format("Unreachable plane was not rejected at the PSG stage: valid={0}, reason='{1}'.", unreach.Valid, unreach.Reason));
+        }
+
+        // Generality (zero per-vehicle constants): the same Build on a synthetic low-TWR variant of the stack
+        // (booster thrust x0.75 -> liftoff TWR ~1.19, everything else derived from the stage list) must still
+        // produce a valid, in-band, physically-windowed plan. The real second vehicle flies in P4.
+        private static void CheckAscentIloadLowTwrVehicle()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== I-load low-TWR vehicle (booster thrust x0.75; no per-vehicle constants) ===");
+
+            OpenLoopInputs io = MakeIloadInputs(0.75);
+            DateTime t0 = DateTime.UtcNow;
+            OpenLoopTrajectory plan = OpenLoopTrajectory.Build(io);
+            Console.WriteLine(string.Format("  Build: valid={0} ({1})  {2:F1} s wall", plan.IsValid,
+                plan.IsValid ? string.Format("rate {0:F3} deg/s, injected {1:F1} t, handoff T+{2:F0}s", plan.PitchRateDegPerSecond,
+                    plan.PredictedInjectedMassKg / 1000.0, plan.PredictedTimeToHandoffSeconds)
+                             : plan.ReasonUnavailable, (DateTime.UtcNow - t0).TotalSeconds));
+            if (!plan.IsValid) throw new Exception("Build failed on the low-TWR vehicle: " + plan.ReasonUnavailable);
+            if (plan.PitchRateDegPerSecond <= 0.2 || plan.PitchRateDegPerSecond >= 2.2)
+                throw new Exception("Low-TWR winning rate railed against the search band.");
+            if (plan.PredictedInjectedMassKg <= IloadUpperEndTons * 1000.0 || plan.PredictedInjectedMassKg >= IloadUpperStartTons * 1000.0)
+                throw new Exception("Low-TWR injected mass outside the physical window.");
+            double[] s = plan.TableSpeedMps;
+            for (int i = 1; i < s.Length; i++)
+                if (s[i] <= s[i - 1]) throw new Exception("Low-TWR table speeds are not strictly ascending.");
+            if (s.Length < 50) throw new Exception("Low-TWR chi table is degenerate.");
         }
     }
 }

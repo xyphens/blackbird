@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using Blackbird.Psg;
 
 namespace Blackbird.OpenLoop
 {
@@ -20,6 +21,8 @@ namespace Blackbird.OpenLoop
         public double InjectedMassKg;
         public double TimeToHandoffSeconds;
         public double PsgTimeToGoSeconds;
+        public int PsgIterations;
+        public PsgSolution PsgSolution;
         public List<OpenLoopSample> Path;
     }
 }

@@ -27,6 +27,7 @@ namespace Blackbird.OpenLoop
         private const int MaxStepsPerCandidate = 4000; // 2000 s cap
         private const double RampCapFromVerticalDeg = 90.0;
 
+
         public bool IsValid { get; private set; }
         public string ReasonUnavailable { get; private set; }
 
@@ -120,6 +121,23 @@ namespace Blackbird.OpenLoop
         }
         private static double RateAt(int i) => RateMinDegPerSec + (RateMaxDegPerSec - RateMinDegPerSec) * i / (CoarseSamples - 1);
         private static double Score(OpenLoopCandidate c) => c.Valid ? c.InjectedMassKg : double.NegativeInfinity;
+        public static void EmbedState(AscentState st, OpenLoopInputs io, out Vector3d r3, out Vector3d v3)
+        {
+            Vector3d er = io.PadRelativePosition.normalized;
+            // dot product of a vector tells you angle between the two
+            // (positive = point in similar direction, zero = perpendicular, negative = opposite directions)
+            // removes unwanted directional component while maining aligned with downrange path
+            Vector3d et = (io.DownrangeDirection - Vector3d.Dot(io.DownrangeDirection, er) * er).normalized;
+            r3 = st.X * er + st.Y * et;
+            v3 = st.Vx * er + st.Vy * et + Vector3d.Cross(r3, io.BodyAngularVelocity);
+        }
+
+        public static OpenLoopCandidate EvaluateCandidate(OpenLoopInputs io, double rateDegPerSec, PsgSolution warm = null)
+        {
+            string bad = Validate(io);
+            if (bad != null) return new OpenLoopCandidate { RateDegPerSec = rateDegPerSec, Reason = bad };
+            return Evaluate(io, rateDegPerSec, ref warm);
+        }
         // candidate evaluation: integrate -> embed -> PSG
         private static OpenLoopCandidate Evaluate(OpenLoopInputs io, double rateDegPerSec, ref PsgSolution warm)
         {
@@ -178,7 +196,7 @@ namespace Blackbird.OpenLoop
                         seg = 1;
                         tRampStart = s.T;
                     }
-                    if (seg == 1 && 90.0 - s.FlightPathAngleDeg >= rateDegPerSec * (s.T - tRampStart)) seg = 2;
+                    if (seg == 1 && s.T > tRampStart && 90.0 - s.FlightPathAngleDeg >= rateDegPerSec * (s.T - tRampStart)) seg = 2;
                     if (alt >= io.HandoffAltitudeMeters)
                     {
                         reached = true;
@@ -206,10 +224,7 @@ namespace Blackbird.OpenLoop
 
                 // embed 2d terminal state into 3d: PSg takes body-centered position and inertial velocity
                 // co-rotation is exactly: v = v_srf + omega x r
-                Vector3d er = io.PadRelativePosition.normalized;
-                Vector3d et = (io.DownrangeDirection - Vector3d.Dot(io.DownrangeDirection, er) * er).normalized;
-                Vector3d r3 = s.X * er + s.Y * et;
-                Vector3d v3 = s.Vx * er + s.Vy * et + Vector3d.Cross(io.BodyAngularVelocity, r3);
+                EmbedState(s, io, out Vector3d r3, out Vector3d v3);
 
                 PoweredStageInfo[] handoffStages = BuildHandoffStages(io.Stages, s.MassKg);
                 PsgPhase[] phases = PsgPhase.FromPoweredStages(handoffStages);
@@ -237,7 +252,16 @@ namespace Blackbird.OpenLoop
 
                 warm = result.Solution;
 
+                double burnoutFloorKg = handoffStages[handoffStages.Length - 1].EndMass * 1000.0;
+                if (result.Solution.TerminalState().MassKg < burnoutFloorKg)
+                {
+                    c.Reason = "PSG solution exceeds available propellant";
+                    return c;
+                }
+
                 c.Valid = true;
+                c.PsgIterations = result.Iterations;
+                c.PsgSolution = result.Solution;
                 c.InjectedMassKg = result.Solution.TerminalState().MassKg;
                 c.TimeToHandoffSeconds = s.T;
                 c.PsgTimeToGoSeconds = result.Solution.TimeToGo(handoffUt);
