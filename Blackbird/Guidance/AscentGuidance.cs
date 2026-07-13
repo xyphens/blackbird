@@ -4,6 +4,8 @@ using Blackbird.Models;
 using Blackbird.Trajectory;
 using Blackbird.Modules;
 using Blackbird.Psg;
+using Blackbird.OpenLoop;
+using UnityEngine;
 
 namespace Blackbird.Guidance
 {
@@ -21,6 +23,21 @@ namespace Blackbird.Guidance
         private bool _handedToPsg;   // latched at the PSG handoff so it can't bounce back into the bootstrap turn
         private double _pitchSafetyMeters = 200;
 
+        // open loop stuff
+        private OpenLoopTrajectory _openLoopPlan;
+        private bool _openLoopHanded;
+        private Vector3d _openLoopSlew = Vector3d.zero;
+        private double _openLoopLastUt = double.NaN;
+        private const double OpenLoopMaxSlewDegPerSec = 5.0;
+
+        public void SetOpenLoopPlan(OpenLoopTrajectory plan)
+        {
+            if (ReferenceEquals(_openLoopPlan, plan)) return;
+            _openLoopPlan = plan;
+            _openLoopHanded = false;
+            _openLoopSlew = Vector3d.zero;
+        }
+
         // important to call this before the class is used
         public void Refresh(bool isRss, bool isPrincipia, double holdUntilAltitude, double minVrfSp = 100.0,
             double conservatismMarginDeg = double.NaN, double handoverPressureFraction = double.NaN)
@@ -31,6 +48,10 @@ namespace Blackbird.Guidance
             IsPrincipia = isPrincipia;
             _minVrfSpeedToPitch = minVrfSp;
             _atmAscent.Configure(conservatismMarginDeg, handoverPressureFraction); // non-finite -> keep defaults
+
+            _openLoopHanded = false;
+            _openLoopSlew = Vector3d.zero;
+            _openLoopLastUt = double.NaN;
         }
         public void Reset()
         {
@@ -97,84 +118,101 @@ namespace Blackbird.Guidance
 
                 bool psgReady = poweredCommand != null && poweredCommand.HasInertialDirection;
                 double psgPitch = poweredCommand != null ? poweredCommand.PitchDeg : double.NaN;
-                
+                bool openLoop = _openLoopPlan != null && _openLoopPlan.IsValid;
 
-                if (!_atmAscent.KickSolved)
+                if (openLoop)
                 {
-                    _atmAscent.TrySolveKick(vesselState, _poweredGuidance.CurrentSolution, _minVrfSpeedToPitch);
-                }
+                    double slewDt = MathHelpers.IsFinite(_openLoopLastUt) ? vesselState.UniversalTime - _openLoopLastUt : 0.0;
+                    _openLoopLastUt = vesselState.UniversalTime;
 
-                // hold vertical while we're waiting for kick to solve and we're below a padded safety margin
-                // we expect a solve well-before the safety altitude, so this is just a fallback
-                bool awaitingKick = !_atmAscent.KickSolved && vessel.altitude < _pitchSafetyMeters;
-
-                if (holdVSpeed || awaitingKick)
-                {
-                    commandPitch = 90.0;
-                    commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
-                }
-                else if (_atmAscent.KickSolved)
-                {
-                    Vector3d psgVec = psgReady ? poweredCommand.InertialDirection : Vector3d.zero;
-                    AtmosphericAscent.Command c = _atmAscent.Update(vesselState, psgReady, psgVec);
-                    if (c.HasInertialDirection)
+                    if (!_openLoopHanded && psgReady && vesselState.AltitudeMeters >= _openLoopPlan.HandoffAltitudeMeters)
                     {
-                        followPsgInertial = true;
-                        commandInertialDir = c.InertialDirection;
-                        commandPitch = MathHelpers.Clamp(psgPitch, -30.0, 90.0);
-                        commandHeading = poweredCommand.HeadingDeg;
+                        _openLoopHanded = true;
+                        Vector3 nose = vessel.ReferenceTransform.up;
+                        _openLoopSlew = new Vector3d(nose.x, nose.y, nose.z).normalized; // slew from current attitude
+                    }
+
+                    if (_openLoopHanded)
+                    {
+                        if (psgReady)
+                        {
+                            Vector3d psgVec = poweredCommand.InertialDirection.normalized;
+                            _openLoopSlew = _openLoopSlew.sqrMagnitude > 0.0 && slewDt > 0.0
+                                            ? SlewToward(_openLoopSlew, psgVec, OpenLoopMaxSlewDegPerSec * slewDt)
+                                            : psgVec;
+                            followPsgInertial = true;
+                            commandInertialDir = _openLoopSlew;
+                            commandPitch = MathHelpers.Clamp(psgPitch, -30.0, 90.0);
+                            commandHeading = poweredCommand.HeadingDeg;
+                        } else
+                        {
+                            // handed but PSG dropped out: hold prograde until it returns
+                            commandPitch = MathHelpers.Clamp(GetSurfaceProgradePitchDeg(vessel), -30.0, 90.0);
+                            commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
+                        }
+
+                    } else if (holdVSpeed)
+                    {
+                        commandPitch = 90.0;
+                        commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
                     }
                     else
                     {
-                        commandPitch = MathHelpers.Clamp(c.PitchDeg, -30.0, 90.0);
+                        commandPitch = MathHelpers.Clamp(_openLoopPlan.PitchDeg(vessel.srfSpeed), -30.0, 90.0);
                         commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
                     }
-                }
-                else
+                } else
                 {
-                    // kick not solved (stock, or PSG unavailable) -> keep the classic/PSG inertial insertion handoff
-                    if (psgReady && (!vessel.mainBody.atmosphere || profilePitch <= psgPitch)) _handedToPsg = true;
-                    if (_handedToPsg && psgReady)
+                    if (!_atmAscent.KickSolved) _atmAscent.TrySolveKick(vesselState, _poweredGuidance.CurrentSolution, _minVrfSpeedToPitch);
+
+                    // hold vertical while we're waiting for kick to solve and we're below a padded safety margin
+                    // we expect a solve well-before the safety altitude, so this is just a fallback
+
+                    bool awaitingKick = !_atmAscent.KickSolved && vessel.altitude < _pitchSafetyMeters;
+
+                    if (holdVSpeed || awaitingKick)
                     {
-                        followPsgInertial = true;
-                        commandInertialDir = poweredCommand.InertialDirection;
-                        commandPitch = MathHelpers.Clamp(psgPitch, -30.0, 90.0);
-                        commandHeading = poweredCommand.HeadingDeg;
+                        commandPitch = 90.0;
+                        commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
+                    }
+                    else if (_atmAscent.KickSolved)
+                    {
+                        Vector3d psgVec = psgReady ? poweredCommand.InertialDirection : Vector3d.zero;
+                        AtmosphericAscent.Command c = _atmAscent.Update(vesselState, psgReady, psgVec);
+                        if (c.HasInertialDirection)
+                        {
+                            followPsgInertial = true;
+                            commandInertialDir = c.InertialDirection;
+                            commandPitch = MathHelpers.Clamp(psgPitch, -30.0, 90.0);
+                            commandHeading = poweredCommand.HeadingDeg;
+                        }
+                        else
+                        {
+                            commandPitch = MathHelpers.Clamp(c.PitchDeg, -30.0, 90.0);
+                            commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
+                        }
                     }
                     else
                     {
-                        commandPitch = MathHelpers.Clamp(profilePitch, -30.0, 90.0);
-                        commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
+                        // kick not solved (stock, or PSG unavailable) -> keep the classic/PSG inertial insertion handoff
+                        if (psgReady && (!vessel.mainBody.atmosphere || profilePitch <= psgPitch)) _handedToPsg = true;
+                        if (_handedToPsg && psgReady)
+                        {
+                            followPsgInertial = true;
+                            commandInertialDir = poweredCommand.InertialDirection;
+                            commandPitch = MathHelpers.Clamp(psgPitch, -30.0, 90.0);
+                            commandHeading = poweredCommand.HeadingDeg;
+                        }
+                        else
+                        {
+                            commandPitch = MathHelpers.Clamp(profilePitch, -30.0, 90.0);
+                            commandHeading = MathHelpers.NormalizeDegrees(profileHeading);
+                        }
                     }
                 }
 
                 commandThrottle = poweredCommand != null ? poweredCommand.Throttle : profileThrottle;
                 commandRoll = 0.0;
-                
-
-                //if (!holdVSpeed && psgReady && (!vessel.mainBody.atmosphere || profilePitch <= psgPitch)) _handedToPsg = true;
-
-                //if (holdVSpeed)
-                //{
-                //    commandPitch = 90.0;
-                //}
-                //else if (_handedToPsg && psgReady)
-                //{
-                //    commandPitch = MathHelpers.Clamp(psgPitch, -30.0, 90.0);
-                //    followPsgInertial = true;
-                //} else if (_handedToPsg) {
-                //    commandPitch = GetSurfaceProgradePitchDeg(vessel); // dufixme
-                //} else
-                //{
-                //    commandPitch = MathHelpers.Clamp(profilePitch, -30.0, 90.0);
-                //}
-
-                //commandHeading = followPsgInertial && poweredCommand != null
-                //    ? poweredCommand.HeadingDeg
-                //    : MathHelpers.NormalizeDegrees(profileHeading);
-
-                //commandThrottle = poweredCommand != null ? poweredCommand.Throttle : profileThrottle;
-                //commandRoll = 0.0;
             }
             else if (guidanceMode == GuidanceMode.Manual)
             {
@@ -259,6 +297,16 @@ namespace Blackbird.Guidance
             };
         }
 
+        private static Vector3d SlewToward(Vector3d from, Vector3d to, double maxDeg)
+        {
+            from = from.normalized;
+            to = to.normalized;
+            double ang = Vector3d.Angle(from, to);
+            if (ang <= maxDeg || ang < 1e-9) return to;
+            double t = maxDeg / ang;
+            return (from + (to - from) * t).normalized;
+        }
+
         // Reads the selected profile throttle, falling back to full thrust before insertion.
         private static double GetProfileThrottle(VesselState vesselState, AscentProfile ascentProfile)
         {
@@ -338,11 +386,8 @@ namespace Blackbird.Guidance
             Vector3d forward = Vector3d.Exclude(up, vessel.ReferenceTransform.up).normalized;
 
             double northComponent = Vector3d.Dot(forward, north);
-            double eastComponent = Vector3d.Dot(forward, east);
-
-            double headingRad = Math.Atan2(eastComponent, northComponent);
-
-            return MathHelpers.NormalizeDegrees(headingRad * 180.0 / Math.PI);
+            double eastComponent = Vector3d.Dot(forward, east);       
+            return MathHelpers.NormalizeDegrees(MathHelpers.Rad2Deg(Math.Atan2(eastComponent, northComponent)));
         }
     }
 }

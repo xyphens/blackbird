@@ -251,7 +251,7 @@ namespace Blackbird.Mathematics
 
             double azimuthRad = Math.Asin(argument);
 
-            return MathHelpers.NormalizeDegrees(azimuthRad * 180.0 / Math.PI);
+            return MathHelpers.NormalizeDegrees(MathHelpers.Rad2Deg(azimuthRad));
         }
 
         // Computes launch heading from the target orbit plane at the current launch position.
@@ -283,7 +283,7 @@ namespace Blackbird.Mathematics
             double eastComponent = Vector3d.Dot(direction, east);
             double headingRad = Math.Atan2(eastComponent, northComponent);
 
-            return MathHelpers.NormalizeDegrees(headingRad * 180.0 / Math.PI);
+            return MathHelpers.NormalizeDegrees(MathHelpers.Rad2Deg(headingRad));
         }
 
         public static double GetBodyFixedLongitudeAtTime(

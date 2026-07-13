@@ -114,11 +114,11 @@ namespace Blackbird.Guidance
             Vector3d direction = worldDir.normalized;
             Vector3d horizontal = Vector3d.Exclude(up, direction);
 
-            pitchDeg = Math.Asin(MathHelpers.Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)) * 180.0 / Math.PI;
+            pitchDeg = MathHelpers.Rad2Deg(Math.Asin(MathHelpers.Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)));
             if (horizontal.sqrMagnitude > 0.0)
             {
                 Vector3d h = horizontal.normalized;
-                headingDeg = Math.Atan2(Vector3d.Dot(h, east), Vector3d.Dot(h, north)) * 180.0 / Math.PI;
+                headingDeg = MathHelpers.Rad2Deg(Math.Atan2(Vector3d.Dot(h, east), Vector3d.Dot(h, north)));
                 if (headingDeg < 0.0) headingDeg += 360.0;
             }
         }

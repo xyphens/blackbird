@@ -64,7 +64,7 @@ namespace Blackbird.Docking
             // Head-on mated heading: the chaser port faces opposite the target port's outward axis.
             Vector3d facing = -axis;
             double alignDot = MathHelpers.Clamp(Vector3d.Dot(chaserPort.Axis, facing), -1.0, 1.0);
-            double alignDeg = Math.Acos(alignDot) * 180.0 / Math.PI;
+            double alignDeg = MathHelpers.Rad2Deg(Math.Acos(alignDot));
 
             // The on-axis goal point and speed cap for this leg.
             Vector3d goal;

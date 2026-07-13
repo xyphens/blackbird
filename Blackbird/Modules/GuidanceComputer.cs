@@ -316,6 +316,7 @@ namespace Blackbird.Modules
                 GUILayout.Label($"Rmg. dV: {FormatNum(guidanceInfo.VesselRemainingDeltaV, "F0", "m/s")}");
                 GUILayout.Label($"Phase Error: {FormatNum(guidanceInfo.PhaseErrorDeg, "F2", "°")}");
                 GUILayout.Label($"Plane Error: {FormatNum(guidanceInfo.PlaneErrorDeg, "F2", "°")}");
+                GUILayout.Label($"Ascent Plan: {_launchHandler.OpenLoopStatus}");
             }
 
 
@@ -335,6 +336,20 @@ namespace Blackbird.Modules
             var rec = _launchHandler.AscentReport;
             rec.GetHistory(out double[] hAlt, out double[] hDown);
             rec.GetBallisticProjection(FlightGlobals.ActiveVessel, out double[] pAlt, out double[] pDown);
+
+            // chart the open loop trajectory
+            var olPlan = _launchHandler.OpenLoopPlan;
+            if (pAlt == null && olPlan != null && olPlan.IsValid && olPlan.Trace != null && olPlan.Trace.Length > 1)
+            {
+                int n = olPlan.Trace.Length;
+                pAlt = new double[n];
+                pDown = new double[n];
+                for (int i = 0; i < n; i++)
+                {
+                    pAlt[i] = olPlan.Trace[i].AltMeters;
+                    pDown[i] = olPlan.Trace[i].DownrangeMeters;
+                }
+            }
 
             double tgtAp = _launchHandler.GuidanceInfo != null ? _launchHandler.GuidanceInfo.TargetApoapsisAlt : rec.TargetApAlt;
 

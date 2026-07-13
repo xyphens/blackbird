@@ -92,7 +92,7 @@ namespace Blackbird.Guidance
                 if (!MathHelpers.IsFinite(handover) || handover <= vs.AltitudeMeters) return Diag(vs, "handover invalid: " + handover);
 
                 double psgFpa = PsgExpectedOrbitFpaDeg(psg, vs.BodyRadius, handover);
-                if (!MathHelpers.IsFinite(psgFpa)) return Diag(vs, string.Format("psgFpa NaN (points don't bracket {0:F0} km)", handover / 1000.0));
+                if (!MathHelpers.IsFinite(psgFpa)) return Diag(vs, string.Format("psgFpa NaN (points don't bracket {0:F0} m)", handover));
                 double targetFpa = psgFpa + _conservatismMarginDeg;
 
                 AscentShootingInputs io = BuildInputs(vs, handover, targetFpa, _handoverAltMeters);
@@ -110,8 +110,8 @@ namespace Blackbird.Guidance
                 _kickDeg = r.KickAngleDeg;
                 _handoverAltMeters = handover;
                 _kickSolved = true;
-                Log.Write(string.Format("[kick-ascent] kick={0:F2} deg | PSG FPA {1:F1} + {2:F1} margin = {3:F1} | handover {4:F1} km (kPa frac {5:G})",
-                        _kickDeg, psgFpa, _conservatismMarginDeg, targetFpa, handover / 1000.0, _handoverPressureFraction));
+                Log.Write(string.Format("[kick-ascent] kick={0:F2} deg | PSG FPA {1:F1} + {2:F1} margin = {3:F1} | handover {4:F1} m (kPa frac {5:G})",
+                        _kickDeg, psgFpa, _conservatismMarginDeg, targetFpa, handover, _handoverPressureFraction));
                 return true;
             }
             catch (Exception ex)
@@ -224,7 +224,7 @@ namespace Blackbird.Guidance
         private static double FlightPathAngleDeg(double vSpeed, double speed)
         {
             if (speed <= 0) return 90.0;
-            return Math.Asin(MathHelpers.Clamp(vSpeed / speed, -1.0, 1.0)) * 180.0 / Math.PI;
+            return MathHelpers.Rad2Deg(Math.Asin(MathHelpers.Clamp(vSpeed / speed, -1.0, 1.0)));
         }
 
         private static bool AeroNegligible(VesselState vs, double qKpa, double dQdt)
@@ -252,12 +252,14 @@ namespace Blackbird.Guidance
             return (from + (to - from) * t).normalized;
         }
 
+        private double HandoverAltitude(CelestialBody body) => HandoverAltitude(body, _handoverPressureFraction);
+
         // hand control to PSG when there's no atmosphere/drag left
-        private double HandoverAltitude(CelestialBody body)
+        public static double HandoverAltitude(CelestialBody body, double pressureFraction)
         {
             double seaLevel = body.GetPressure(0.0);
             if (seaLevel <= 0.0) return double.NaN;
-            double threshold = _handoverPressureFraction * seaLevel;
+            double threshold = pressureFraction * seaLevel;
             double top = body.atmosphereDepth;
             for (double alt =  0.0; alt <= top; alt += 500.0)
             {
@@ -350,7 +352,7 @@ namespace Blackbird.Guidance
             return list.ToArray();
         }
 
-        private static double EstimateDragAreaCd(Vessel vessel)
+        public static double EstimateDragAreaCd(Vessel vessel)
         {
             if (vessel == null) return 10.0;
             Vector3 size = vessel.vesselSize;

@@ -2,9 +2,13 @@
 using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Modules;
+using Blackbird.OpenLoop;
 using Blackbird.Psg;
 using Blackbird.Trajectory;
+using Blackbird.Guidance;
 using System;
+using System.Threading.Tasks;
+using UnityEngine;
 
 namespace Blackbird.Guidance
 {
@@ -98,6 +102,9 @@ namespace Blackbird.Guidance
             _ascentGuidance.Reset();
         }
         
+        public OpenLoopTrajectory OpenLoopPlan {  get; private set; }
+        private Task<OpenLoopTrajectory> _openLoopTask;
+        public string OpenLoopStatus { get; private set; } = "not built";
         public AscentGuidanceInfo GuidanceInfo { get; private set; }
         public PsgSolution CurrentSolution => _ascentGuidance.CurrentSolution;
 
@@ -122,6 +129,9 @@ namespace Blackbird.Guidance
             bbState.GuidanceVisible = true;
             bbState.ActiveModule = BlackbirdModule.LaunchGuidance;
             bbState.GuidanceState = State;
+            OpenLoopPlan = null;
+            _openLoopTask = null;
+            OpenLoopStatus = "not built";
         }
         public void WarpToLaunch()
         {
@@ -145,7 +155,6 @@ namespace Blackbird.Guidance
             State = LaunchGuidanceState.WarpingToLaunch;
         }
 
-        // fucks
         private void RefreshGuidanceComputer()
         {
             _ascentGuidance.Refresh(bbState.IsRSS, bbState.IsPrincipia, _minAltToPitch, _minVSpd, _psgTransitionMargin, _handoverKpa);
@@ -167,6 +176,88 @@ namespace Blackbird.Guidance
             bbState.ActiveModule = BlackbirdModule.LaunchGuidance;
             RefreshGuidanceComputer();
             State = LaunchGuidanceState.AwaitingLaunch;
+            BeginOpenLoopBuild();
+        }
+
+        private void BeginOpenLoopBuild()
+        {
+            Vessel vessel = FlightGlobals.ActiveVessel;
+            VesselState vs = vessel != null ? VesselState.FromVessel(vessel) : null;
+            LaunchCandidate cand = bbState.LaunchPlan != null ? bbState.LaunchPlan.SelectedCandidate : null;
+            AscentProfile profile = cand != null ? cand.AscentProfile : bbState.LaunchPlan?.AscentProfile;
+            if (vs == null || vs.Body == null || profile == null)
+            {
+                OpenLoopStatus = "no vessel/profile";
+                return;
+            }
+
+            double handoff = AtmosphericAscent.HandoverAltitude(vs.Body, _handoverKpa);
+            double heading = cand != null && MathHelpers.IsFinite(cand.LaunchHeadingDeg)
+                            ? cand.LaunchHeadingDeg
+                            : MathHelpers.IsFinite(profile.RecommendedHeadingDeg) ? profile.RecommendedHeadingDeg : 90.0;
+
+            Vector3d up = vs.TrajectoryState.RelativePosition.normalized;
+            Vector3d north = Vector3d.Exclude(up, vs.Body.transform.up).normalized;
+            Vector3d east = Vector3d.Cross(up, north);
+            double headingRad = MathHelpers.Deg2Rad(heading);
+
+            // can't i just (Vector3d) here?
+            //Vector3 poleUnity = (Vector3d) vs.Body.transform.up;
+            Vector3d pole = (Vector3d)vs.Body.transform.up.normalized;
+            var io = new OpenLoopInputs
+            {
+                Mu = vs.BodyGravParameter,
+                BodyRadiusMeters = vs.BodyRadius,
+                DragAreaCd = AtmosphericAscent.EstimateDragAreaCd(vessel),
+                DensityAtAltitude = SampleDensityTable(vs.Body, handoff * 1.2),
+                Stages = vs.PoweredStages,
+                LiftoffMassKg = vs.TotalMass * 1000.0,
+                PadAltitudeMeters = vs.AltitudeMeters,
+                UniversalTime = vs.UniversalTime,
+                PadRelativePosition = vs.TrajectoryState.RelativePosition,
+                DownrangeDirection = north * Math.Cos(headingRad) + east * Math.Sin(headingRad),
+                BodyAngularVelocity = vs.BodyRotationPeriod > 0.0 ? pole * (2.0 * Math.PI / vs.BodyRotationPeriod) : Vector3d.zero,
+                HandoffAltitudeMeters = handoff,
+                PitchOverSpeedMps = _minVSpd,
+                HoldVerticalUntilAltMeters = _minAltToPitch,
+                Target = PsgTarget.FromPlan(vs, bbState.LaunchPlan, profile)
+            };
+
+            OpenLoopStatus = "building...";
+            _openLoopTask = Task.Run(() => OpenLoopTrajectory.Build(io));
+        }
+        private void PollOpenLoopBuild()
+        {
+            if (_openLoopTask == null || !_openLoopTask.IsCompleted) return;
+            OpenLoopTrajectory plan = _openLoopTask.Status == TaskStatus.RanToCompletion ? _openLoopTask.Result : null;
+            _openLoopTask = null;
+            OpenLoopPlan = plan != null && plan.IsValid ? plan : null;
+            OpenLoopStatus = plan == null ? "build crashed"
+                : plan.IsValid
+                    ? string.Format("ready: rate {0:F2} deg/s, {1:F0} t to orbit, T+{2:F0}s",
+                        plan.PitchRateDegPerSecond, plan.PredictedInjectedMassKg / 1000.0, plan.PredictedTimeToOrbitSeconds)
+                    : "failed: " + plan.ReasonUnavailable;
+        }
+
+        private static Func<double, double> SampleDensityTable(CelestialBody body, double topAltMeters)
+        {
+            const double step = 250.0;
+            int n = (int)(Math.Max(step, topAltMeters) / step) + 2;
+            double[] rho = new double[n];
+            for (int i = 0; i < n; i++)
+            {
+                double alt = i * step;
+                rho[i] = alt >= body.atmosphereDepth ? 0.0
+                    : body.GetDensity(body.GetPressure(alt), body.GetTemperature(alt));
+            }
+            return alt =>
+            {
+                if (alt <= 0.0) return rho[0];
+                double x = alt / step;
+                int i = (int)x;
+                if (i >= n - 1) return 0.0;
+                return rho[i] + (rho[i + 1] - rho[i]) * (x - i);
+            };
         }
 
         // Begin the ascent once a flight mode is chosen while armed (stops any launch warp first).
@@ -227,6 +318,8 @@ namespace Blackbird.Guidance
 
             if (vessel != null && bbState.LaunchPlan != null)
             {
+                PollOpenLoopBuild();
+                _ascentGuidance.SetOpenLoopPlan(OpenLoopPlan);
                 GuidanceInfo =
                     _ascentGuidance.GetGuidance(
                         vessel,
@@ -381,6 +474,8 @@ namespace Blackbird.Guidance
 
             if (State == LaunchGuidanceState.GuidingAscent)
             {
+                PollOpenLoopBuild();
+                _ascentGuidance.SetOpenLoopPlan(OpenLoopPlan);
                 GuidanceInfo =
                     _ascentGuidance.GetGuidance(
                         vessel,

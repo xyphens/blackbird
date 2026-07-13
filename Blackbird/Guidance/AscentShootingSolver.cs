@@ -135,7 +135,7 @@ namespace Blackbird.Guidance
             double ov = Math.Sqrt(ox * ox + oy * oy);
             if (ov <= 0.0) return 90.0;
             double sinFpa = MathHelpers.Clamp((ox * s.X + oy * s.Y) / (r *  ov), -1.0, 1.0);
-            return Math.Asin(sinFpa) * 180.0 / Math.PI;
+            return MathHelpers.Rad2Deg(Math.Asin(sinFpa));
         }
 
         private static AscentHandoverPrediction Prediction(AscentState s, AscentShootingInputs io, bool reached)

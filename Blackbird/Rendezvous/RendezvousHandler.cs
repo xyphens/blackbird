@@ -509,7 +509,7 @@ namespace Blackbird.Rendezvous
             {
                 double dot = MathHelpers.Clamp(
                     Vector3d.Dot(r.PlannedDvVector.normalized, r.DeliveredVector.normalized), -1.0, 1.0);
-                dirErrorDeg = Math.Acos(dot) * 180.0 / Math.PI;
+                dirErrorDeg = MathHelpers.Rad2Deg(Math.Acos(dot));
             }
 
             // Did the burn actually tighten the closest approach? (before -> after, and the delta.)
@@ -693,7 +693,7 @@ namespace Blackbird.Rendezvous
             Vector3d nose = ((Vector3d)vessel.ReferenceTransform.up).normalized;
             Vector3d desired = desiredWorldDirection.normalized;
             double dot = MathHelpers.Clamp(Vector3d.Dot(nose, desired), -1.0, 1.0);
-            return Math.Acos(dot) * 180.0 / Math.PI;
+            return MathHelpers.Rad2Deg(Math.Acos(dot));
         }
     }
 }

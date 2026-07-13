@@ -157,6 +157,9 @@
     <Compile Include="PSG\PsgSolution.cs" />
     <Compile Include="PSG\PsgTarget.cs" />
     <Compile Include="PSG\PsgTerminal.cs" />
+    <Compile Include="Trajectory\OpenLoop\Inputs.cs" />
+    <Compile Include="Trajectory\OpenLoop\OpenLoop.cs" />
+    <Compile Include="Trajectory\OpenLoop\Primitives.cs" />
     <Compile Include="Trajectory\TrajectoryProvider.cs" />
     <Compile Include="ThirdParty\alglib\*.cs" />
   </ItemGroup>
@@ -175,6 +178,7 @@
   <ItemGroup>
     <AssemblyMetadata Include="HotReload" Value="true" />
   </ItemGroup>
+  <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>
     <PostBuildEvent>copy "$(TargetPath)" "D:\SteamLibrary\steamapps\common\Kerbal Space Program\GameData\BlackBird\$(TargetFileName)"

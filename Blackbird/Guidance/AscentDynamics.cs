@@ -2,7 +2,6 @@
 using System;
 using System.Collections.Generic;
 
-
 namespace Blackbird.Guidance
 {
     public struct AscentState
@@ -25,7 +24,7 @@ namespace Blackbird.Guidance
                 double r = Radius, v = SurfaceSpeed;
                 if (r <= 0.0 || v <= 0.0) return 90.0;
                 double s = MathHelpers.Clamp((Vx * X + Vy * Y) / (r * v), -1.0, 1.0);
-                return Math.Asin(s) * 180.0 / Math.PI;
+                return MathHelpers.Rad2Deg(Math.Asin(s));
             }
         }
     }

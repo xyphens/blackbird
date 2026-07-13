@@ -674,7 +674,7 @@ namespace Blackbird.Guidance
             if (direction.sqrMagnitude <= 0.0) return;
 
             direction = direction.normalized;
-            pitchDeg = Math.Asin(MathHelpers.Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)) * 180.0 / Math.PI;
+            pitchDeg = MathHelpers.Rad2Deg(Math.Asin(MathHelpers.Clamp(Vector3d.Dot(direction, up), -1.0, 1.0)));
 
             Vector3d horizontal = Vector3d.Exclude(up, direction);
             if (horizontal.sqrMagnitude > 0.0)

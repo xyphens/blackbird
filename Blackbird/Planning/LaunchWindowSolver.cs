@@ -244,8 +244,8 @@ namespace Blackbird.Planning
                 : 2.0 * Math.PI * Math.Sqrt(Math.Pow(targetRadius, 3.0) / input.Mu);
 
             double inclination = Vector3d.Angle(hHat, pole);
-            double latitudeDeg = Math.Asin(MathHelpers.Clamp(
-                Vector3d.Dot(input.LaunchSitePosition.normalized, pole), -1.0, 1.0)) * 180.0 / Math.PI;
+            double latitudeDeg = MathHelpers.Rad2Deg(Math.Asin(MathHelpers.Clamp(
+                                Vector3d.Dot(input.LaunchSitePosition.normalized, pole), -1.0, 1.0)));
             double ascAzimuth = OrbitMath.GetLaunchAzimuth(inclination, latitudeDeg);
             c.AzimuthDeg = crossing.Ascending ? ascAzimuth : MathHelpers.NormalizeDegrees(180.0 - ascAzimuth);
 
@@ -423,7 +423,7 @@ namespace Blackbird.Planning
         private static double SignedInPlaneAngle(Vector3d aHat, Vector3d bHat, Vector3d normal)
         {
             double dot = MathHelpers.Clamp(Vector3d.Dot(aHat, bHat), -1.0, 1.0);
-            double ang = Math.Acos(dot) * 180.0 / Math.PI;
+            double ang = MathHelpers.Rad2Deg(Math.Acos(dot));
             return Vector3d.Dot(normal, Vector3d.Cross(aHat, bHat)) < 0.0 ? -ang : ang;
         }
     }

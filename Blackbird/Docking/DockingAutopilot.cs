@@ -1,5 +1,6 @@
 using Blackbird.Guidance;
 using Blackbird.Logging;
+using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Modules;
 using Blackbird.Trajectory;
@@ -77,7 +78,7 @@ namespace Blackbird.Docking
             {
                 if (v == null || v.ReferenceTransform == null || zAxis.sqrMagnitude < 1e-9) return double.NaN;
                 double dot = Math.Max(-1.0, Math.Min(1.0, Vector3d.Dot(((Vector3d)v.ReferenceTransform.up).normalized, zAxis)));
-                return Math.Acos(dot) * 180.0 / Math.PI;
+                return MathHelpers.Rad2Deg(Math.Acos(dot));
             }
         }
 

@@ -1,5 +1,6 @@
 using System;
 using Blackbird.Guidance;
+using Blackbird.Mathematics;
 using Blackbird.Models;
 using Blackbird.Modules;
 using Blackbird.Trajectory;
@@ -300,7 +301,7 @@ namespace Blackbird.Docking
             if (vessel.ReferenceTransform == null) return true;
             double dot = Vector3d.Dot(((Vector3d)vessel.ReferenceTransform.up).normalized, facing.normalized);
             dot = Math.Max(-1.0, Math.Min(1.0, dot));
-            double noseErrDeg = Math.Acos(dot) * 180.0 / Math.PI;
+            double noseErrDeg = MathHelpers.Rad2Deg(Math.Acos(dot));
             return noseErrDeg < 2.0 && vessel.angularVelocityD.magnitude < 0.05;
         }
 

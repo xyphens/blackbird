@@ -66,8 +66,7 @@ namespace Blackbird.Docking
 
             // Desired chaser heading is anti-parallel to the target axis (the two port faces meet head-on).
             double alignDot = MathHelpers.Clamp(Vector3d.Dot(chaserPort.Axis, -axis), -1.0, 1.0);
-            double alignDeg = Math.Acos(alignDot) * 180.0 / Math.PI;
-
+            double alignDeg = MathHelpers.Rad2Deg(Math.Acos(alignDot));
             return new DockingGeometry
             {
                 AxialDistance = axial,
