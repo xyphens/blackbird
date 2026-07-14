@@ -8,7 +8,11 @@
       "Bash(echo \"exit=$?\")",
       "Bash(sed -n '/I-load PSG pad-boot/,$p' /tmp/iload_run7.txt)",
       "Bash(sed -n '/I-load failure paths/,$p' /tmp/iload_run8.txt)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(sed -n '/      t      alt/,/<- handoff/p' /tmp/iload_run16.txt)"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
     ]
   }
 }

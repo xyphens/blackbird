@@ -26,6 +26,7 @@ namespace Blackbird.OpenLoop
         private const double StepSeconds = 0.5; // matches AtmosphericAscent.SolveStepSeconds
         private const int MaxStepsPerCandidate = 4000; // 2000 s cap
         private const double RampCapFromVerticalDeg = 90.0;
+        private const double RampMaxAoaDeg = 2.0; // ramp attitude may lead the velocity vector by at most this alpha
 
 
         public bool IsValid { get; private set; }
@@ -152,15 +153,19 @@ namespace Blackbird.OpenLoop
                 double a0 = Math.Max(0.5, stages[0].ThrustNewtons / io.LiftoffMassKg - io.Mu / (io.BodyRadiusMeters * io.BodyRadiusMeters));
                 double clearanceAlt = io.PadAltitudeMeters + (io.PitchOverSpeedMps * io.PitchOverSpeedMps) / (2.0 * a0);
                 double holdAlt = Math.Max(clearanceAlt, io.HoldVerticalUntilAltMeters);
-                double tKick = io.PitchOverSpeedMps / a0;
 
                 int seg = 0; // 0 vertical, 1 ramp, 2 prograde; flipped only between committed steps
-                double tRampStart = tKick;
+                double tRampStart = io.PitchOverSpeedMps / a0;
                 double law(AscentState st)
                 {
                     if (seg == 0) return 0.0;
-                    if (seg == 1) return Math.Min(rateDegPerSec * Math.Max(0.0, st.T - tRampStart), RampCapFromVerticalDeg);
-                    return 90.0 - st.FlightPathAngleDeg; // surface-prograde, AoA = 0
+                    double prograde = 90.0 - st.FlightPathAngleDeg; // surface-prograde, AoA = 0
+                    if (seg == 1)
+                    {
+                        double ramp = Math.Min(rateDegPerSec * Math.Max(0.0, st.T - tRampStart), RampCapFromVerticalDeg);
+                        return Math.Min(ramp, prograde + RampMaxAoaDeg);
+                    }
+                    return prograde;
                 }
 
                 var cfg = new AscentDynamicsConfig
