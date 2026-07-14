@@ -442,7 +442,8 @@ namespace Blackbird.FuelSim
                     Staged = kspDecoupler.staged,
                     StagingEnabled = kspDecoupler.stagingEnabled
                 };
-                simPart.Decoupler = decoupler;
+
+                SetDecoupler(simPart, decoupler);
 
                 AttachNode node = kspDecoupler.ExplosiveNode;
                 pendingAttachments.Add(new KeyValuePair<Decoupler, Part>(decoupler, node != null ? node.attachedPart : null));
@@ -457,7 +458,7 @@ namespace Blackbird.FuelSim
                     Staged = kspDockingNode.staged,
                     StagingEnabled = kspDockingNode.stagingEnabled
                 };
-                simPart.Decoupler = decoupler;
+                SetDecoupler(simPart, decoupler);
 
                 // referenceNode.attachedPart only covers editor-attached ports; a DOCKED pair
                 // (ship stacked on booster) links via otherNode instead
@@ -477,6 +478,14 @@ namespace Blackbird.FuelSim
                 };
             }
         }
+        private static void SetDecoupler(SimPart simPart, Decoupler d)
+        {
+            if (simPart.Decoupler == null || (!simPart.Decoupler.StagingEnabled && d.StagingEnabled))
+            {
+                simPart.Decoupler = d;
+            }
+        }
+
         public static string DescribeSimStaging(Vessel vessel)
         {
             if (vessel == null || vessel.parts == null) return "no vessel";

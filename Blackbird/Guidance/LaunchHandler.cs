@@ -208,7 +208,7 @@ namespace Blackbird.Guidance
             {
                 Mu = vs.BodyGravParameter,
                 BodyRadiusMeters = vs.BodyRadius,
-                DragAreaCd = AtmosphericAscent.EstimateDragAreaCd(vessel),
+                DragAreaCd = Aero.DragAreaCd(vessel),
                 DensityAtAltitude = SampleDensityTable(vs.Body, handoff * 1.2),
                 Stages = vs.PoweredStages,
                 LiftoffMassKg = vs.TotalMass * 1000.0,
@@ -230,6 +230,7 @@ namespace Blackbird.Guidance
             OpenLoopStatus = "building...";
             _openLoopTask = Task.Run(() => OpenLoopTrajectory.Build(io));
         }
+
         private void PollOpenLoopBuild()
         {
             if (_openLoopTask == null || !_openLoopTask.IsCompleted) return;

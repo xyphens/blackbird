@@ -118,6 +118,7 @@ namespace Blackbird.Modules
                 GUILayout.Label("Advanced Flight Tuning");
 
                 GUILayout.BeginHorizontal();
+                GUILayout.Label("PSG Transition margin:");
                 _launchHandler.PsgTransitionMargin = GUILayout.TextField(_launchHandler.PsgTransitionMargin, GUILayout.Width(50));
                 GUILayout.Label("°", GUILayout.Width(50));
                 GUILayout.EndHorizontal();
@@ -125,6 +126,7 @@ namespace Blackbird.Modules
                 GUILayout.Space(6);
 
                 GUILayout.BeginHorizontal();
+                GUILayout.Label("PSG Handover kPa");
                 _launchHandler.HandoverKpa = GUILayout.TextField(_launchHandler.HandoverKpa, GUILayout.Width(50));
                 GUILayout.Label("kPa", GUILayout.Width(50));
                 GUILayout.EndHorizontal();
@@ -132,6 +134,7 @@ namespace Blackbird.Modules
                 GUILayout.Space(6);
 
                 GUILayout.BeginHorizontal();
+                GUILayout.Label("Hold Pitch Until Velocity");
                 _launchHandler.MinVSpeedToPitch = GUILayout.TextField(_launchHandler.MinVSpeedToPitch, GUILayout.Width(50));
                 GUILayout.Label("m/s", GUILayout.Width(50));
                 GUILayout.EndHorizontal();
@@ -139,6 +142,7 @@ namespace Blackbird.Modules
                 GUILayout.Space(6);
 
                 GUILayout.BeginHorizontal();
+                GUILayout.Label("Hold Pitch Until Altitude");
                 _launchHandler.MinAltitudeForPitch = GUILayout.TextField(_launchHandler.MinAltitudeForPitch, GUILayout.Width(50));
                 GUILayout.Label("m", GUILayout.Width(50));
                 GUILayout.EndHorizontal();

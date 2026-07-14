@@ -231,7 +231,7 @@ namespace Blackbird.Guidance
         {
             double thrustN = (vs.CurrentThrust > 0.0 ? vs.CurrentThrust : vs.AvailableThrust) * 1000.0; // kN -> N
             if (thrustN <= 0.0) return false;
-            double dragN = 0.5 * vs.AtmosphericDensity * vs.SurfaceSpeed * vs.SurfaceSpeed * EstimateDragAreaCd(vs.Vessel);
+            double dragN = Aero.DragNewtons(vs.Vessel, vs.Vessel != null ? (Vector3d)vs.Vessel.srf_velocity : Vector3d.zero, vs.AltitudeMeters);
             return qKpa < HandoverQKpa && dQdt < 0.0 && dragN / thrustN < DragThrustRatioTrigger;
         }
 
@@ -303,7 +303,7 @@ namespace Blackbird.Guidance
             {
                 Mu = vs.BodyGravParameter,
                 BodyRadius = vs.BodyRadius,
-                DragAreaCd = EstimateDragAreaCd(vs.Vessel),
+                DragAreaCd = Aero.DragAreaCd(vs.Vessel),
                 Stages = stages,
                 DensityAtAltitude = alt => DensityAt(vs.Body, alt),
                 InitialState = new AscentState
@@ -350,34 +350,6 @@ namespace Blackbird.Guidance
             }
 
             return list.ToArray();
-        }
-
-        // get draft area of vessel; excludes parts outside of vessel's frame (i.e., launch clamps)
-        public static double EstimateDragAreaCd(Vessel vessel)
-        {
-            if (vessel == null || vessel.ReferenceTransform == null) return 10.0;
-            Transform rt = vessel.ReferenceTransform;
-            Vector3 min = Vector3.positiveInfinity;
-            Vector3 max = Vector3.negativeInfinity;
-            // box stack's own parts in the vessel frame instead
-            foreach(Part p in vessel.Parts)
-            {
-                // skip launch clamps
-                if (p == null || p.FindModuleImplementing<LaunchClamp>() != null) continue;
-                Bounds b = p.GetPartRendererBound();
-                for (int i = 0; i < 8; i++)
-                {
-                    Vector3 c = b.center + Vector3.Scale(b.extents,
-                                                    new Vector3((i & 1) * 2 - 1, ((i >> 1) & 1) * 2 - 1, ((i >> 2) & 1) * 2 - 1));
-                    Vector3 l = rt.InverseTransformPoint(c);
-                    min = Vector3.Min(min, l);
-                    max = Vector3.Max(max, l);
-                }
-            }
-
-            if (min.x > max.x) return 10.0; // no non-clamp parts found
-            Vector3 size = max - min;
-            return 0.5 * (0.25 * Math.PI * size.x * size.z);
         }
     }
 }

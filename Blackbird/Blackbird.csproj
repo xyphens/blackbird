@@ -97,6 +97,7 @@
     <Compile Include="Helpers\Helpers.cs" />
     <Compile Include="Logging\AscentRecorder.cs" />
     <Compile Include="Logging\Log.cs" />
+    <Compile Include="Math\Aero.cs" />
     <Compile Include="Math\Helpers.cs" />
     <Compile Include="Math\J2.cs" />
     <Compile Include="Math\ThrustEnvelope.cs" />
