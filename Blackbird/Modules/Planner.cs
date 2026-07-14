@@ -224,10 +224,6 @@ namespace Blackbird.Modules
 
         private InsertionTarget CreateInsertionTargetFromUi()
         {
-            //double.TryParse(InsertionAp, out double ap);
-            //double.TryParse(InsertionPe, out double pe);
-            //double.TryParse(InsertionHdg, out double hdg);
-
             return new InsertionTarget { ApoapsisAlt = _insertionAp, PeriapsisAlt = _insertionPe, Heading = _insertionHdg };
         }
 

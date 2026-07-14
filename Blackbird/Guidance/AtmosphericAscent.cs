@@ -352,28 +352,32 @@ namespace Blackbird.Guidance
             return list.ToArray();
         }
 
+        // get draft area of vessel; excludes parts outside of vessel's frame (i.e., launch clamps)
         public static double EstimateDragAreaCd(Vessel vessel)
         {
-            if (vessel == null) return 10.0;
-            Vector3 size = vessel.vesselSize;
-            double a = size.x, b = size.y, c = size.z;
-            double largest = Math.Max(a, Math.Max(b, c));
-            double d1, d2;
-            if (largest == a)
+            if (vessel == null || vessel.ReferenceTransform == null) return 10.0;
+            Transform rt = vessel.ReferenceTransform;
+            Vector3 min = Vector3.positiveInfinity;
+            Vector3 max = Vector3.negativeInfinity;
+            // box stack's own parts in the vessel frame instead
+            foreach(Part p in vessel.Parts)
             {
-                d1 = b; 
-                d2 = c;
+                // skip launch clamps
+                if (p == null || p.FindModuleImplementing<LaunchClamp>() != null) continue;
+                Bounds b = p.GetPartRendererBound();
+                for (int i = 0; i < 8; i++)
+                {
+                    Vector3 c = b.center + Vector3.Scale(b.extents,
+                                                    new Vector3((i & 1) * 2 - 1, ((i >> 1) & 1) * 2 - 1, ((i >> 2) & 1) * 2 - 1));
+                    Vector3 l = rt.InverseTransformPoint(c);
+                    min = Vector3.Min(min, l);
+                    max = Vector3.Max(max, l);
+                }
             }
-            else if (largest == b) {
-                d1 = a;
-                d2 = c;
-            } else
-            {
-                d1 = a;
-                d2 = b;
-            }
-            
-            return 0.5 * (0.25 * Math.PI * d1 *  d2);
+
+            if (min.x > max.x) return 10.0; // no non-clamp parts found
+            Vector3 size = max - min;
+            return 0.5 * (0.25 * Math.PI * size.x * size.z);
         }
     }
 }

@@ -84,7 +84,13 @@ namespace Blackbird.OpenLoop
                 if (coarse[i].Valid && (best < 0 || coarse[i].InjectedMassKg > coarse[best].InjectedMassKg)) best = i;
             }
 
-            if (best < 0) return Fail($"no pitch rate produced a PSG-convergent trajectory: {coarse[CoarseSamples / 2].Reason}");
+            if (best < 0)
+            {
+                var sb = new System.Text.StringBuilder("no pitch rate produced a PSG-convergent trajectory:");
+                for (int i = 0; i < CoarseSamples; i++)
+                    sb.Append(string.Format(" {0:F2}->{1};", coarse[i].RateDegPerSec, coarse[i].Reason));
+                return Fail(sb.ToString());
+            }
 
             double lo = best > 0 ? RateAt(best - 1) : RateAt(best);
             double hi = best < CoarseSamples - 1 ? RateAt(best + 1) : RateAt(best);

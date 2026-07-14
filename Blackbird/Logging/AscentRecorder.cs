@@ -190,6 +190,11 @@ namespace Blackbird.Logging
             for (int i = 0; i < _actual.Count; i++) _log.Write("act", i, _actual[i]);
         }
 
+        public void WriteLine(string message)
+        {
+            _log.Write(string.Format(message));
+        }
+
         private TrajectorySummary BuildSummary()
         {
             double projPeak = PeakAlt(_projected);

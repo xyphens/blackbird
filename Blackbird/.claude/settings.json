@@ -9,7 +9,8 @@
       "Bash(sed -n '/I-load PSG pad-boot/,$p' /tmp/iload_run7.txt)",
       "Bash(sed -n '/I-load failure paths/,$p' /tmp/iload_run8.txt)",
       "Read(//tmp/**)",
-      "Bash(sed -n '/      t      alt/,/<- handoff/p' /tmp/iload_run16.txt)"
+      "Bash(sed -n '/      t      alt/,/<- handoff/p' /tmp/iload_run16.txt)",
+      "Bash(python - '/d/SteamLibrary/steamapps/common/Kerbal Space Program Development/glog/Blackbird/trajectory.log')"
     ],
     "additionalDirectories": [
       "\\tmp"

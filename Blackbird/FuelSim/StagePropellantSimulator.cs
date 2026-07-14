@@ -413,6 +413,12 @@ namespace Blackbird.FuelSim
 
         private static void BuildModule(SimPart simPart, Part part, PartModule module, List<KeyValuePair<Decoupler, Part>> pendingAttachments)
         {
+            if (part.FindModuleImplementing<LaunchClamp>() != null 
+                || module is global::LaunchClamp) {
+                simPart.IsLaunchClamp = true;
+                return;
+            }
+
             var kspEngine = module as ModuleEngines;
             if (kspEngine != null)
             {
@@ -423,12 +429,6 @@ namespace Blackbird.FuelSim
                 }
 
                 simPart.IsThrottleLocked = kspEngine.throttleLocked;
-                return;
-            }
-
-            if (module is global::LaunchClamp)
-            {
-                simPart.IsLaunchClamp = true;
                 return;
             }
 
@@ -459,12 +459,15 @@ namespace Blackbird.FuelSim
                 };
                 simPart.Decoupler = decoupler;
 
+                // referenceNode.attachedPart only covers editor-attached ports; a DOCKED pair
+                // (ship stacked on booster) links via otherNode instead
                 Part attached = kspDockingNode.referenceNode != null ? kspDockingNode.referenceNode.attachedPart : null;
+                if (attached == null && kspDockingNode.otherNode != null) attached = kspDockingNode.otherNode.part;
                 pendingAttachments.Add(new KeyValuePair<Decoupler, Part>(decoupler, attached));
                 return;
             }
 
-            if (module.moduleName == "ProceduralFairingDecoupler")
+            if (module.moduleName.Contains("ProceduralFairingDecoupler"))
             {
                 simPart.Decoupler = new Decoupler
                 {
@@ -473,6 +476,22 @@ namespace Blackbird.FuelSim
                     StagingEnabled = module.stagingEnabled
                 };
             }
+        }
+        public static string DescribeSimStaging(Vessel vessel)
+        {
+            if (vessel == null || vessel.parts == null) return "no vessel";
+            SimVessel sim = BuildVessel(vessel);   // same builder Simulate uses
+            var sb = new System.Text.StringBuilder();
+            foreach (SimPart p in sim.Parts)
+            {
+                sb.Append(" || ").Append(p.Name)
+                  .Append(" inv=").Append(p.InverseStage)
+                  .Append(" simDec=").Append(p.DecoupledInStage)
+                  .Append(" dec?").Append(p.Decoupler != null)
+                  .Append(" en=").Append(p.Decoupler != null && p.Decoupler.StagingEnabled)
+                  .Append(" att=").Append(p.Decoupler != null && p.Decoupler.AttachedPart != null ? p.Decoupler.AttachedPart.Name : "-");
+            }
+            return sb.ToString();
         }
 
         private static void BuildEngine(SimPart part, ModuleEngines kspEngine)

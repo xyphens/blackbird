@@ -223,6 +223,10 @@ namespace Blackbird.Guidance
                 Target = PsgTarget.FromPlan(vs, bbState.LaunchPlan, profile)
             };
 
+            AscentReport.WriteLine(string.Format(
+                "[open-loop] build start: CdA {0:F1}, pitchOver {1:F0} m/s, holdAlt {2:F0} m, handoff {3:F0} m, liftoff {4:F1} t",
+                io.DragAreaCd, io.PitchOverSpeedMps, io.HoldVerticalUntilAltMeters, io.HandoffAltitudeMeters, io.LiftoffMassKg / 1000.0));
+
             OpenLoopStatus = "building...";
             _openLoopTask = Task.Run(() => OpenLoopTrajectory.Build(io));
         }

@@ -163,6 +163,7 @@ namespace Blackbird.Models
                 if (partsSignature != _fuelSimPartsSignature)
                 {
                     FuelSimLog.Write("[fuelsim-parts] " + FuelSim.StagePropellantSimulator.DescribeParts(vessel));
+                    FuelSimLog.Write("[fuelsim-staging] " + FuelSim.StagePropellantSimulator.DescribeSimStaging(vessel));
                     _fuelSimPartsSignature = partsSignature;
                 }
 
