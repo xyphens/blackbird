@@ -132,7 +132,9 @@ namespace Blackbird.Guidance
             OpenLoopPlan = null;
             _openLoopTask = null;
             OpenLoopStatus = "not built";
+            StartGuidance();
         }
+
         public void WarpToLaunch()
         {
             if ((State != LaunchGuidanceState.AwaitingLaunch && State != LaunchGuidanceState.PlanAccepted)

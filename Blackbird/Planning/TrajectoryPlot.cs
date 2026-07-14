@@ -16,6 +16,7 @@ namespace Blackbird.Planning
         private static readonly Color32 Grid = new Color32(40, 44, 55, 255);
         private static readonly Color32 TargetColor = new Color32(255, 178, 51, 255);
         private static readonly Color32 HistoryColor = new Color32(255, 60, 60, 255);     // red = flown
+        private static readonly Color32 PlanColor = new Color32(237, 237, 237, 255);     // gray = plan
         private static readonly Color32 ProjectionColor = new Color32(77, 204, 255, 255); // blue = projected
 
         public double PeakAltitudeMeters { get; private set; } = double.NaN;
@@ -29,7 +30,7 @@ namespace Blackbird.Planning
 
         // refreshed OnGUI.  reserves the layout space and caches the plot in memory to rebuild only when solution or target Ap changes
 
-        public void Draw(double[] histAlt, double[] histDown, double[] projAlt, double[] projDown, double targetApAlt, int width, int height)
+        public void Draw(double[] histAlt, double[] histDown, double[] projAlt, double[] projDown, double[] planAlt, double[] planDown, double targetApAlt, int width, int height)
         {
             Rect rect = GUILayoutUtility.GetRect(width, height, GUILayout.ExpandWidth(false));
 
@@ -45,7 +46,7 @@ namespace Blackbird.Planning
             bool sizeChanged = _tex == null || _texW != width || _texH != height;
             if (sizeChanged || rt - _lastBuildRt >= MinRebuildSeconds) // projection is live
             {
-                Rebuild(histAlt, histDown, projAlt, projDown, targetApAlt, width, height);
+                Rebuild(histAlt, histDown, projAlt, projDown, planAlt, planDown, targetApAlt, width, height);
                 _cacheTgt = targetApAlt;
                 _lastBuildRt = rt;
             }
@@ -54,18 +55,18 @@ namespace Blackbird.Planning
             DrawLabels(rect, targetApAlt);
         }
 
-        private void Rebuild(double[] histAlt, double[] histDown, double[] projAlt, double[] projDown,
+        private void Rebuild(double[] histAlt, double[] histDown, double[] projAlt, double[] projDown, double[] planAlt, double[] planDown,
                      double targetApAlt, int width, int height)
         {
             double histPeak = SeriesMax(histAlt);
             PeakAltitudeMeters = histPeak;
             MaxLoftAboveTargetMeters = histPeak - targetApAlt;
 
-            double topAlt = Math.Max(targetApAlt, Math.Max(histPeak, SeriesMax(projAlt)));
+            double topAlt = Math.Max(targetApAlt, Math.Max(histPeak, Math.Max(SeriesMax(projAlt), SeriesMax(planAlt))));
             if (topAlt <= 0.0 || double.IsInfinity(topAlt)) topAlt = targetApAlt;
             _maxAltMeters = topAlt * 1.08;
 
-            double dataMaxDown = Math.Max(SeriesMax(histDown), SeriesMax(projDown));
+            double dataMaxDown = Math.Max(Math.Max(SeriesMax(histDown), SeriesMax(projDown)), SeriesMax(planDown));
             if (dataMaxDown <= 0.0 || double.IsInfinity(dataMaxDown)) dataMaxDown = 1.0;
             if (targetApAlt != _cacheTgt) _maxDownMeters = 0.0;                 // new plan: reset frame
             _maxDownMeters = Math.Max(_maxDownMeters, dataMaxDown * 1.05);      // grow-only
@@ -96,6 +97,7 @@ namespace Blackbird.Planning
                 }
             }
 
+            DrawSeries(buf, width, height, planAlt, planDown, PlanColor);         // plan first
             DrawSeries(buf, width, height, projAlt, projDown, ProjectionColor);   // blue first
             DrawSeries(buf, width, height, histAlt, histDown, HistoryColor);      // red on top
 

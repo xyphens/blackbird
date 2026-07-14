@@ -146,16 +146,16 @@ namespace Blackbird.Modules
                 _launchHandler.MinAltitudeForPitch = GUILayout.TextField(_launchHandler.MinAltitudeForPitch, GUILayout.Width(50));
                 GUILayout.Label("m", GUILayout.Width(50));
                 GUILayout.EndHorizontal();
-                bool armed = _launchHandler.State == LaunchGuidanceState.AwaitingLaunch
-                          || _launchHandler.State == LaunchGuidanceState.WarpingToLaunch;
+                //bool armed = _launchHandler.State == LaunchGuidanceState.AwaitingLaunch
+                //          || _launchHandler.State == LaunchGuidanceState.WarpingToLaunch;
 
-                if (!armed)
-                {
-                    // arm the launch
-                    GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted
-                                  && bbState.CanClaimControl(BlackbirdModule.LaunchGuidance);
-                    if (GUILayout.Button("Start Guidance")) _launchHandler.StartGuidance();
-                }
+                //if (!armed)
+                //{
+                //    // arm the launch
+                //    GUI.enabled = _launchHandler.State == LaunchGuidanceState.PlanAccepted
+                //                  && bbState.CanClaimControl(BlackbirdModule.LaunchGuidance);
+                //    if (GUILayout.Button("Start Guidance")) _launchHandler.StartGuidance();
+                //}
 
                 GUI.enabled =
                     _launchHandler.State == LaunchGuidanceState.PlanAccepted ||
@@ -323,15 +323,32 @@ namespace Blackbird.Modules
                 GUILayout.Label($"Ascent Plan: {_launchHandler.OpenLoopStatus}");
             }
 
+            DrawTrajectory();
 
             _launchHandler.TrackTrajectory = GUILayout.Toggle(_launchHandler.TrackTrajectory, "Show Advanced Details");
-            if (_launchHandler.TrackTrajectory)
-            {
-                //DrawAdvancedDetails(bbState.LaunchPlan, bbState.LaunchPlan.TargetVessel);
-                DrawTrajectory();
-            }
+            if (_launchHandler.TrackTrajectory) DrawAscentDetails();
 
             GUI.DragWindow();
+        }
+
+        private void DrawAscentDetails()
+        {
+            GUILayout.Space(6);
+            var plan = _launchHandler.OpenLoopPlan;
+            if (plan == null || !plan.IsValid)
+            {
+                GUILayout.Label("Ascent plan: " + _launchHandler.OpenLoopStatus);
+                return;
+            }
+            GUILayout.Label($"Pitch rate: {plan.PitchRateDegPerSecond:F2}°/s   Handoff: {plan.HandoffAltitudeMeters / 1000.0:F1} km");
+            GUILayout.Label($"Predicted: {plan.PredictedInjectedMassKg / 1000.0:F1} t to orbit, T+{plan.PredictedTimeToOrbitSeconds:F0}s");
+            GUILayout.Space(4);
+            GUILayout.Label("chi table (m/s \u2192 pitch\u00b0)");
+            double[] s = plan.TableSpeedMps, p = plan.TablePitchDeg;
+            int step = Math.Max(1, s.Length / 10);
+            for (int i = 0; i < s.Length; i += step)
+                GUILayout.Label($"  {s[i],6:F0}  \u2192  {p[i],5:F1}");
+            GUILayout.Label($"  {s[s.Length - 1],6:F0}  \u2192  {p[p.Length - 1],5:F1}  (handoff)");
         }
 
         private void DrawTrajectory()
@@ -341,23 +358,25 @@ namespace Blackbird.Modules
             rec.GetHistory(out double[] hAlt, out double[] hDown);
             rec.GetBallisticProjection(FlightGlobals.ActiveVessel, out double[] pAlt, out double[] pDown);
 
+            double tgtAp = _launchHandler.GuidanceInfo != null ? _launchHandler.GuidanceInfo.TargetApoapsisAlt : rec.TargetApAlt;
+
+            double[] planAlt = null;
+            double[] planDown = null;
             // chart the open loop trajectory
             var olPlan = _launchHandler.OpenLoopPlan;
-            if (pAlt == null && olPlan != null && olPlan.IsValid && olPlan.Trace != null && olPlan.Trace.Length > 1)
+            if (olPlan != null && olPlan.IsValid && olPlan.Trace != null && olPlan.Trace.Length > 1)
             {
                 int n = olPlan.Trace.Length;
-                pAlt = new double[n];
-                pDown = new double[n];
+                planAlt = new double[n];
+                planDown = new double[n];
                 for (int i = 0; i < n; i++)
                 {
-                    pAlt[i] = olPlan.Trace[i].AltMeters;
-                    pDown[i] = olPlan.Trace[i].DownrangeMeters;
+                    planAlt[i] = olPlan.Trace[i].AltMeters;
+                    planDown[i] = olPlan.Trace[i].DownrangeMeters;
                 }
             }
 
-            double tgtAp = _launchHandler.GuidanceInfo != null ? _launchHandler.GuidanceInfo.TargetApoapsisAlt : rec.TargetApAlt;
-
-            _trajectoryPlot.Draw(hAlt, hDown, pAlt, pDown, tgtAp, 360, 170);
+            _trajectoryPlot.Draw(hAlt, hDown, pAlt, pDown, planAlt, planDown, tgtAp, 360, 170);
 
             if (!double.IsNaN(_trajectoryPlot.MaxLoftAboveTargetMeters) && !double.IsInfinity(_trajectoryPlot.MaxLoftAboveTargetMeters))
             {
@@ -481,6 +500,9 @@ namespace Blackbird.Modules
             GUILayout.Label(FormatKm(guidanceInfo.TargetPeriapsisAlt, "F0"), GUILayout.Width(70));
             GUILayout.Label(FormatKm(guidanceInfo.PeriapsisErrorMeters, "F1"), GUILayout.Width(70));
             GUILayout.EndHorizontal();
+
+            GUILayout.Space(6);
+            DrawTrajectory();   // flown history vs plan trace + the loft readout = the retrospective
         }
 
         private void DrawSelectGuidanceMethod()
