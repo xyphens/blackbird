@@ -28,22 +28,30 @@ namespace Blackbird.OpenLoop
         private const double RampCapFromVerticalDeg = 90.0;
         private const double RampMaxAoaDeg = 2.0; // ramp attitude may lead the velocity vector by at most this alpha
 
-
         public bool IsValid { get; private set; }
         public string ReasonUnavailable { get; private set; }
 
         public double PitchRateDegPerSecond { get; private set; }
-        public double HandoffAltitudeMeters {  get; private set; }
+        public double HandoffAltitudeMeters { get; private set; }
         public double PredictedInjectedMassKg { get; private set; }
         public double PredictedTimeToHandoffSeconds { get; private set; }
         public double PredictedTimeToOrbitSeconds { get; private set; }
 
         // chi table: pitch above horizon vs surface speed, strictly ascending
         public double[] TableSpeedMps { get; private set; }
-        public double[] TablePitchDeg {  get; private set; }
+        public double[] TablePitchDeg { get; private set; }
 
-        public OpenLoopSample[] Trace {  get; private set; }
+        public OpenLoopSample[] Trace { get; private set; }
         private OpenLoopTrajectory() { }
+
+        private static OpenLoopCandidate Fail(OpenLoopCandidate c, OpenLoopFailure failure, string detail = null)
+        {
+            c.Failure = failure;
+            c.Reason = string.IsNullOrEmpty(detail)
+                ? OpenLoopFailureText.Describe(failure)
+                : OpenLoopFailureText.Describe(failure) + " (" + detail + ")";
+            return c;
+        }
 
         private static OpenLoopTrajectory Fail(string reason)
         {
@@ -58,7 +66,8 @@ namespace Blackbird.OpenLoop
             if (s == null || s.Length == 0) return 90.0;
             if (surfaceSpeedMps <= s[0]) return 90.0;
             if (surfaceSpeedMps >= s[s.Length - 1]) return p[p.Length - 1];
-            for (int i = 0; i < s.Length - 1; i++) {
+            for (int i = 0; i < s.Length - 1; i++)
+            {
                 if (surfaceSpeedMps > s[i + 1]) continue;
                 double f = (surfaceSpeedMps - s[i]) / (s[i + 1] - s[i]);
                 return p[i] + (p[i + 1] - p[i]) * f;
@@ -104,19 +113,21 @@ namespace Blackbird.OpenLoop
             OpenLoopCandidate c2 = Evaluate(io, x2, ref warm);
             while (b - a > RateToleranceDegPerSec)
             {
-                if (Score(c1) >= Score(c2)) {
+                if (Score(c1) >= Score(c2))
+                {
                     b = x2;
                     x2 = x1;
                     c2 = c1;
                     x1 = b - GoldenRatio * (b - a);
                     c1 = Evaluate(io, x1, ref warm);
-                } else
+                }
+                else
                 {
                     a = x1;
                     x1 = x2;
                     c1 = c2;
                     x2 = a + GoldenRatio * (b - a);
-                    c2 = Evaluate(io, x2,ref warm);
+                    c2 = Evaluate(io, x2, ref warm);
                 }
             }
 
@@ -145,6 +156,8 @@ namespace Blackbird.OpenLoop
             if (bad != null) return new OpenLoopCandidate { RateDegPerSec = rateDegPerSec, Reason = bad };
             return Evaluate(io, rateDegPerSec, ref warm);
         }
+
+
         // candidate evaluation: integrate -> embed -> PSG
         private static OpenLoopCandidate Evaluate(OpenLoopInputs io, double rateDegPerSec, ref PsgSolution warm)
         {
@@ -153,7 +166,7 @@ namespace Blackbird.OpenLoop
             try
             {
                 AscentStage[] stages = BuildIntegratorStages(io.Stages);
-                if (stages.Length == 0) { c.Reason = "no stages"; return c; }
+                if (stages.Length == 0) return Fail(c, OpenLoopFailure.NoStages);
 
                 // net liftoff accel; clearance where speed hits the pitch-over threshold
                 double a0 = Math.Max(0.5, stages[0].ThrustNewtons / io.LiftoffMassKg - io.Mu / (io.BodyRadiusMeters * io.BodyRadiusMeters));
@@ -213,25 +226,13 @@ namespace Blackbird.OpenLoop
                         reached = true;
                         break;
                     }
-                    if (s.SurfaceSpeed > 1.0 && s.FlightPathAngleDeg <= 0.0)
-                    {
-                        c.Reason = "pitched past horizontal";
-                        return c;
-                    }
-                    if (alt < -1.0)
-                    {
-                        c.Reason = "ground impact";
-                        return c;
-                    }
+                    if (s.SurfaceSpeed > 1.0 && s.FlightPathAngleDeg <= 0.0) return Fail(c, OpenLoopFailure.PitchedPastHorizontal);
+                    if (alt < -1.0) return Fail(c, OpenLoopFailure.GroundImpact);
 
                     s = integrator.Step(s, StepSeconds);
                     path.Add(ToSample(s, io, 90.0 - law(s)));
                 }
-                if (!reached)
-                {
-                    c.Reason = "never reached handoff altitude";
-                    return c;
-                }
+                if (!reached) return Fail(c, OpenLoopFailure.NeverReachedHandoff);
 
                 // embed 2d terminal state into 3d: PSg takes body-centered position and inertial velocity
                 // co-rotation is exactly: v = v_srf + omega x r
@@ -239,36 +240,36 @@ namespace Blackbird.OpenLoop
 
                 PoweredStageInfo[] handoffStages = BuildHandoffStages(io.Stages, s.MassKg);
                 PsgPhase[] phases = PsgPhase.FromPoweredStages(handoffStages);
-                if (phases == null || phases.Length == 0)
-                {
-                    c.Reason = "no remaining stages at handoff";
-                    return c;
-                }
+
+                if (phases == null || phases.Length == 0) return Fail(c, OpenLoopFailure.NoStagesAtHandoff);
 
                 double handoffUt = io.UniversalTime + s.T;
                 PsgInitialState initial = PsgInitialState.Create(r3, v3, s.MassKg, handoffUt);
                 PsgBodyModel body = PsgBodyModel.Create(io.Mu, io.BodyRadiusMeters, io.BodyAngularVelocity);
                 PsgProblem problem = PsgProblem.Create(initial, body, io.Target, phases, v3.normalized);
-                if (problem == null || !problem.IsValid)
-                {
-                    c.Reason = $"PSG problem invalid: {(problem == null ? "null" : problem.ReasonUnavailable)}";
-                    return c;
-                }
+                if (problem == null || !problem.IsValid) return Fail(c, OpenLoopFailure.PsgProblemInvalid, problem == null ? "null" : problem.ReasonUnavailable);
+
                 PsgOptimizationResult result = new PsgOptimizer().Solve(problem, warm);
-                if (result == null || !result.Success || result.Solution == null)
-                {
-                    c.Reason = "PSG did not converge";
-                    return c;
-                }
+                if (result == null || !result.Success || result.Solution == null) return Fail(c, OpenLoopFailure.PsgNotConverged);
 
                 warm = result.Solution;
 
-                double burnoutFloorKg = handoffStages[handoffStages.Length - 1].EndMass * 1000.0;
-                if (result.Solution.TerminalState().MassKg < burnoutFloorKg)
+                double burnoutFloorKg = 0.0;
+                int floorStage = -1;
+                int lastPhaseIndex = phases[phases.Length - 1].PhaseIndex;
+                foreach (PoweredStageInfo hs in handoffStages)
                 {
-                    c.Reason = "PSG solution exceeds available propellant";
-                    return c;
+                    if (hs.PhaseIndex == lastPhaseIndex)
+                    {
+                        burnoutFloorKg = hs.EndMass * 1000.0;
+                        floorStage = hs.Stage;
+                        break;
+                    }
                 }
+                if (result.Solution.TerminalState().MassKg < burnoutFloorKg)
+                    return Fail(c, OpenLoopFailure.PropellantExceeded, string.Format("terminal {0:F1} t < floor {1:F1} t from stage {2}",
+                        result.Solution.TerminalState().MassKg / 1000.0,
+                        burnoutFloorKg / 1000.0, floorStage));
 
                 c.Valid = true;
                 c.PsgIterations = result.Iterations;
@@ -281,8 +282,7 @@ namespace Blackbird.OpenLoop
             }
             catch (Exception ex)
             {
-                c.Reason = $"exception: {ex.Message}";
-                return c;
+                return Fail(c, OpenLoopFailure.Exception, ex.Message);
             }
         }
 
@@ -304,7 +304,8 @@ namespace Blackbird.OpenLoop
         {
             // usable stage
             var usable = new List<PoweredStageInfo>();
-            if (stages != null) {
+            if (stages != null)
+            {
                 foreach (PoweredStageInfo st in stages)
                 {
                     if (st != null && st.IsValid && st.IsCurrentOrFutureStage && st.VacuumThrust > 0.0
@@ -347,11 +348,12 @@ namespace Blackbird.OpenLoop
                 if (st == null || !st.IsValid || !st.IsCurrentOrFutureStage) continue;
                 if (!activeFound)
                 {
-                    if (massTons <=  st.EndMass) continue;
+                    if (massTons <= st.EndMass) continue;
                     activeFound = true;
                     double start = Math.Min(massTons, st.StartMass);
                     outList.Add(Clone(st, start));
-                } else
+                }
+                else
                 {
                     outList.Add(Clone(st, st.StartMass));
                 }
@@ -390,7 +392,8 @@ namespace Blackbird.OpenLoop
             var speeds = new List<double>(w.Path.Count);
             var pitches = new List<double>(w.Path.Count);
             double lastSpeed = double.NegativeInfinity;
-            foreach (OpenLoopSample p in w.Path) {
+            foreach (OpenLoopSample p in w.Path)
+            {
                 if (p.SurfaceSpeedMps < io.PitchOverSpeedMps) continue; // vhold handled by lookup
                 if (p.SurfaceSpeedMps <= lastSpeed + 0.1) continue; // enforce by ascending index
                 lastSpeed = p.SurfaceSpeedMps;

@@ -1388,9 +1388,9 @@ namespace Blackbird.LaunchHarness
             // rides the cap), and this stack's margin makes every LEO handoff reachable — so the descent/FPA
             // guard is exercised by a booster that cannot lift its own stack (TWR 0.79 sinks off the pad).
             OpenLoopCandidate sink = OpenLoopTrajectory.EvaluateCandidate(MakeIloadInputs(0.5), 1.0);
-            bool sinkOk = !sink.Valid && (sink.Reason == "pitched past horizontal" || sink.Reason == "ground impact");
-            Console.WriteLine(string.Format("  {0,-22} -> {1}  ({2})", "TWR<1 sinks off pad", sinkOk ? "PASS" : "FAIL", sink.Reason));
-            if (!sinkOk) throw new Exception("Sub-unity TWR was not rejected by the integrator guards: valid=" + sink.Valid + ", reason='" + sink.Reason + "'");
+            bool sinkOk = !sink.Valid && (sink.Failure == OpenLoopFailure.PitchedPastHorizontal || sink.Failure == OpenLoopFailure.GroundImpact);
+            Console.WriteLine(string.Format("  {0,-22} -> {1}  ({2}: {3})", "TWR<1 sinks off pad", sinkOk ? "PASS" : "FAIL", sink.Failure, sink.Reason));
+            if (!sinkOk) throw new Exception("Sub-unity TWR was not rejected by the integrator guards: valid=" + sink.Valid + ", failure=" + sink.Failure + ", reason='" + sink.Reason + "'");
 
             // PSG non-convergence: a retrograde-ish target plane this stack cannot reach must be reported, not
             // returned as a plan. (Flipped normal = ~57 deg of plane error at the tangent geometry.)
@@ -1403,9 +1403,9 @@ namespace Blackbird.LaunchHarness
                 beyond.Target.TargetOrbitNormal, 28.6083883588767, 236.977771247498, false, false);
             OpenLoopCandidate unreach = OpenLoopTrajectory.EvaluateCandidate(beyond, 0.7);
             bool unreachOk = !unreach.Valid
-                             && (unreach.Reason == "PSG did not converge" || unreach.Reason == "PSG solution exceeds available propellant");
-            Console.WriteLine(string.Format("  {0,-22} -> {1}  ({2})", "target beyond stack dV", unreachOk ? "PASS" : "FAIL", unreach.Reason));
-            if (!unreachOk) throw new Exception(string.Format("Beyond-dV target was not rejected at the PSG stage: valid={0}, reason='{1}'.", unreach.Valid, unreach.Reason));
+                             && (unreach.Failure == OpenLoopFailure.PsgNotConverged || unreach.Failure == OpenLoopFailure.PropellantExceeded);
+            Console.WriteLine(string.Format("  {0,-22} -> {1}  ({2}: {3})", "target beyond stack dV", unreachOk ? "PASS" : "FAIL", unreach.Failure, unreach.Reason));
+            if (!unreachOk) throw new Exception(string.Format("Beyond-dV target was not rejected at the PSG stage: valid={0}, failure={1}, reason='{2}'.", unreach.Valid, unreach.Failure, unreach.Reason));
         }
 
         // Generality (zero per-vehicle constants): the same Build on a synthetic low-TWR variant of the stack

@@ -94,6 +94,9 @@ namespace Blackbird.FuelSim
                 for (int i = 0; i < engines.Count; i++)
                 {
                     SimEngine e = engines[i];
+                    // fixme: there are almost an infinite number of reasons we may want to exclude an engine:
+                    // i.e., user has a real solid rocket motor on some ultra-massive rocket that's being used as separator
+                    if (e.Part.IsSepratron) continue;
                     if (e.MassFlowTons <= 0.0) continue;
 
                     e.UpdateEngineStatus();

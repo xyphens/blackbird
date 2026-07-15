@@ -5,6 +5,7 @@ using Blackbird.Trajectory;
 using Blackbird.Modules;
 using Blackbird.Psg;
 using Blackbird.OpenLoop;
+using Blackbird.Logging;
 using UnityEngine;
 
 namespace Blackbird.Guidance
@@ -14,6 +15,7 @@ namespace Blackbird.Guidance
         private readonly PoweredAscentGuidance _poweredGuidance = new PoweredAscentGuidance();
         private readonly ClassicAscentGuidance _classicGuidance = new ClassicAscentGuidance();
         private readonly AtmosphericAscent _atmAscent = new AtmosphericAscent();
+        private static readonly BlackbirdLog Log = new BlackbirdLog(LogContext.Trajectory);
         public PsgSolution CurrentSolution => _poweredGuidance.CurrentSolution;
 
         private bool IsRSS = false;
@@ -29,10 +31,11 @@ namespace Blackbird.Guidance
         private Vector3d _openLoopSlew = Vector3d.zero;
         private double _openLoopLastUt = double.NaN;
         private const double OpenLoopMaxSlewDegPerSec = 5.0;
+        public bool? FlyingOpenLoop { get; private set; }
 
         public void SetOpenLoopPlan(OpenLoopTrajectory plan)
         {
-            if (ReferenceEquals(_openLoopPlan, plan)) return;
+            if (ReferenceEquals(_openLoopPlan, plan) || (FlyingOpenLoop != null && plan != null)) return;
             _openLoopPlan = plan;
             _openLoopHanded = false;
             _openLoopSlew = Vector3d.zero;
@@ -52,6 +55,7 @@ namespace Blackbird.Guidance
             _openLoopHanded = false;
             _openLoopSlew = Vector3d.zero;
             _openLoopLastUt = double.NaN;
+            FlyingOpenLoop = null;
         }
         public void Reset()
         {
@@ -59,6 +63,7 @@ namespace Blackbird.Guidance
             _classicGuidance.Reset();
             _atmAscent.Reset();
             _handedToPsg = false;
+            FlyingOpenLoop = null;
         }
 
         // Produces current flight commands from the selected launch profile and guidance mode.
@@ -119,6 +124,13 @@ namespace Blackbird.Guidance
                 bool psgReady = poweredCommand != null && poweredCommand.HasInertialDirection;
                 double psgPitch = poweredCommand != null ? poweredCommand.PitchDeg : double.NaN;
                 bool openLoop = _openLoopPlan != null && _openLoopPlan.IsValid;
+
+
+                if (!holdVSpeed && FlyingOpenLoop == null)
+                {
+                    FlyingOpenLoop = openLoop;
+                    Log.Write($"[ascent] flying {(openLoop ? "open-loop" : "kick fallback")}");
+                }
 
                 if (openLoop)
                 {

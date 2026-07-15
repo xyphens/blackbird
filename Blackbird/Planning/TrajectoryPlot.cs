@@ -34,7 +34,7 @@ namespace Blackbird.Planning
         {
             Rect rect = GUILayoutUtility.GetRect(width, height, GUILayout.ExpandWidth(false));
 
-            if (!((histAlt != null && histAlt.Length >= 2) || (projAlt != null && projAlt.Length >= 2)))
+            if (!((histAlt != null && histAlt.Length >= 2) || (projAlt != null && projAlt.Length >= 2) || (planAlt != null && planAlt.Length >= 2)))
             {
                 PeakAltitudeMeters = double.NaN;
                 MaxLoftAboveTargetMeters = double.NaN;

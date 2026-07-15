@@ -105,6 +105,8 @@ namespace Blackbird.Guidance
         public OpenLoopTrajectory OpenLoopPlan {  get; private set; }
         private Task<OpenLoopTrajectory> _openLoopTask;
         public string OpenLoopStatus { get; private set; } = "not built";
+        public bool OpenLoopBuilding => _openLoopTask != null;
+        public bool? FlyingOpenLoop => _ascentGuidance.FlyingOpenLoop;
         public AscentGuidanceInfo GuidanceInfo { get; private set; }
         public PsgSolution CurrentSolution => _ascentGuidance.CurrentSolution;
 
@@ -173,8 +175,16 @@ namespace Blackbird.Guidance
         public void StartGuidance()
         {
             if (State != LaunchGuidanceState.PlanAccepted) return;
-            if (bbState.LaunchPlan == null || bbState.LaunchPlan.SelectedCandidate == null || !bbState.LaunchPlan.SelectedCandidate.IsValid) return;
-            _targetUt = bbState.LaunchPlan?.SelectedCandidate?.LaunchUt ?? 0;
+            if (bbState.LaunchPlan == null || bbState.LaunchPlan.SelectedCandidate == null || !bbState.LaunchPlan.SelectedCandidate.IsValid)
+            {
+                OpenLoopStatus = "no valid launch candidate";
+                AscentReport.WriteLine($"[open-loop] build not started: {OpenLoopStatus}");
+                return;
+            }
+
+            double launchUt = bbState.LaunchPlan.SelectedCandidate.LaunchUt;
+            _targetUt = MathHelpers.IsFinite(launchUt) && launchUt > 0 ? launchUt : Planetarium.GetUniversalTime();
+
             bbState.ActiveModule = BlackbirdModule.LaunchGuidance;
             RefreshGuidanceComputer();
             State = LaunchGuidanceState.AwaitingLaunch;
@@ -190,6 +200,7 @@ namespace Blackbird.Guidance
             if (vs == null || vs.Body == null || profile == null)
             {
                 OpenLoopStatus = "no vessel/profile";
+                AscentReport.WriteLine($"[open-loop] build not started: {OpenLoopStatus}");
                 return;
             }
 
@@ -228,6 +239,11 @@ namespace Blackbird.Guidance
             AscentReport.WriteLine(string.Format(
                 "[open-loop] build start: CdA {0:F1}, pitchOver {1:F0} m/s, holdAlt {2:F0} m, handoff {3:F0} m, liftoff {4:F1} t",
                 io.DragAreaCd, io.PitchOverSpeedMps, io.HoldVerticalUntilAltMeters, io.HandoffAltitudeMeters, io.LiftoffMassKg / 1000.0));
+            // dufixme: temporary logging
+            foreach (PoweredStageInfo st in io.Stages)
+                AscentReport.WriteLine(string.Format(
+                    "[open-loop]   stage {0}: {1:F1} -> {2:F1} t, thrust {3:F0} kN, isp {4:F0} s, burn {5:F1} s",
+                    st.Stage, st.StartMass, st.EndMass, st.VacuumThrust, st.VacuumSpecificImpulse, st.BurnTimeSeconds));
 
             OpenLoopStatus = "building...";
             _openLoopTask = Task.Run(() => OpenLoopTrajectory.Build(io));
@@ -244,6 +260,7 @@ namespace Blackbird.Guidance
                     ? string.Format("ready: rate {0:F2} deg/s, {1:F0} t to orbit, T+{2:F0}s",
                         plan.PitchRateDegPerSecond, plan.PredictedInjectedMassKg / 1000.0, plan.PredictedTimeToOrbitSeconds)
                     : "failed: " + plan.ReasonUnavailable;
+            AscentReport.WriteLine($"[open-loop] build {OpenLoopStatus}");
         }
 
         private static Func<double, double> SampleDensityTable(CelestialBody body, double topAltMeters)
@@ -268,11 +285,18 @@ namespace Blackbird.Guidance
         }
 
         // Begin the ascent once a flight mode is chosen while armed (stops any launch warp first).
-        public void BeginAscent()
+        public void StartAscentGuidance()
         {
             if (State == LaunchGuidanceState.PlanAccepted) StartGuidance();
             if (State != LaunchGuidanceState.AwaitingLaunch && State != LaunchGuidanceState.WarpingToLaunch) return;
+            if (Math.Abs(Planetarium.GetUniversalTime() - _targetUt) > WarpStopLeadTimeSeconds)
+            {
+                OpenLoopPlan = null;
+                _openLoopTask = null;
+                _ascentGuidance.SetOpenLoopPlan(null);
+            }
             TimeWarp.SetRate(0, true);
+            //if (OpenLoopPlan == null && _openLoopTask == null) BeginOpenLoopBuild();
             _ascentGuidance.Reset();
             AscentReport.Reset();
             _completionControlReleased = false;
@@ -281,6 +305,7 @@ namespace Blackbird.Guidance
 
         public void Update(Vessel vessel)
         {
+            PollOpenLoopBuild();
             if (State == LaunchGuidanceState.Idle ||
                 State == LaunchGuidanceState.Complete ||
                 State == LaunchGuidanceState.Aborted)
@@ -293,17 +318,20 @@ namespace Blackbird.Guidance
 
             if (State != LaunchGuidanceState.WarpingToLaunch) return;
 
+            // everything after this is ran on frame while we're warping
+
             // monitor / adjust warp rate
-            double nowUt = Planetarium.GetUniversalTime();
+            double secondsRemaining = _targetUt - Planetarium.GetUniversalTime();
 
-            double secondsRemaining = _targetUt - nowUt;
-
+            // stop warp when we've reached designated window
             if (secondsRemaining <= WarpStopLeadTimeSeconds)
             {
                 TimeWarp.SetRate(0, true);
-                // Keep _targetUt (the launch UT) so the countdown keeps showing the real remaining
-                // seconds through the final lead-in — zeroing it made SecondsUntilLaunch jump to 0.
                 State = LaunchGuidanceState.AwaitingLaunch;
+                OpenLoopPlan = null;
+                _openLoopTask = null; // build launch pre-warp has stale inputs
+                _ascentGuidance.SetOpenLoopPlan(null);
+                BeginOpenLoopBuild();
                 return;
             }
 

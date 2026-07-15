@@ -251,14 +251,12 @@ namespace Blackbird.Planning
 
             // Insertion state: site at the crossing, carried downrange along the plane by the ascent arc, lifted
             // to a nominal insertion radius (the target's, for the phase measurement). Velocity = local circular.
-            double siteDt = c.SecondsUntilLaunch;
-            Vector3d rSite = SitePositionInertial(input, siteDt);
+            Vector3d rSite = SitePositionInertial(input, c.SecondsUntilLaunch);
             Vector3d rSiteHat = rSite.normalized;
-            double rInsert = targetRadius;
-            double vCirc = Math.Sqrt(input.Mu / rInsert);
-            double downrangeRad = 0.5 * vCirc * input.AscentDurationSeconds / rInsert;
+            double vCirc = Math.Sqrt(input.Mu / targetRadius);
+            double downrangeRad = 0.5 * vCirc * input.AscentDurationSeconds / targetRadius;
             Vector3d rInsHat = RotateAbout(rSiteHat, hHat, downrangeRad);
-            Vector3d insertionPos = rInsert * rInsHat;
+            Vector3d insertionPos = targetRadius * rInsHat;
             Vector3d insertionVel = vCirc * Vector3d.Cross(hHat, rInsHat);
 
             c.InsertionUt = c.LaunchUt + input.AscentDurationSeconds;

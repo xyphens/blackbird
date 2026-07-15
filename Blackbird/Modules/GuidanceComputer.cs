@@ -21,7 +21,6 @@ namespace Blackbird.Modules
         private const double MinSecondsToUseWarp = 10.0;
         private readonly string[] _guidanceModeLabels = { "None", "Manual", "Autopilot" };
 
-
         private const float BtnW = 60f;
         private const float BtnH = 34f;
 
@@ -104,14 +103,19 @@ namespace Blackbird.Modules
                     if (GUILayout.Button("Warp To Launch")) _launchHandler.WarpToLaunch();
                 }
 
-                GUI.enabled = true;
+                GUI.enabled = !_launchHandler.OpenLoopBuilding;
 
                 DrawSelectGuidanceMethod();
                 // Begin the ascent once a flight mode is chosen AND we're at the launch window or there's no target (countdown)
-                if (_launchHandler.GuidanceMode != GuidanceMode.None && (double.IsNaN(countdown) || !(countdown > MinSecondsToUseWarp)))
+                if (_launchHandler.OpenLoopBuilding) GUILayout.Label("Ascent plan building — launch enabled when it resolves");
+                if (!_launchHandler.OpenLoopBuilding 
+                    && _launchHandler.GuidanceMode != GuidanceMode.None 
+                    && (double.IsNaN(countdown) || !(countdown > MinSecondsToUseWarp)))
                 {
-                    _launchHandler.BeginAscent();
+                    _launchHandler.StartAscentGuidance();
                 }
+
+                GUI.enabled = true;
 
                 GUILayout.Space(4);
 

@@ -122,7 +122,7 @@ namespace Blackbird.Models
                 AvailableRcsTorque = rcsTorque,
 
                 TotalMass = totalMass,
-                RemainingDeltaV = GetRemainingDeltaV(vessel),
+                RemainingDeltaV = GetRemainingDeltaV(GetPoweredStages(vessel)),
                 AvailableThrust = propulsion.AvailableThrust,
                 CurrentThrust = propulsion.CurrentThrust,
                 ThrustToWeight = propulsion.ThrustToWeight,
@@ -154,7 +154,7 @@ namespace Blackbird.Models
                 && now - _fuelSimUt < FuelSimRefreshSeconds) return _fuelSimStages;
 
             PoweredStageInfo[] stockStages = GetStockPoweredStages(vessel);
-            PoweredStageInfo[] stages;
+            PoweredStageInfo[] stages; // output
 
             try
             {
@@ -597,24 +597,15 @@ namespace Blackbird.Models
         // figure (use TotalDeltaVActual for the current-atmosphere value). Returns NaN until the stock calc is
         // ready, nudging it dirty so it computes within a frame or two; once ready it stays ready until mass /
         // staging changes, so this doesn't thrash. Replaces vessel.GetDeltaV() which read 0.
-        private static double GetRemainingDeltaV(Vessel vessel)
+        private static double GetRemainingDeltaV(PoweredStageInfo[] stages)
         {
-            try
+            double dv = 0.0;
+            foreach (PoweredStageInfo s in stages)
             {
-                VesselDeltaV dv = vessel?.VesselDeltaV;
-                if (dv == null) return double.NaN;
-                if (!dv.IsReady)
-                {
-                    dv.SetCalcsDirty(false, false);
-                    return double.NaN;
-                }
-                double total = dv.TotalDeltaVVac;
-                return total > 0.0 ? total : double.NaN;
+                if (MathHelpers.IsFinite(s.VacuumDeltaV)) dv += s.VacuumDeltaV;
             }
-            catch
-            {
-                return double.NaN;
-            }
+                
+            return dv > 0.0 ? dv : double.NaN;
         }
 
         private static double GetBodySurfaceGravity(CelestialBody body)
@@ -622,40 +613,6 @@ namespace Blackbird.Models
             if (body == null || body.Radius <= 0.0) return double.NaN;
 
             return body.gravParameter / (body.Radius * body.Radius);
-        }
-
-        //private static double GetDouble(object instance, string memberName, double fallback)
-        //{
-        //    return ConvertToDouble(GetMember(instance, memberName), fallback);
-        //}
-
-        private static object GetMember(object instance, string memberName)
-        {
-            if (instance == null) return null;
-
-            Type type = instance.GetType();
-            var property = type.GetProperty(memberName);
-            if (property != null)
-            {
-                return property.GetValue(instance, null);
-            }
-
-            var field = type.GetField(memberName);
-            return field != null ? field.GetValue(instance) : null;
-        }
-
-        private static double ConvertToDouble(object value, double fallback)
-        {
-            if (value == null) return fallback;
-
-            try
-            {
-                return Convert.ToDouble(value);
-            }
-            catch
-            {
-                return fallback;
-            }
         }
     }
 }
