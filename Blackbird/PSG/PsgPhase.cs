@@ -120,7 +120,6 @@ namespace Blackbird.Psg
             // derive burn time from mass instead of KSP
             // dufixme: replace
             double nominalBurnTime = (startMassKg - endMassKg) / massFlow;
-            // fuck
 
             //double nominalBurnTime = MathHelpers.IsFinite(stage.BurnTimeSeconds) && stage.BurnTimeSeconds > 0.0
             //    ? stage.BurnTimeSeconds

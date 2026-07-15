@@ -67,6 +67,8 @@ namespace Blackbird.RendezvousHarness
             CheckMatchVelocityCompletesWithinOneMetersPerSecond();
             CheckThrustEnvelope();
             CheckDockingSchedule();
+            CheckDockingVelocitySettle();
+            CheckRcsPidWindup();
             CheckBurnSettleGate();
             CheckRcsAttitudeTorque();
             CheckGravityCompensatedDelivered();
@@ -1990,7 +1992,8 @@ namespace Blackbird.RendezvousHarness
             DockingConfig c = new DockingConfig
             {
                 StartDistance = 20.0, TargetSize = 5.0, AcquireRange = 0.3,
-                DockingCorridorRadius = 1.0, SpeedLimit = 1.0, VesselBoundingSize = 4.0
+                DockingCorridorRadius = 1.0, SpeedLimit = 1.0, VesselBoundingSize = 4.0,
+                ClipClearance = 3.0
             };
             Vector3d axis = new Vector3d(1, 0, 0);
 
@@ -2000,6 +2003,9 @@ namespace Blackbird.RendezvousHarness
 
             DockingGeom offAxis = new DockingGeom { ZSep = 50, LateralMag = 5, ZAxis = axis, LateralDir = new Vector3d(0, 1, 0) };
             AssertTrue("off-axis far in front -> MovingToStart", DockingSchedule.PickEntryStep(offAxis, c) == DockingSteps.MovingToStart);
+
+            DockingGeom offAxisClose = new DockingGeom { ZSep = 2, LateralMag = 5, ZAxis = axis, LateralDir = new Vector3d(0, 1, 0) };
+            AssertTrue("off-axis inside clip clearance -> BackingUp", DockingSchedule.PickEntryStep(offAxisClose, c) == DockingSteps.BackingUp);
 
             DockingGeom behindFar = new DockingGeom { ZSep = -10, LateralMag = 1, ZAxis = axis, LateralDir = new Vector3d(0, 1, 0) };
             AssertTrue("far behind (>halfBox) -> WrongSideBackingUp", DockingSchedule.PickEntryStep(behindFar, c) == DockingSteps.WrongSideBackingUp);
@@ -2024,6 +2030,93 @@ namespace Blackbird.RendezvousHarness
             AssertTrue("docking z speed capped at limit", plan.ZSpeed <= c.SpeedLimit + 1e-9);
             AssertTrue("adjustment points toward the port (+zAxis)", Vector3d.Dot(plan.Adjustment, axis) > 0.0);
             AssertTrue("docking aligns to the port", plan.Align);
+        }
+
+        // Case 25b: a staging step must not advance until the residual relative velocity is nulled, so drift
+        // does not compound into the next step. The positional gate met + a live rel speed above the stop
+        // threshold => hold + stop translating; below it => advance. Docking is exempt (latch/react at once),
+        // and threshold <= 0 restores the legacy position-only behavior.
+        private static void CheckDockingVelocitySettle()
+        {
+            Console.WriteLine("Case 25b: staging steps hold to null relative velocity before advancing");
+
+            DockingConfig c = new DockingConfig
+            {
+                StartDistance = 20.0, TargetSize = 5.0, AcquireRange = 0.3,
+                DockingCorridorRadius = 1.0, SpeedLimit = 1.0, VesselBoundingSize = 4.0,
+                MatchVelocityThreshold = 0.1
+            };
+            Vector3d axis = new Vector3d(1, 0, 0);
+            Func<Vector3d, double> accel = _ => 1.0;
+
+            // Positional target met (ZSep 6 > targetSize 5) but 1 m/s residual -> hold in BackingUp.
+            DockingGeom moving = new DockingGeom { ZSep = 6, LateralMag = 0.5, ZAxis = axis, LateralDir = Vector3d.zero, RelSpeed = 1.0 };
+            AssertTrue("BackingUp holds while rel speed > threshold",
+                DockingSchedule.Advance(DockingSteps.BackingUp, moving, c) == DockingSteps.BackingUp);
+
+            // ...and the plan stops translating so the RCS can null the residual (Adjustment -> 0).
+            DockingPlan settle = DockingSchedule.Plan(DockingSteps.BackingUp, moving, c, accel);
+            AssertTrue("settling plan commands zero axial speed", Math.Abs(settle.ZSpeed) < 1e-9);
+            AssertTrue("settling plan commands zero lateral speed", Math.Abs(settle.LatSpeed) < 1e-9);
+            AssertTrue("settling plan commands zero adjustment", settle.Adjustment.magnitude < 1e-9);
+
+            // Once nulled (0.05 < 0.1), the same geometry advances.
+            DockingGeom nulled = new DockingGeom { ZSep = 6, LateralMag = 0.5, ZAxis = axis, LateralDir = Vector3d.zero, RelSpeed = 0.05 };
+            AssertTrue("BackingUp advances once velocity-matched",
+                DockingSchedule.Advance(DockingSteps.BackingUp, nulled, c) == DockingSteps.MovingToStart);
+
+            // Docking is exempt: it latches regardless of residual speed.
+            DockingGeom contactHot = new DockingGeom { ZSep = 0.2, LateralMag = 0.1, ZAxis = axis, LateralDir = Vector3d.zero, RelSpeed = 1.0 };
+            AssertTrue("Docking latches even with residual speed",
+                DockingSchedule.Advance(DockingSteps.Docking, contactHot, c) == DockingSteps.Off);
+
+            // Threshold <= 0 restores legacy immediate advance regardless of speed.
+            DockingConfig legacy = c; legacy.MatchVelocityThreshold = 0.0;
+            AssertTrue("threshold<=0 advances immediately (legacy)",
+                DockingSchedule.Advance(DockingSteps.BackingUp, moving, legacy) == DockingSteps.MovingToStart);
+        }
+
+        // Case 26: the docking RCS velocity PID winds up on a steady error. It is built without max/min
+        // (RcsController.cs:52 -> _max = double.MaxValue), so the anti-windup guard |derivAction| < 0.6*_max
+        // is never false and the integral accumulates every frame. A small constant velocity error with no
+        // rotation (omega = 0) should settle near its proportional command; instead the action climbs without
+        // bound and pins RCS on, overshooting the commanded speed. This diagnostic prints the growth.
+        private static void CheckRcsPidWindup()
+        {
+            Console.WriteLine("Case 26: RCS PID anti-windup (saturate on a steady error, then reverse)");
+
+            // Live gains: SetParameters at the default time constant (Tf = 1).
+            double tf = 1.0, kd = 0.53 / tf;
+            double kp = kd / (3.0 * Math.Sqrt(2.0) * tf);
+            double ki = kp / (12.0 * Math.Sqrt(2.0) * tf);
+
+            Vector3d error = new Vector3d(5.0, 0, 0);    // steady error at the orAction scale the controller feeds in
+            Vector3d omega = Vector3d.zero;              // not rotating -> derivative ~0: the case the old guard missed
+            Vector3d rev = new Vector3d(-5.0, 0, 0);
+            double dt = 0.02, prop = error.x * kp;
+
+            // Current construction (no bounds -> _max = +inf): anti-windup can't engage, output rides past the
+            // actuation clamp without bound.
+            RcsPID unbounded = new RcsPID(kp, ki, kd);
+            // Fixed construction: real ±1 actuation limits -> integral is held at saturation instead of ramping.
+            RcsPID bounded = new RcsPID(kp, ki, kd, 1.0, -1.0);
+
+            double u1000 = 0.0, b1000 = 0.0;
+            for (int i = 0; i < 1000; i++) { u1000 = unbounded.ComputeAction(error, omega, dt).x; b1000 = bounded.ComputeAction(error, omega, dt).x; }
+
+            // Reverse the error and count physics steps until each controller comes off the upper rail. A wound-up
+            // integral keeps commanding thrust long after the error flips (the "keeps burning" lag); a bounded one
+            // responds at once.
+            int uRecover = 0, bRecover = 0;
+            while (unbounded.ComputeAction(rev, omega, dt).x > 0.0 && uRecover < 100000) uRecover++;
+            while (bounded.ComputeAction(rev, omega, dt).x > 0.0 && bRecover < 100000) bRecover++;
+
+            Console.WriteLine(string.Format("  P-only={0:F4}  unbounded@1000={1:F4}  bounded@1000={2:F4}", prop, u1000, b1000));
+            Console.WriteLine(string.Format("  recovery steps after reversal: unbounded={0}  bounded={1}", uRecover, bRecover));
+
+            AssertTrue("current (no limits) winds the output past the actuation clamp", u1000 > 1.2);
+            AssertTrue("bounded holds at the actuation limit", b1000 <= 1.0 + 1e-9);
+            AssertTrue("bounded recovers from saturation far faster (no wound-up integral)", bRecover < uRecover / 4);
         }
 
         // Case 21: Final Approach (TRACKING mode, KeepFaAxesFrozen=false) is a discrete TWO-burn sequence (close,

@@ -72,6 +72,9 @@ namespace Blackbird.Docking
         // --- per-tick cache ------------------------------------------------------------------------------
         private Vessel _vessel;
         private VesselState _vs;
+        private Vector3d _targetLosDir;
+        private Vector3d _portSepWorld;    // chaser control point -> target port, cached in Update timing (Krakensbane-safe)
+        private Vector3d _portAxisWorld;   // target port mating axis, cached in Update timing
 
         // --- metrics (for the UI) ------------------------------------------------------------------------
         //public bool HasTarget { get; private set; }
@@ -126,7 +129,8 @@ namespace Blackbird.Docking
                 bbState.ActiveModule = BlackbirdModule.Docking;
                 bbState.DockingMode = DockingControlMode.Manual;
             }
-            else if (!wantAssist && bbState.DockingMode != DockingControlMode.Guidance)
+            else if (!wantAssist && bbState.DockingMode != DockingControlMode.Guidance
+                     && bbState.ActiveModule == BlackbirdModule.Docking)
             {
                 bbState.ActiveModule = BlackbirdModule.None;
                 bbState.DockingMode = DockingControlMode.Off;
@@ -198,6 +202,12 @@ namespace Blackbird.Docking
                     bbState.ActiveModule = BlackbirdModule.None;
                 }
             }
+            else
+            {
+                // Manual/assist modes don't step the schedule, but keep the cached vessel + geometry live so
+                // the separation/alignment readouts don't freeze.
+                _autopilot.RefreshGeometry(active, _vs, bbState);
+            }
         }
 
         // Actuation (from BlackBird.OnFlyByWire). Guidance flies it; otherwise the operator's manual inputs do.
@@ -231,7 +241,7 @@ namespace Blackbird.Docking
             {
                 // Vector3d facing = HasTarget ? PointAtTargetDirection() : (Vector3d)vessel.ReferenceTransform.up;
                 // use the closest main body as "up" if no target
-                Vector3d facing = bbState.HaveTarget ? PointAtTargetDirection() : PointAtWorldDirection();
+                Vector3d facing = bbState.HaveTarget ? _targetLosDir : PointAtWorldDirection();
 
                 if (facing.sqrMagnitude > 0.0)
                 {
@@ -247,7 +257,8 @@ namespace Blackbird.Docking
                 Vector3d facing = PointAlongDockingAxis();
                 if (facing.sqrMagnitude > 0.0)
                 {
-                    _attitude.DriveInertial(vessel, state, facing, 0.0, LockRoll);
+                    //_attitude.DriveInertial(vessel, state, facing, 0.0, LockRoll);
+                    _attitude.DriveWorldPointing(vessel, state, facing, LockRoll);
 
                     // Dock-ready = axis aligned to the mating corridor AND on the centerline. Report the phase so
                     // the operator knows when it's safe to translate straight in.
@@ -265,9 +276,10 @@ namespace Blackbird.Docking
             }
             else if (KeepPointed && bbState.HaveTarget)
             {
-                Vector3d facing = PointAtTargetDirection();
+                //Vector3d facing = _targetLosDir;
+                if (_targetLosDir.sqrMagnitude > 0.0) _attitude.DriveWorldPointing(vessel, state, _targetLosDir, LockRoll);
                 // had a 90.0 rollDeg lock here but not sure what that was for
-                if (facing.sqrMagnitude > 0.0) _attitude.DriveInertial(vessel, state, facing, 0.0, LockRoll);
+                //if (facing.sqrMagnitude > 0.0) _attitude.DriveInertial(vessel, state, facing, 0.0, LockRoll);
             }
 
             if (!ManualInputFresh()) return;   // no buttons held -> release (don't burn RCS idling)
@@ -308,14 +320,15 @@ namespace Blackbird.Docking
         // World-frame LINE OF SIGHT from the chaser's control point to the target port — i.e. the direction
         // to point the nose so it actually aims AT the target (not the port's fixed corridor axis, which only
         // aligns when you're already on the centerline). Zero if no target / transforms unavailable.
-        private Vector3d PointAtTargetDirection()
-        {
-            if (!bbState.HaveTarget || _vessel == null || _vessel.ReferenceTransform == null) return Vector3d.zero;
-            Transform tt = bbState.TargetObject.GetTransform();
-            if (tt == null) return Vector3d.zero;
-            Vector3d los = (Vector3d)tt.position - (Vector3d)_vessel.ReferenceTransform.position;
-            return los.sqrMagnitude > 1e-9 ? los.normalized : Vector3d.zero;
-        }
+        //private Vector3d PointAtTargetDirection()
+        //{
+        //    if (!bbState.HaveTarget || _vessel == null || _vessel.ReferenceTransform == null) return Vector3d.zero;
+        //    //Transform tt = bbState.TargetObject.GetTransform();
+        //    //if (tt == null) return Vector3d.zero;
+        //    //Vector3d los = (Vector3d)tt.position - (Vector3d)_vessel.ReferenceTransform.position;
+        //    //return los.sqrMagnitude > 1e-9 ? los.normalized : Vector3d.zero;
+        //    return _targetLosDir;
+        //}
 
         private Vector3d PointAlongDockingAxis()
         {
@@ -328,23 +341,16 @@ namespace Blackbird.Docking
         // unavailable so an unknown geometry never reads as "centered".
         private double LateralOffsetMeters()
         {
-            if (bbState.TargetDockingPort == null || _vessel == null || _vessel.ReferenceTransform == null) return double.PositiveInfinity;
-            Transform tt = bbState.TargetDockingPort.GetTransform();
-            if (tt == null) return double.PositiveInfinity;
-            Vector3d axis = ((Vector3d)tt.forward).normalized;
-            Vector3d sep = (Vector3d)_vessel.ReferenceTransform.position - (Vector3d)tt.position;
-            return Vector3d.Exclude(axis, sep).magnitude;
+            if (bbState.TargetDockingPort == null || _portAxisWorld.sqrMagnitude < 1e-9) return double.PositiveInfinity;
+            return Vector3d.Exclude(_portAxisWorld, _portSepWorld).magnitude;
         }
 
         private void DriveLateralCenter(FlightCtrlState state, Vessel vessel)
         {
-            if (bbState.TargetDockingPort == null || vessel.ReferenceTransform == null) return;
+            if (bbState.TargetDockingPort == null || vessel.ReferenceTransform == null || _portAxisWorld.sqrMagnitude < 1e-9) return;
 
-            Transform tt = bbState.TargetDockingPort.GetTransform();
-            if (tt == null) return;
-
-            Vector3d axis = ((Vector3d)tt.forward).normalized;
-            Vector3d sep = (Vector3d)vessel.ReferenceTransform.position - (Vector3d)tt.position; // port
+            Vector3d axis = _portAxisWorld;
+            Vector3d sep = _portSepWorld;   // Update-timing (Krakensbane-safe); see UpdateMetrics
             Vector3d lateral = Vector3d.Exclude(axis, sep); // off-centerline
 
             Vector3d correction = Vector3d.zero;
@@ -383,9 +389,23 @@ namespace Blackbird.Docking
             }
 
             Transform tt = bbState.TargetObject.GetTransform();
-
             Vector3d toTarget = (Vector3d)tt.position - (Vector3d)_vessel.ReferenceTransform.position;
+
             PortDistanceMeters = toTarget.magnitude;
+
+            _targetLosDir = toTarget.sqrMagnitude > 1e-9 ? toTarget.normalized : Vector3d.zero;
+
+            // Port-relative geometry for the align assist, cached in Update timing (see LateralOffsetMeters /
+            // DriveLateralCenter). Reading these mid-physics (OnFlyByWire) corrupts the separation via Krakensbane.
+            if (bbState.TargetDockingPort != null)
+            {
+                Transform pt = bbState.TargetDockingPort.GetTransform();
+                if (pt != null)
+                {
+                    _portAxisWorld = ((Vector3d)pt.forward).normalized;
+                    _portSepWorld = (Vector3d)_vessel.ReferenceTransform.position - (Vector3d)pt.position;
+                }
+            }
 
             Vector3d relVel = TrajectoryProvider.GetVelocity(_vessel) - TrajectoryProvider.GetVelocity(bbState.TargetVessel);
             ClosingRateSigned = toTarget.sqrMagnitude > 1e-9

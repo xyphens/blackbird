@@ -123,6 +123,23 @@ namespace Blackbird.Guidance
             }
         }
 
+        // point nose at world-frame direction via a look-rotation with no surface heading/pitch step
+        public void DriveWorldPointing(Vessel vessel, FlightCtrlState state, Vector3d worldDirection, bool lockRoll = false)
+        {
+            if (vessel == null || state == null || vessel.ReferenceTransform == null || worldDirection.sqrMagnitude <= 0.0) return;
+
+            Vector3d fwd = worldDirection.normalized;
+            // roll reference = local radial unless the target is nearly along it, then fall back to north
+            Vector3d up = vessel.mainBody != null
+                        ? (vessel.CoMD - vessel.mainBody.position).normalized
+                        : (Vector3d)vessel.transform.up;
+            if (Math.Abs(Vector3d.Dot(fwd, up)) > 0.99) up = vessel.north;
+
+            QuaternionD requestedAttitude = QuaternionD.LookRotation(fwd, up);
+            Vector3d torqueAvailable = EstimateTorqueAvailable(vessel);
+            Vector3d actuation = UpdatePredictionPI(vessel, requestedAttitude, torqueAvailable, lockRoll);
+            ApplyActuation(state, actuation);
+        }
 
         // Holds the craft's CURRENT attitude, killing all rotation (incl. roll)
         public void DriveHoldAttitude(Vessel vessel, FlightCtrlState state)

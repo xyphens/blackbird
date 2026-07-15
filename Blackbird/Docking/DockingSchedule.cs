@@ -37,6 +37,7 @@ namespace Blackbird.Docking
         public double LateralMag;  // perpendicular distance off the centreline (m)
         public Vector3d ZAxis;     // unit docking axis (the direction the chaser approaches along)
         public Vector3d LateralDir;// unit lateral-offset direction (centreline -> chaser); zero if on-axis
+        public double RelSpeed;
     }
 
     // Tunables + vessel-derived sizes the schedule needs. Constant for a docking run (sizes refreshed by
@@ -51,6 +52,7 @@ namespace Blackbird.Docking
         public double VesselBoundingSize;      // chaser bbox size.magnitude (entry-step "behind" threshold)
         public double ClipClearance;           // safe distance to continue orienting near the target.  any closer means AP will back up
         public double TargetBoundingSize;
+        public double MatchVelocityThreshold;  // should be a user input in docking AP
     }
 
     // One tick's commanded approach: speeds along the axis / laterally, whether to align to the port
@@ -124,13 +126,14 @@ namespace Blackbird.Docking
                     : DockingSteps.BackingUp;
             }
 
-            //if (g.LateralMag > c.DockingCorridorRadius)
-            //{
-            //    // In front but off the centreline: back up first if too close, else go centre on the axis.
-            //    return g.ZSep < c.TargetSize ? DockingSteps.BackingUp : DockingSteps.MovingToStart;
-            //}
+            if (g.LateralMag > c.DockingCorridorRadius)
+            {
+                // Off the centreline: back up first if we're inside the target's clearance envelope, otherwise
+                // centre on the axis at the standoff before the straight-in approach.
+                return g.ZSep < c.ClipClearance ? DockingSteps.BackingUp : DockingSteps.MovingToStart;
+            }
 
-            if (g.LateralMag > c.DockingCorridorRadius && g.ZSep < c.ClipClearance) return DockingSteps.BackingUp;
+            // if (g.LateralMag > c.DockingCorridorRadius && g.ZSep < c.ClipClearance) return DockingSteps.BackingUp;
 
             return DockingSteps.Docking;
         }
@@ -138,6 +141,18 @@ namespace Blackbird.Docking
         // Advance the state machine for the current geometry (MechJeb's OnFixedUpdate switch). Returns the
         // (possibly unchanged) next step; DockingSteps.Off means docking is finished (within capture range).
         public static DockingSteps Advance(DockingSteps step, DockingGeom g, DockingConfig c)
+        {
+            DockingSteps next = AdvancePositional(step, g, c);
+            return step != DockingSteps.Docking && next != step && !VelocityMatched(g, c) 
+                    ? step 
+                    : next;
+
+        }
+
+        // 0 = gate disabled
+        private static bool VelocityMatched(DockingGeom g, DockingConfig c) => c.MatchVelocityThreshold == 0 || g.RelSpeed <= Math.Max(c.MatchVelocityThreshold, 0.0);
+
+        private static DockingSteps AdvancePositional(DockingSteps step, DockingGeom g, DockingConfig c)
         {
             switch (step)
             {
@@ -239,6 +254,13 @@ namespace Blackbird.Docking
                 default:
                     status = step.ToString();
                     break;
+            }
+
+            if (step != DockingSteps.Docking && AdvancePositional(step, g, c) != step && !VelocityMatched(g, c))
+            {
+                z = 0.0;
+                lat = 0.0;
+                status = string.Format("Matching velocity ({0:F2} m/s)", g.RelSpeed);
             }
 
             // World-frame approach velocity: slide back toward the centreline and move along the axis.

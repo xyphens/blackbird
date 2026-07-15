@@ -87,16 +87,19 @@ namespace Blackbird
             {
                 _bbState.TargetDockingPort = targetPort;
             }
-            else
+            else if (!(_bbState.TargetDockingPort != null
+                                && targetVessel != null
+                                && targetVessel == _bbState.TargetDockingPort.vessel
+                                && _bbState.DockingMode == DockingControlMode.Guidance))
             {
-                bool demotedToOwnVessel = _bbState.TargetDockingPort != null
-                                          && targetVessel != null
-                                          && targetVessel == _bbState.TargetDockingPort.vessel;
-                if (!demotedToOwnVessel) _bbState.TargetDockingPort = null;   // operator cleared / switched away
+                // Keep the latched port ONLY through a real range-demotion during an active docking run
+                _bbState.TargetDockingPort = null;
             }
 
             _bbState.HaveTarget = targetVessel != null;
             _bbState.TargetVessel = targetVessel;
+
+            if (_bbState.HaveTarget) _bbState.TargetName = targetVessel.vesselName;
 
             // Recompute display names only when the latched port actually changes (GetName() can allocate).
             if (_bbState.TargetDockingPort != _lastNamedPort)
@@ -109,7 +112,6 @@ namespace Blackbird
                 }
                 else
                 {
-                    _bbState.TargetName = "none";
                     _bbState.TargetDockingPortName = "none";
                 }
                 _lastNamedPort = _bbState.TargetDockingPort;

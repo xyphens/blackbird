@@ -1,8 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Blackbird.Guidance
 {
@@ -35,23 +31,32 @@ namespace Blackbird.Guidance
             Kd = _Kd;
         }
 
-        public Vector3d ComputeAction(Vector3d error, Vector3d omega)
+        public Vector3d ComputeAction(Vector3d error, Vector3d omega, double dt)
         {
             derivAction = omega * Kd;
-
-            integralAccum.x = Math.Abs(derivAction.x) < 0.6 * _max ? integralAccum.x + error.x * Ki * TimeWarp.fixedDeltaTime : 0.9 * integralAccum.x;
-            integralAccum.y = Math.Abs(derivAction.y) < 0.6 * _max ? integralAccum.y + error.y * Ki * TimeWarp.fixedDeltaTime : 0.9 * integralAccum.y;
-            integralAccum.z = Math.Abs(derivAction.z) < 0.6 * _max ? integralAccum.z + error.z * Ki * TimeWarp.fixedDeltaTime : 0.9 * integralAccum.z;
-
             propAction = error * Kp;
 
-            Vector3d action = propAction + derivAction + integralAccum;
+            // Clamping anti-windup: integrate per axis only when the accumulated output would not sit past a
+            // rail while the error keeps pushing it there — so a steady error can't ramp the integral without
+            // bound. (The old guard keyed off the derivative, which is ~0 during a steady hold, and the live
+            // controller had _max = +inf, so it never engaged.) With real ±limits set at construction, the
+            // integral is bounded by the actuation limit.
+            integralAccum.x = Integrate(integralAccum.x, error.x, propAction.x + derivAction.x, dt);
+            integralAccum.y = Integrate(integralAccum.y, error.y, propAction.y + derivAction.y, dt);
+            integralAccum.z = Integrate(integralAccum.z, error.z, propAction.z + derivAction.z, dt);
 
-            // action clamp
-            action = new Vector3d(Math.Max(_min, Math.Min(_max, action.x)),
-                Math.Max(_min, Math.Min(_max, action.y)),
-                Math.Max(_min, Math.Min(_max, action.z)));
-            return action;
+            return new Vector3d(
+                Math.Max(_min, Math.Min(_max, propAction.x + derivAction.x + integralAccum.x)),
+                Math.Max(_min, Math.Min(_max, propAction.y + derivAction.y + integralAccum.y)),
+                Math.Max(_min, Math.Min(_max, propAction.z + derivAction.z + integralAccum.z)));
+        }
+
+        private double Integrate(double accum, double error, double pdOut, double dt)
+        {
+            double next = accum + error * Ki * dt;
+            if (pdOut + next >= _max && error > 0.0) return accum;   // would saturate high & error pushes higher -> hold
+            if (pdOut + next <= _min && error < 0.0) return accum;   // would saturate low & error pushes lower -> hold
+            return next;
         }
     }
 }

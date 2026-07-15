@@ -1,6 +1,5 @@
 using System;
 using Blackbird.Mathematics;
-using UnityEngine;
 
 namespace Blackbird.Docking
 {
@@ -51,7 +50,7 @@ namespace Blackbird.Docking
         // --- leg-complete tolerances ------------------------------------------------------------------
         private const double ArrivalToleranceMeters = 1.0;    // within this of an Approach/Final goal counts as there
         private const double AlignToleranceDeg = 5.0;         // ...and pointed within this of the mated heading
-        private const double StopSpeedMetersPerSecond = 0.1;  // ...and relative speed below this (arrived AND stopped)
+        public const double StopSpeedMetersPerSecond = 0.1;  // ...and relative speed below this (arrived AND stopped)
 
         // relVel = chaser velocity minus target velocity (the chaser's velocity relative to the target).
         public static DockingCommand Compute(PortState chaserPort, PortState targetPort, Vector3d relVel, DockingLeg leg)

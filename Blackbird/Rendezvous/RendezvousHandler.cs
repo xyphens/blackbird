@@ -411,16 +411,18 @@ namespace Blackbird.Rendezvous
                     _executor.ShipAccelMetersPerSecondSquared = vs.AvailableThrust / vs.TotalMass;
 
                 // determine how long it will take to orient to new direction based on our current direction (not the flat 180 degree charge)
-                if (active?.ReferenceTransform != null) {
-                    Vector3d brakeDir = HasRelative && Relative.RelativeVelocityWorld.sqrMagnitude > 1e-6
-                                        ? Relative.RelativeVelocityWorld
-                                        : -(Vector3d)active.ReferenceTransform.up;
-                    // 20 second lead time to flip
-                    _executor.FlipSlewTimeSeconds = AttitudeControl.EstimateSlewTimeSeconds(active, brakeDir, 20.0, false);
-                }
-                //if (active?.ReferenceTransform != null)
-                //    _executor.FlipSlewTimeSeconds = AttitudeControl.EstimateSlewTimeSeconds(
-                //        active, -(Vector3d)active.ReferenceTransform.up, 0.0, false);
+                //if (active?.ReferenceTransform != null) {
+                //    Vector3d brakeDir = HasRelative && Relative.RelativeVelocityWorld.sqrMagnitude > 1e-6
+                //                        ? Relative.RelativeVelocityWorld
+                //                        : -(Vector3d)active.ReferenceTransform.up;
+                //    // 20 second lead time to flip
+                //    _executor.FlipSlewTimeSeconds = AttitudeControl.EstimateSlewTimeSeconds(active, brakeDir, 20.0, false);
+                //    _executor.FlipSlewTimeSeconds = AttitudeControl.SlewTimeSeconds(
+                //                                    Math.PI, AttitudeControl.MinControlAngularAccel(active), 0.0);
+                //}
+                // Time to flip 180° from the closing attitude to retrograde calculated from the current orientation
+                _executor.FlipSlewTimeSeconds = AttitudeControl.SlewTimeSeconds(
+                                Math.PI, AttitudeControl.MinControlAngularAccel(active), 0.0);
             }
 
 

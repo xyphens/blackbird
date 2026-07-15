@@ -13,7 +13,7 @@ namespace Blackbird.Docking
         public Vector3d targetVelocity = Vector3d.zero;
         public readonly RcsPID pid;
 
-        private Vector3d lastTranslation = Vector3d.zero;
+        //private Vector3d lastTranslation = Vector3d.zero;
         private Vector3d worldVelocityDelta = Vector3d.zero;
         private Vector3d lastWorldVelocityDelta = Vector3d.zero;
 
@@ -49,7 +49,7 @@ namespace Blackbird.Docking
 
         public RcsController()
         {
-            pid = new RcsPID(Kp, Ki, Kd);
+            pid = new RcsPID(Kp, Ki, Kd, 1.0, -1.0);
         }
 
         // Derive the PID gains from the time constant (MechJeb's setPIDParameters), unless in manual-gain mode.
@@ -103,7 +103,7 @@ namespace Blackbird.Docking
             switch (TranslationType)
             {
                 case TranslationTypes.TARGET_WORLD_VELOCITY:
-                    worldVelocityDelta = State.OrbitalVelocity - targetVelocity; // du: think we want to pull OV from Principia?
+                    worldVelocityDelta = State.OrbitalVelocity - targetVelocity;
                     break;
                 case TranslationTypes.TARGET_RELATIVE_VELOCITY:
                     if (s.TargetVessel != null)
@@ -111,7 +111,7 @@ namespace Blackbird.Docking
                         Vector3d myVesselVel = TrajectoryProvider.GetOrbitalVelocity(v);
                         Vector3d targetVesselVel = TrajectoryProvider.GetOrbitalVelocity(s.TargetVessel);
                         Vector3d relativeVelocity = myVesselVel - targetVesselVel;
-                        // our velocity - our target's vessel - the velocity we want
+                        // our velocity - our target's vessel = the velocity we want
                         worldVelocityDelta = relativeVelocity - targetVelocity;
                     }
                     
@@ -147,8 +147,8 @@ namespace Blackbird.Docking
                 Vector3d omega = (worldVelocityDelta - lastWorldVelocityDelta) / TimeWarp.fixedDeltaTime;
                 lastWorldVelocityDelta = worldVelocityDelta;
 
-                rcs = pid.ComputeAction(rcs, omega);
-                lastTranslation = rcs;
+                rcs = pid.ComputeAction(rcs, omega, TimeWarp.fixedDeltaTime);
+                //lastTranslation = rcs;
 
                 // modify the flight control state
                 ctrlState.X = Mathf.Clamp((float)rcs.x, -1, 1);
