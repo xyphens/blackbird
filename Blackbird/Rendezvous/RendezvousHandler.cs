@@ -330,7 +330,7 @@ namespace Blackbird.Rendezvous
             HasRelative = true;
 
             double now = Planetarium.GetUniversalTime();
-            // dufixme: probably remove this
+
             if (now - _lastCaComputeUt >= CaRecomputeIntervalSeconds)
             {
                 ComputeLiveClosestApproach(active, target);

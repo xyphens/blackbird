@@ -1,4 +1,5 @@
 using Blackbird.Docking;
+using Blackbird.Helpers;
 using UnityEngine;
 
 namespace Blackbird.Modules
@@ -10,8 +11,9 @@ namespace Blackbird.Modules
     public sealed class DockingComputer
     {
         private SharedState bbState;
-        private static readonly int WindowId = "Blackbird.DockingComputer".GetHashCode();
-        private Rect _windowRect = new Rect(600, 200, 320, 430);
+        private const string WindowKey = "Blackbird.DockingComputer";
+        private static readonly int WindowId = WindowKey.GetHashCode();
+        private Rect _windowRect = WindowPositions.Restore(WindowKey, new Rect(600, 200, 320, 430));
         private GUIStyle _warnStyle, _errorStyle;
 
         private const float BtnW = 60f;
@@ -38,6 +40,7 @@ namespace Blackbird.Modules
             if (_errorStyle == null) _errorStyle = new GUIStyle(GUI.skin.label) { normal = { textColor = Color.red }, wordWrap = true };
 
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Docking Computer");
+            WindowPositions.Record(WindowKey, _windowRect);
         }
         private void DrawContents(int _)
         {

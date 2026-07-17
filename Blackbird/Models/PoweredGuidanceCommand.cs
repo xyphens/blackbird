@@ -9,7 +9,7 @@ namespace Blackbird.Models
 
         public double PitchDeg { get; set; }
         public double HeadingDeg { get; set; }
-        public double Throttle { get; set; }
+        public float Throttle { get; set; }
         public bool HasInertialDirection { get; set; }
         public Vector3d InertialDirection { get; set; }
 

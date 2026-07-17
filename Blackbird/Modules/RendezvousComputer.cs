@@ -1,5 +1,6 @@
 using Blackbird.Modules;
 using Blackbird.Guidance;
+using Blackbird.Helpers;
 using Blackbird.Mathematics;
 using Blackbird.Rendezvous;
 using System;
@@ -20,8 +21,9 @@ namespace Blackbird.Modules
         // Lazily-built red label style for warnings (e.g. a burn that can't settle to ignite).
         private GUIStyle _warnStyle, _errorStyle;
 
-        private static readonly int WindowId = "Blackbird.RendezvousComputer".GetHashCode();
-        private Rect _windowRect = new Rect(950, 200, 360, 380);
+        private const string WindowKey = "Blackbird.RendezvousComputer";
+        private static readonly int WindowId = WindowKey.GetHashCode();
+        private Rect _windowRect = WindowPositions.Restore(WindowKey, new Rect(950, 200, 360, 380));
 
         private string _faError;
         private bool _faWillDeorbit = false;
@@ -75,6 +77,7 @@ namespace Blackbird.Modules
             // Engaged (preview + monitor) while the window is open with a target; control authority is separate.
             _handler.ToggleEngage(_handler.Target != null);
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Rendezvous Computer");
+            WindowPositions.Record(WindowKey, _windowRect);
         }
 
         private void DrawContents(int _)

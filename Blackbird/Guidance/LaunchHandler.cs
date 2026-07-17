@@ -170,7 +170,7 @@ namespace Blackbird.Guidance
             warp.BetterWarpToUt(UT, vessel, false);
         }
 
-        // "Arm" the launch: reveals Warp To Launch + the flight-mode selector. No flying yet — choosing a
+        // "Arm" the launch: reveals Warp To Launch + the flight-mode selector. No flying yet - choosing a
         // flight mode (BeginAscent) is what starts the ascent.
         public void StartGuidance()
         {
@@ -479,33 +479,33 @@ namespace Blackbird.Guidance
         }
     
         // pitch command
-        public void IncreaseManualPitchCommand() => ManualPitchCommandDeg += 1.0;
-        public void DecreaseManualPitchCommand() => ManualPitchCommandDeg -= 1.0;
-        public void ResetPitchCommand() => ManualPitchCommandDeg = GuidanceInfo != null ? ClampAutopilotPitchCommand(GuidanceInfo.CurrentPitchDeg) : 90.0;
-        public void SetPitchCommand(double pitch) => ManualPitchCommandDeg = MathHelpers.Clamp(pitch, -90.0, 90.0);
+        public void IncreaseManualPitchCommand() => SetPitchCommand(ManualPitchCommandDeg + 1.0);
+        public void DecreaseManualPitchCommand() => SetPitchCommand(ManualPitchCommandDeg - 1.0);
+        public void ResetPitchCommand() => SetPitchCommand(GuidanceInfo != null ? GuidanceInfo.CurrentPitchDeg : 90.0);
+        public void SetPitchCommand(double pitch) => ManualPitchCommandDeg = MathHelpers.Clamp(Math.Round(pitch), -90.0, 90.0);
 
         // heading command
-        public void IncreaseManualHeadingCommand() => ManualHeadingCommandDeg += 1.0;
-        public void DecreaseManualHeadingCommand() => ManualHeadingCommandDeg -= 1.0;
-        public void ResetHeadingCommand() => ManualHeadingCommandDeg = GuidanceInfo != null ? MathHelpers.NormalizeDegrees(GuidanceInfo.CurrentHeadingDeg) : 90.0;
-        public void SetHeadingCommand(double heading) => ManualHeadingCommandDeg = MathHelpers.Clamp(heading, -180.0, 180.0);
+        public void IncreaseManualHeadingCommand() => SetHeadingCommand(ManualHeadingCommandDeg + 1.0);
+        public void DecreaseManualHeadingCommand() => SetHeadingCommand(ManualHeadingCommandDeg - 1.0);
+        public void ResetHeadingCommand() => SetHeadingCommand(GuidanceInfo != null ? MathHelpers.DeltaDegrees(0.0, GuidanceInfo.CurrentHeadingDeg) : 90.0);
+        public void SetHeadingCommand(double heading) => ManualHeadingCommandDeg = MathHelpers.Clamp(Math.Round(heading), -180.0, 180.0);
 
         // roll command
-        public void IncreaseManualRollCommand() => ManualRollCommand += 1.0;
-        public void DecreaseManualRollCommand() => ManualRollCommand -= 1.0;
+        public void IncreaseManualRollCommand() => SetRollCommand(ManualRollCommand + 1.0);
+        public void DecreaseManualRollCommand() => SetRollCommand(ManualRollCommand - 1.0);
+        public void SetRollCommand(double roll) => ManualRollCommand = MathHelpers.Clamp(Math.Round(roll), -180.0, 180.0);
         public void ResetRollCommand() => ManualRollCommand = 0;
-        public void SetRollCommand(double roll) => ManualRollCommand = MathHelpers.Clamp(roll, -180.0, 180.0);
+
 
         // throttle command
-        public void IncreaseManualThrottleCommand() => ManualThrottleCommand += 0.10;
-        public void DecreaseManualThrottleCommand() => ManualThrottleCommand -= 0.10;
-        public void ResetThrottleCommand() => ManualThrottleCommand = GuidanceInfo != null ? GuidanceInfo.CommandThrottle : 0.0;
-        public void SetThrottleCommand(double throttle) => ManualThrottleCommand = MathHelpers.Clamp(throttle / 100, 0, 1);
+        public void IncreaseManualThrottleCommand() => ManualThrottleCommand = MathHelpers.Clamp01(ManualThrottleCommand + 0.10);
+        public void DecreaseManualThrottleCommand() => ManualThrottleCommand = MathHelpers.Clamp01(ManualThrottleCommand - 0.10);
+        public void CutoffThrottleCommand() => ManualThrottleCommand = 0.0;
+        public void SetThrottleCommand(double throttle) => ManualThrottleCommand = MathHelpers.Clamp01(throttle / 100);
         public void ApplyFlightControls(FlightCtrlState state, Vessel vessel)
         {
-            if (state == null) return;
-            // Actuate only while we own control; another module taking over (e.g. rendezvous/docking) stops us.
-            if (bbState != null && bbState.ActiveModule != BlackbirdModule.LaunchGuidance) return;
+            // Actuate only while we own control; another module taking over (e.g. rendezvous/docking) stops us
+            if (state == null || (bbState != null && bbState.ActiveModule != BlackbirdModule.LaunchGuidance)) return;
 
             if (State == LaunchGuidanceState.GuidingAscent)
             {
@@ -560,13 +560,13 @@ namespace Blackbird.Guidance
 
             double throttle = GuidanceMode == GuidanceMode.Manual ? ManualThrottleCommand : GuidanceInfo.CommandThrottle;
 
-            if (IsPrelaunchHold(vessel))
+            if (vessel.situation == Vessel.Situations.PRELAUNCH)
             {
                 _attitudeControl.Reset();
                 state.pitch = state.pitchTrim;
                 state.yaw = state.yawTrim;
                 state.roll = state.rollTrim;
-                ApplyAutopilotThrottle(state, throttle);
+                ApplyThrottle(state, throttle);
                 return;
             }
 
@@ -595,14 +595,13 @@ namespace Blackbird.Guidance
                 _attitudeControl.Drive(vessel, state, GuidanceInfo.CommandHeadingDeg, GuidanceInfo.CommandPitchDeg, GuidanceInfo.CommandRoll);
             }
 
-            ApplyAutopilotThrottle(state, throttle);
+            ApplyThrottle(state, throttle);
         }
 
-        private void ApplyAutopilotThrottle(FlightCtrlState state, double throttle)
+        private void ApplyThrottle(FlightCtrlState state, double throttle)
         {
-            if (GuidanceMode != GuidanceMode.Autopilot) return;
-
-            state.mainThrottle = (float)(Math.Max(0.0, Math.Min(1.0, throttle)));
+            if (GuidanceMode == GuidanceMode.None) return;
+            state.mainThrottle = (float)MathHelpers.Clamp01(throttle);
         }
 
         // Whether the craft is within the coast-hold deadband of the hold direction AND nearly stopped
@@ -621,11 +620,6 @@ namespace Blackbird.Guidance
 
             double gateDeg = _coastAttitudeHeld ? CoastHoldExitDeg : CoastHoldEnterDeg;
             return errorDeg <= gateDeg && pitchYawRateDegPerSec <= CoastHoldMaxRateDegPerSec;
-        }
-
-        private static bool IsPrelaunchHold(Vessel vessel)
-        {
-            return vessel != null && vessel.situation == Vessel.Situations.PRELAUNCH;
         }
     }
 }

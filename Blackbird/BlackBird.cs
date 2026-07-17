@@ -1,5 +1,6 @@
 ﻿using Blackbird.Docking;
 using Blackbird.Guidance;
+using Blackbird.Helpers;
 using Blackbird.Modules;
 using Blackbird.Rendezvous;
 using CommNet.Network;
@@ -11,7 +12,8 @@ namespace Blackbird
     [KSPAddon(KSPAddon.Startup.FlightAndEditor, false)]
     public sealed class BlackBird : MonoBehaviour
     {
-        private Rect _windowRect = new Rect(200, 200, 350, 200);
+        private const string WindowKey = "Blackbird.Main";
+        private Rect _windowRect = WindowPositions.Restore(WindowKey, new Rect(200, 200, 350, 200));
         private Vessel _flyByWireVessel;
 
         // launch plan and guidance
@@ -139,6 +141,8 @@ namespace Blackbird
 
         public void OnDestroy()
         {
+            WindowPositions.Save();
+
             if (_flyByWireVessel != null)
             {
                 _flyByWireVessel.OnFlyByWire -= OnFlyByWire;
@@ -157,6 +161,7 @@ namespace Blackbird
                 _windowRect,
                 DrawMainMenu,
                 "BlackBird");
+            WindowPositions.Record(WindowKey, _windowRect);
 
             _planner.Draw();
             _guidanceComputer.Draw();
@@ -212,11 +217,13 @@ namespace Blackbird
                 _toolbarIconOwned = true;
             }
 
+            // MAPVIEW is a separate AppScenes flag, not part of FLIGHT: without it the launcher hides the button
+            // whenever it re-checks visibility while the map is up. The panels draw in both, so the button must too.
             _toolbarButton = ApplicationLauncher.Instance.AddModApplication(
                 () => _showWindow = true,
                 () => _showWindow = false,
                 null, null, null, null,
-                ApplicationLauncher.AppScenes.FLIGHT,
+                ApplicationLauncher.AppScenes.FLIGHT | ApplicationLauncher.AppScenes.MAPVIEW,
                 _toolbarIcon);
         }
 

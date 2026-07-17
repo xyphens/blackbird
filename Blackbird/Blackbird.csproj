@@ -95,6 +95,7 @@
     <Compile Include="Guidance\TerminalSteeringGate.cs" />
     <Compile Include="Helpers\Dropdown.cs" />
     <Compile Include="Helpers\Helpers.cs" />
+    <Compile Include="Helpers\WindowPositions.cs" />
     <Compile Include="Logging\AscentRecorder.cs" />
     <Compile Include="Logging\Log.cs" />
     <Compile Include="Math\Aero.cs" />

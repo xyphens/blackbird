@@ -56,7 +56,81 @@ namespace Blackbird.LaunchHarness
             CheckAscentIloadBuildSweep();
             CheckAscentIloadFailurePaths();
             CheckAscentIloadLowTwrVehicle();
+            CheckWindowPositionPersistence();
             return 0;
+        }
+
+        // Locks the two pure pieces of window-position persistence: the on-screen clamp a restored position passes
+        // through, and the config-file text round-trip. The clamp must keep every restored window grabbable (title
+        // bar reachable, a slice of width on screen) even when the saved position came from a larger resolution,
+        // while leaving an already-visible window untouched. The round-trip must be culture-invariant: a comma
+        // decimal separator (de-DE) would otherwise collide with the "x,y" separator and silently reset positions.
+        private static void CheckWindowPositionPersistence()
+        {
+            Console.WriteLine();
+            Console.WriteLine("=== Window position persistence (clamp keeps windows grabbable; parse is culture-invariant) ===");
+
+            const float screenW = 1920f, screenH = 1080f;
+            // Clamp bounds mirror WindowPositions' visibility constants (120 wide / 30 tall must remain on screen).
+            var cases = new[]
+            {
+                new { Name = "on-screen (untouched)", In = new Rect(560f, 200f, 500f, 500f), W = screenW, H = screenH, X = 560f, Y = 200f },
+                new { Name = "off right",            In = new Rect(5000f, 200f, 500f, 500f), W = screenW, H = screenH, X = 1800f, Y = 200f },
+                new { Name = "off left (part shows)",In = new Rect(-900f, 200f, 500f, 500f), W = screenW, H = screenH, X = -380f, Y = 200f },
+                new { Name = "left edge kept",       In = new Rect(-380f, 200f, 500f, 500f), W = screenW, H = screenH, X = -380f, Y = 200f },
+                new { Name = "title above top",      In = new Rect(560f, -50f, 500f, 500f), W = screenW, H = screenH, X = 560f, Y = 0f },
+                new { Name = "below bottom",         In = new Rect(560f, 2000f, 500f, 500f), W = screenW, H = screenH, X = 560f, Y = 1050f },
+                new { Name = "resolution shrink",    In = new Rect(1800f, 1000f, 360f, 380f), W = 1280f, H = 720f, X = 1160f, Y = 690f },
+            };
+
+            foreach (var c in cases)
+            {
+                Rect r = Helpers.WindowPositions.ClampToScreen(c.In, c.W, c.H);
+                bool sizeKept = r.width == c.In.width && r.height == c.In.height;
+                bool placed = Math.Abs(r.x - c.X) < 0.001 && Math.Abs(r.y - c.Y) < 0.001;
+                // The clamp's whole purpose: the title bar is reachable and enough width shows to grab it.
+                bool grabbable = r.y >= 0f && r.y <= c.H - 30f && r.x + r.width >= 120f && r.x <= c.W - 120f;
+                bool pass = sizeKept && placed && grabbable;
+
+                Console.WriteLine(string.Format(
+                    "  {0,-20} in ({1,6:F0},{2,6:F0}) {3,4:F0}x{4,3:F0} @{5,5:F0}x{6,4:F0} -> ({7,6:F0},{8,5:F0})  {9}",
+                    c.Name, c.In.x, c.In.y, c.In.width, c.In.height, c.W, c.H, r.x, r.y, pass ? "PASS" : "FAIL"));
+                if (!pass) throw new Exception(string.Format(
+                    "Window clamp drift: {0} -> ({1:F2},{2:F2}) expected ({3:F2},{4:F2}), size {5:F0}x{6:F0}, grabbable {7}",
+                    c.Name, r.x, r.y, c.X, c.Y, r.width, r.height, grabbable));
+            }
+
+            var badValues = new[] { "", "abc", "560", "1,2,3", "560,", ",200", "NaN,0", "Infinity,0", "560,abc" };
+            foreach (string bad in badValues)
+            {
+                if (Helpers.WindowPositions.TryParsePosition(bad, out Vector2 junk))
+                    throw new Exception(string.Format("Malformed stored position accepted: \"{0}\" -> ({1},{2})", bad, junk.x, junk.y));
+            }
+            Console.WriteLine(string.Format("  rejected {0} malformed stored values (empty/garbage/short/long/NaN/Inf)  PASS", badValues.Length));
+
+            System.Globalization.CultureInfo restore = System.Threading.Thread.CurrentThread.CurrentCulture;
+            try
+            {
+                // de-DE writes 560,25 for 560.25 -- if Format/Parse followed the machine locale, the decimal comma
+                // would fight the x,y separator and every position would reset on a German-locale install.
+                System.Threading.Thread.CurrentThread.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+                var samples = new[] { new Vector2(560f, 200f), new Vector2(-380.5f, 0f), new Vector2(1919.75f, 1049.25f) };
+                foreach (Vector2 p in samples)
+                {
+                    string text = Helpers.WindowPositions.FormatPosition(p);
+                    bool parsed = Helpers.WindowPositions.TryParsePosition(text, out Vector2 back);
+                    bool pass = parsed && back.x == p.x && back.y == p.y;
+                    Console.WriteLine(string.Format("  round-trip de-DE ({0,8:F2},{1,7:F2}) -> \"{2}\" -> ({3,8:F2},{4,7:F2})  {5}",
+                        p.x, p.y, text, back.x, back.y, pass ? "PASS" : "FAIL"));
+                    if (!pass) throw new Exception(string.Format(
+                        "Window position round-trip is culture-dependent: ({0},{1}) -> \"{2}\" -> parsed {3} ({4},{5})",
+                        p.x, p.y, text, parsed, back.x, back.y));
+                }
+            }
+            finally
+            {
+                System.Threading.Thread.CurrentThread.CurrentCulture = restore;
+            }
         }
 
         private const double KerbinMu = 3.5316e12;

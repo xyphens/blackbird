@@ -10,8 +10,9 @@ namespace Blackbird.Modules
     public sealed class Planner
     {
         private SharedState bbState;
-        private static readonly int WindowId = "Blackbird.Planner".GetHashCode();
-        private Rect _windowRect = new Rect(560, 200, 500, 500);
+        private const string WindowKey = "Blackbird.Planner";
+        private static readonly int WindowId = WindowKey.GetHashCode();
+        private Rect _windowRect = WindowPositions.Restore(WindowKey, new Rect(560, 200, 500, 500));
 
         private double _insertionAp = 0.0;
         public string InsertionAp
@@ -47,6 +48,7 @@ namespace Blackbird.Modules
             if (bbState == null || !bbState.PlannerVisible || FlightGlobals.ActiveVessel == null) return;
             
             _windowRect = GUILayout.Window(WindowId, _windowRect, DrawContents, "Flight Planner");
+            WindowPositions.Record(WindowKey, _windowRect);
         }
 
         private void DrawContents(int _)
