@@ -680,11 +680,9 @@ namespace Blackbird.Guidance
             if (horizontal.sqrMagnitude > 0.0)
             {
                 Vector3d horizontalDirection = horizontal.normalized;
-                headingDeg = MathHelpers.NormalizeDegrees(
-                    Math.Atan2(
+                headingDeg = MathHelpers.NormalizeDegrees(MathHelpers.Rad2Deg(Math.Atan2(
                         Vector3d.Dot(horizontalDirection, east),
-                        Vector3d.Dot(horizontalDirection, north)) *
-                    180.0 / Math.PI);
+                        Vector3d.Dot(horizontalDirection, north))));
             }
         }
 
@@ -919,7 +917,7 @@ namespace Blackbird.Guidance
                 Status = status,
                 PitchDeg = pitchDeg,
                 HeadingDeg = MathHelpers.NormalizeDegrees(headingDeg),
-                Throttle = MathHelpers.Clamp(throttle, 0.0, 1.0),
+                Throttle = (float)MathHelpers.Clamp(throttle, 0.0, 1.0),
                 HasInertialDirection = hasInertialDirection,
                 InertialDirection = hasInertialDirection ? inertialDirection.normalized : Vector3d.zero,
                 ApoapsisErrorMeters = apError,

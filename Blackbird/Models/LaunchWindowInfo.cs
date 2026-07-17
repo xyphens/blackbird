@@ -43,23 +43,23 @@ namespace Blackbird.Models
 
             double currentUt = Planetarium.GetUniversalTime();
 
-            double targetAscInertialLong = targetOrbit.LanDeg;
-            double targetDescInertialLong = targetOrbit.LanDeg + 180.0;
+            //double targetAscInertialLong = targetOrbit.LanDeg;
+            //double targetDescInertialLong = targetOrbit.LanDeg + 180.0;
 
-            double bodyRotationPeriod = active.mainBody.rotationPeriod;
+            //double bodyRotationPeriod = active.mainBody.rotationPeriod;
 
             double targetAscBodyFixedLong =
 
                 OrbitMath.GetBodyFixedLongitudeAtTime(
-                    targetAscInertialLong,
+                    targetOrbit.LanDeg,
                     currentUt,
-                    bodyRotationPeriod);
+                    active.mainBody.rotationPeriod);
 
             double targetDescBodyFixedLong =
                 OrbitMath.GetBodyFixedLongitudeAtTime(
-                    targetDescInertialLong,
+                    targetOrbit.LanDeg + 180.0,
                     currentUt,
-                    bodyRotationPeriod);
+                    active.mainBody.rotationPeriod);
 
             double launchLongitude =
                 MathHelpers.NormalizeDegrees(launchLocation.LongitudeDeg);
@@ -68,13 +68,13 @@ namespace Blackbird.Models
                 MathHelpers.TimeToLongitudeSeconds(
                     launchLongitude,
                     targetAscBodyFixedLong,
-                    bodyRotationPeriod);
+                    active.mainBody.rotationPeriod);
 
             double timeToDesc =
                 MathHelpers.TimeToLongitudeSeconds(
                     launchLongitude,
                     targetDescBodyFixedLong,
-                    bodyRotationPeriod);
+                    active.mainBody.rotationPeriod);
 
             double ascAzimuth =
                 OrbitMath.GetLaunchAzimuth(

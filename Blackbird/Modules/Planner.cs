@@ -12,7 +12,7 @@ namespace Blackbird.Modules
         private SharedState bbState;
         private const string WindowKey = "Blackbird.Planner";
         private static readonly int WindowId = WindowKey.GetHashCode();
-        private Rect _windowRect = WindowPositions.Restore(WindowKey, new Rect(560, 200, 500, 500));
+        private Rect _windowRect = WindowPositions.Restore(WindowKey, new Rect(560, 200, 500, 400));
 
         private double _insertionAp = 0.0;
         public string InsertionAp

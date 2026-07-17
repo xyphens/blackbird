@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Blackbird.Mathematics;
+using Blackbird.Modules;
 using UnityEngine;
 
 namespace Blackbird.Planning
@@ -65,6 +66,7 @@ namespace Blackbird.Planning
             public double EstimatedDeltaVUsed;
             public double RemainingDeltaV;
             public double PredictedClosestApproachMeters;
+            public string FeasibilityNote;
 
             public double Score;                     // lower is better
 
@@ -72,16 +74,20 @@ namespace Blackbird.Planning
                                                      // the plane the ascent must hit, tracking J2 node precession over the wait
         }
 
-        // Guardrails ("common sense").
+        // Guardrails ("common sense")
         private const double MaxLaunchWaitSeconds = 24.0 * 3600.0;     // never suggest a launch > 1 day out
+        private const double EarthReferenceMeters = 6_371_000;         // earth as base ref
         private const double LowerBandMarginMeters = 40000.0;          // phasing perigee >= atmosphere + 40 km
-        private const double UpperBandAboveTargetMeters = 300000.0;    // phasing apogee <= target Ap + 300 km
         private const int MaxPhasingOrbits = 30;
         private const double RendezvousSampleSeconds = 30.0;           // RK4 step for the scoring propagation
 
         public static List<Candidate> Solve(Inputs input)
         {
             List<Candidate> result = new List<Candidate>();
+
+            // plan allowable altitude will be +/- this
+            double altitudeBand = input.AtmosphereDepth + LowerBandMarginMeters * Math.Sqrt(input.BodyRadius / EarthReferenceMeters);
+
             if (input.Mu <= 0.0 || input.BodyRadius <= 0.0 || input.RotationPeriodSeconds <= 0.0)
                 return result;
 
@@ -101,7 +107,7 @@ namespace Blackbird.Planning
             // descending. Each yields one candidate; we keep the best-scoring of each that survives guardrails.
             foreach (NodeCrossing crossing in FindPlaneCrossings(input, normalGrid, horizon, hHat, pole))
             {
-                Candidate c = BuildCandidate(input, hHat, pole, crossing);
+                Candidate c = BuildCandidate(input, hHat, pole, crossing, altitudeBand);
                 result.Add(c);
             }
 
@@ -213,7 +219,7 @@ namespace Blackbird.Planning
             return RotateAbout(input.LaunchSitePosition, axis, angle);
         }
 
-        private static Candidate BuildCandidate(Inputs input, Vector3d hHat, Vector3d pole, NodeCrossing crossing)
+        private static Candidate BuildCandidate(Inputs input, Vector3d hHat, Vector3d pole, NodeCrossing crossing, double altBand)
         {
             // Use the plane AS AT the crossing (the node has precessed since now); keep the original +pole side so
             // inclination/insertion geometry is unchanged in convention, only its direction tracks the precession.
@@ -272,7 +278,7 @@ namespace Blackbird.Planning
             c.PhaseErrorDeg = SignedInPlaneAngle(rInsHat, targetAtInsert.normalized, hHat);
 
             // Pick the phasing orbit: below if the target is ahead (we chase), above if behind (we wait).
-            if (!SelectPhasing(input, targetAlt, targetPeriod, c.PhaseErrorDeg,
+            if (!SelectPhasing(input, targetAlt, targetPeriod, c.PhaseErrorDeg, altBand,
                     out double phasingAlt, out int orbits, out double phasingDeltaV, out string reason))
             { c.Reason = reason; return c; }
 
@@ -295,7 +301,7 @@ namespace Blackbird.Planning
             c.PredictedClosestApproachMeters = PhaseClosureMissMeters(input,
                 phasingPos, phasingVel, targetAtInsert, targetVelAtInsert, orbits * phasingPeriod, targetRadius);
 
-            c.Score = ScoreCandidate(c, targetAlt);
+            c.Score = ScoreCandidate(c);
             c.IsValid = true;
             c.Reason = string.Empty;
             return c;
@@ -304,13 +310,12 @@ namespace Blackbird.Planning
         // Choose the circular phasing altitude that closes the phase in the fewest safe orbits. Direction obeys
         // the guardrail: behind (target ahead) -> only lower/faster orbits; ahead -> only higher/slower orbits.
         private static bool SelectPhasing(
-            Inputs input, double targetAlt, double targetPeriod, double signedPhaseDeg,
+            Inputs input, double targetAlt, double targetPeriod, double signedPhaseDeg, double altBand,
             out double phasingAlt, out int orbits, out double deltaV, out string reason)
         {
             phasingAlt = 0.0; orbits = 0; deltaV = 0.0; reason = string.Empty;
 
-            double minAlt = input.AtmosphereDepth + LowerBandMarginMeters;
-            double maxAlt = targetAlt + UpperBandAboveTargetMeters;
+            double maxAlt = targetAlt + altBand;
             bool behind = signedPhaseDeg > 0.0;   // target ahead -> we catch up from a lower orbit
 
             double phaseToClose = behind ? signedPhaseDeg : -signedPhaseDeg; // magnitude closed per the chosen sense
@@ -328,7 +333,7 @@ namespace Blackbird.Planning
                 double alt = sma - input.BodyRadius;
 
                 // Guardrails: stay in band, and never go higher when behind / lower when ahead.
-                if (alt < minAlt || alt > maxAlt) continue;
+                if (alt < altBand || alt > maxAlt) continue;
                 if (behind && alt > targetAlt) continue;
                 if (!behind && alt < targetAlt) continue;
 
@@ -347,7 +352,9 @@ namespace Blackbird.Planning
             return true;
         }
 
-        private static double ScoreCandidate(Candidate c, double targetAlt)
+        public static FeasibilityResult Evaluate
+
+        private static double ScoreCandidate(Candidate c)
         {
             double waitHours = (c.InsertionUt - c.LaunchUt + c.OrbitsToRendezvous * 0.0) / 3600.0
                                + c.SecondsUntilLaunch / 3600.0;

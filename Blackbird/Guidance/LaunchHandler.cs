@@ -615,8 +615,7 @@ namespace Blackbird.Guidance
             double errorDeg = Vector3d.Angle(vessel.ReferenceTransform.up, holdDirection);
             // KSP vessel angular velocity: x = pitch, z = yaw (y = roll, which doesn't move the nose).
             Vector3d angularVel = vessel.angularVelocityD;
-            double pitchYawRateDegPerSec =
-                Math.Sqrt(angularVel.x * angularVel.x + angularVel.z * angularVel.z) * (180.0 / Math.PI);
+            double pitchYawRateDegPerSec = MathHelpers.Rad2Deg(Math.Sqrt(angularVel.x * angularVel.x + angularVel.z * angularVel.z));
 
             double gateDeg = _coastAttitudeHeld ? CoastHoldExitDeg : CoastHoldEnterDeg;
             return errorDeg <= gateDeg && pitchYawRateDegPerSec <= CoastHoldMaxRateDegPerSec;

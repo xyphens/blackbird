@@ -14,10 +14,6 @@ namespace Blackbird.Modules
         private const string WindowKey = "Blackbird.GuidanceComputer";
         private static readonly int WindowId = WindowKey.GetHashCode();
         private Rect _windowRect = WindowPositions.Restore(WindowKey, new Rect(560, 620, 380, 300));
-        //private string _pitchInputText = "90";
-        //private string _headingInputText = "90";
-        //private string _rollInputText = "0";
-        //private string _throttleInputText = "0";
 
         private double _pitchInputDegrees = 90.0;
         public string PitchInputText
@@ -115,15 +111,15 @@ namespace Blackbird.Modules
             // null guard before any State access
             if (bbState.LaunchPlan == null)
             {
-                GUILayout.Label("Guidance unavailable - select a flight plan");
-                GUI.DragWindow();
-                return;
-            }
-
-            // Finished flight: show the insertion result, not the pre-launch arming details.
-            if (_launchHandler.State == LaunchGuidanceState.Complete)
-            {
-                DrawGuidanceResult(_launchHandler.GuidanceInfo);
+                if (_launchHandler.State == LaunchGuidanceState.Complete)
+                {
+                    // finished flight: show the insertion result
+                    DrawGuidanceResult(_launchHandler.GuidanceInfo);
+                } else
+                {
+                    GUILayout.Label("Guidance unavailable - select a flight plan");
+                }
+                
                 GUI.DragWindow();
                 return;
             }
@@ -135,19 +131,18 @@ namespace Blackbird.Modules
                 GUILayout.Label($"Rel. Inclination: {relInc:F2}°");
                 GUILayout.Label($"Inclination: {orbit.inclination:F2}° vs {_launchHandler.TargetVessel.orbit.inclination:F2}°");
                 GUILayout.Label($"RAAN (LAN): {orbit.LAN:F2}° vs {_launchHandler.TargetVessel.orbit.LAN:F2}°");
-
-                bbState.LaunchPlan.LaunchWindow = LaunchWindowInfo.Create(
-                    FlightGlobals.ActiveVessel,
-                    OrbitInfo.Create(_launchHandler.TargetVessel.orbit),
-                    LaunchLocation.FromVessel(FlightGlobals.ActiveVessel));
             }
 
             if (_launchHandler.State != LaunchGuidanceState.GuidingAscent)
             {
                 double countdown = double.NaN;
-
                 if (_launchHandler.TargetVessel != null)
                 {
+                    bbState.LaunchPlan.LaunchWindow = LaunchWindowInfo.Create(
+                                FlightGlobals.ActiveVessel,
+                                OrbitInfo.Create(_launchHandler.TargetVessel.orbit),
+                                LaunchLocation.FromVessel(FlightGlobals.ActiveVessel));
+
                     LaunchWindowInfo lw = bbState.LaunchPlan.LaunchWindow;
                     if (lw != null)
                     {
@@ -170,12 +165,21 @@ namespace Blackbird.Modules
 
                 DrawSelectGuidanceMethod();
                 // Begin the ascent once a flight mode is chosen AND we're at the launch window or there's no target (countdown)
-                if (_launchHandler.OpenLoopBuilding) GUILayout.Label("Ascent plan building — launch enabled when it resolves");
-                if (!_launchHandler.OpenLoopBuilding 
-                    && _launchHandler.GuidanceMode != GuidanceMode.None 
-                    && (double.IsNaN(countdown) || !(countdown > MinSecondsToUseWarp)))
+                if (_launchHandler.OpenLoopBuilding)
                 {
-                    _launchHandler.StartAscentGuidance();
+                    GUILayout.Label("Ascent plan building — launch enabled when it resolves");
+                } else
+                {
+                    if (_launchHandler.GuidanceMode != GuidanceMode.None 
+                        && (double.IsNaN(countdown) || !(countdown > MinSecondsToUseWarp)))
+                    {
+                        _launchHandler.StartAscentGuidance();
+                    }
+
+                    if (_launchHandler.OpenLoopPlan != null)
+                    {
+                        GUILayout.Label($"Ascent plan: {_launchHandler.OpenLoopStatus}");
+                    }
                 }
 
                 GUI.enabled = true;
@@ -396,7 +400,6 @@ namespace Blackbird.Modules
                 GUILayout.Label($"Rmg. dV: {FormatNum(guidanceInfo.VesselRemainingDeltaV, "F0", "m/s")}");
                 GUILayout.Label($"Phase Error: {FormatNum(guidanceInfo.PhaseErrorDeg, "F2", "°")}");
                 GUILayout.Label($"Plane Error: {FormatNum(guidanceInfo.PlaneErrorDeg, "F2", "°")}");
-                GUILayout.Label($"Ascent Plan: {_launchHandler.OpenLoopStatus}");
             }
 
             DrawTrajectory();
@@ -411,11 +414,8 @@ namespace Blackbird.Modules
         {
             GUILayout.Space(6);
             var plan = _launchHandler.OpenLoopPlan;
-            if (plan == null || !plan.IsValid)
-            {
-                GUILayout.Label("Ascent plan: " + _launchHandler.OpenLoopStatus);
-                return;
-            }
+            if (plan == null || !plan.IsValid) return;
+
             GUILayout.Label($"Pitch rate: {plan.PitchRateDegPerSecond:F2}°/s   Handoff: {plan.HandoffAltitudeMeters / 1000.0:F1} km");
             GUILayout.Label($"Predicted: {plan.PredictedInjectedMassKg / 1000.0:F1} t to orbit, T+{plan.PredictedTimeToOrbitSeconds:F0}s");
             GUILayout.Space(4);

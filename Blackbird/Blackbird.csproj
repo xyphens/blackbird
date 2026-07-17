@@ -117,6 +117,7 @@
     <Compile Include="Models\TrajectoryState.cs" />
     <Compile Include="Models\VesselState.cs" />
     <Compile Include="Modules\SharedState.cs" />
+    <Compile Include="Planning\Feasibility.cs" />
     <Compile Include="Planning\PhasingRecommendationCalculator.cs" />
     <Compile Include="Models\PhasingRecommendationMode.cs" />
     <Compile Include="Planning\LaunchPlanner.cs" />
